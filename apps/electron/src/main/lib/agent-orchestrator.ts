@@ -348,7 +348,12 @@ export class AgentOrchestrator {
         || key.startsWith('OPENAI_')
         || key.startsWith('GEMINI_')
         || key.startsWith('GOOGLE_')
+        || key === 'CLAUDE_CODE_USE_OPENAI'
         || key === 'CLAUDE_CODE_USE_GEMINI'
+        || key === 'CLAUDE_CODE_USE_GROK'
+        || key === 'CLAUDE_CODE_USE_BEDROCK'
+        || key === 'CLAUDE_CODE_USE_VERTEX'
+        || key === 'CLAUDE_CODE_USE_FOUNDRY'
         || key === 'CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST'
         || key === 'CLAUDE_CODE_MAX_OUTPUT_TOKENS'
       if (!providerManaged) {

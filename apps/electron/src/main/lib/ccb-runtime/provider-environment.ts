@@ -77,6 +77,7 @@ export function buildCcbProviderEnvironment(
     if (!credentials) {
       throw new Error('ChatGPT 订阅渠道缺少完整 OAuth 凭据')
     }
+    environment.CLAUDE_CODE_USE_OPENAI = '1'
     environment.OPENAI_AUTH_MODE = 'chatgpt'
     environment.OPENAI_CHATGPT_ACCESS_TOKEN = credentials.access
     environment.OPENAI_CHATGPT_REFRESH_TOKEN = credentials.refresh
@@ -99,6 +100,7 @@ export function buildCcbProviderEnvironment(
   }
 
   if (OPENAI_PROVIDERS.has(input.provider)) {
+    environment.CLAUDE_CODE_USE_OPENAI = '1'
     environment.OPENAI_API_KEY = input.apiKey
     if (input.baseUrl) {
       environment.OPENAI_BASE_URL = normalizeOpenAIBaseUrl(input.baseUrl)

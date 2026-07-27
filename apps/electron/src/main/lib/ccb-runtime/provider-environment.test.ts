@@ -29,6 +29,7 @@ describe('CCB Provider 环境映射', () => {
     expect(env.OPENAI_API_KEY).toBe('openai-token')
     expect(env.OPENAI_BASE_URL).toBe('https://gateway.example.com/v1')
     expect(env.OPENAI_MODEL).toBe('model-a')
+    expect(env.CLAUDE_CODE_USE_OPENAI).toBe('1')
   })
 
   test('Given Gemini 渠道 When Base URL 无 API 版本 Then 自动补 v1beta', () => {
@@ -60,6 +61,7 @@ describe('CCB Provider 环境映射', () => {
     })
 
     expect(env.OPENAI_AUTH_MODE).toBe('chatgpt')
+    expect(env.CLAUDE_CODE_USE_OPENAI).toBe('1')
     expect(env.OPENAI_CHATGPT_ACCESS_TOKEN).toBe('access-token')
     expect(env.OPENAI_CHATGPT_REFRESH_TOKEN).toBe('refresh-token')
     expect(env.OPENAI_CHATGPT_EXPIRES_AT).toBe('123456')
