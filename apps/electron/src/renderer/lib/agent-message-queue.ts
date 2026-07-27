@@ -115,9 +115,37 @@ export function queuedTextToParagraphHtml(text: string): string {
 }
 
 
-const REF_PATTERN = /\/skill:(?<skill>\S+)|#mcp:(?<mcp>\S+)|&session:(?<session>\S+)/g
+const REF_PATTERN = /\/skill:(?<skill>\S+)|#mcp:(?<mcp>\S+)|&session:(?<session>[A-Za-z0-9_-]+)/g
 
-export function parseQueuedMessageMentions(text: string): ParsedQueuedMessageMentions {
+function containsStandaloneSessionId(text: string, sessionId: string): boolean {
+  let searchFrom = 0
+  while (searchFrom < text.length) {
+    const index = text.indexOf(sessionId, searchFrom)
+    if (index === -1) return false
+
+    const before = index > 0 ? text[index - 1] : undefined
+    const afterIndex = index + sessionId.length
+    const after = afterIndex < text.length ? text[afterIndex] : undefined
+    const isSessionIdChar = (char: string | undefined): boolean =>
+      char !== undefined && /[A-Za-z0-9_-]/.test(char)
+
+    if (!isSessionIdChar(before) && !isSessionIdChar(after)) return true
+    searchFrom = index + sessionId.length
+  }
+
+  return false
+}
+
+/**
+ * 解析输入中的 Skill、MCP 与会话引用。
+ *
+ * `knownSessionIds` 用于识别用户从会话列表复制后直接粘贴的裸会话 ID；
+ * Main 仍会校验会话是否真实存在，避免任意文本被当成历史引用。
+ */
+export function parseQueuedMessageMentions(
+  text: string,
+  knownSessionIds: readonly string[] = [],
+): ParsedQueuedMessageMentions {
   const mentionedSkills: string[] = []
   const mentionedMcpServers: string[] = []
   const mentionedSessionIds: string[] = []
@@ -129,20 +157,27 @@ export function parseQueuedMessageMentions(text: string): ParsedQueuedMessageMen
     else if (session) mentionedSessionIds.push(session)
   }
 
+  for (const sessionId of knownSessionIds) {
+    if (containsStandaloneSessionId(text, sessionId)) {
+      mentionedSessionIds.push(sessionId)
+    }
+  }
+
   return {
     cleanedText: text.replace(REF_PATTERN, '').trim(),
     mentionedSkills,
     mentionedMcpServers,
-    mentionedSessionIds,
+    mentionedSessionIds: [...new Set(mentionedSessionIds)],
   }
 }
 
 export function buildQueuedMessageSendPayload(
   message: AgentQueuedMessage,
   quotedSelectionBlock = '',
+  knownSessionIds: readonly string[] = [],
 ): QueuedMessageSendPayload {
   const text = message.text.trim()
-  const mentions = parseQueuedMessageMentions(text)
+  const mentions = parseQueuedMessageMentions(text, knownSessionIds)
   const contextBlocks = [
     message.fileReferenceBlock?.trim(),
     quotedSelectionBlock.trim(),

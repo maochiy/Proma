@@ -4,12 +4,15 @@ import * as os from 'node:os'
 import { join } from 'node:path'
 
 type AgentSessionManager = typeof import('./agent-session-manager')
+type AgentSessionContextPrompt = typeof import('./agent-session-context-prompt')
 
 let manager: AgentSessionManager
+let contextPrompt: AgentSessionContextPrompt
 let tempHome: string
 const originalHome = process.env.HOME
 const originalPromaDev = process.env.PROMA_DEV
 const originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR
+const originalResourcesPath = process.resourcesPath
 
 mock.module('electron', () => ({
   app: {
@@ -53,6 +56,7 @@ function writeAgentSessionsIndex(sessions: Array<{
   workspaceId: string
   createdAt: number
   updatedAt: number
+  archived?: boolean
 }>): void {
   const dir = join(tempHome, '.proma')
   mkdirSync(dir, { recursive: true })
@@ -73,8 +77,13 @@ beforeAll(async () => {
   tempHome = mkdtempSync(join(os.tmpdir(), 'proma-agent-session-manager-'))
   process.env.HOME = tempHome
   process.env.PROMA_DEV = '0'
+  Object.defineProperty(process, 'resourcesPath', {
+    configurable: true,
+    value: tempHome,
+  })
   delete process.env.CLAUDE_CONFIG_DIR
   manager = await import('./agent-session-manager')
+  contextPrompt = await import('./agent-session-context-prompt')
 })
 
 afterAll(() => {
@@ -93,6 +102,10 @@ afterAll(() => {
   } else {
     process.env.CLAUDE_CONFIG_DIR = originalClaudeConfigDir
   }
+  Object.defineProperty(process, 'resourcesPath', {
+    configurable: true,
+    value: originalResourcesPath,
+  })
   rmSync(tempHome, { recursive: true, force: true })
 })
 
@@ -157,5 +170,37 @@ describe('Agent 会话引用搜索', () => {
     })
 
     expect(results).toHaveLength(200)
+  })
+})
+
+describe('Agent 会话 ID 引用', () => {
+  test('Given 用户复制了其他项目的已归档会话 ID When 新会话明确引用 Then 仍注入本地历史读取信息', () => {
+    writeAgentSessionsIndex([
+      {
+        id: 'current-session',
+        title: '当前会话',
+        workspaceId: 'workspace-a',
+        createdAt: 1,
+        updatedAt: 1,
+      },
+      {
+        id: 'archived-cross-workspace-session',
+        title: '其他项目的历史会话',
+        workspaceId: 'workspace-b',
+        createdAt: 2,
+        updatedAt: 2,
+        archived: true,
+      },
+    ])
+
+    const prompt = contextPrompt.buildReferencedSessionsPrompt(
+      'current-session',
+      ['archived-cross-workspace-session'],
+      'workspace-a',
+    )
+
+    expect(prompt).toContain('id="archived-cross-workspace-session"')
+    expect(prompt).toContain('其他项目的历史会话')
+    expect(prompt).toContain('CLI target: archived-cross-workspace-session')
   })
 })

@@ -183,21 +183,18 @@ function escapeContextAttr(value: string): string {
 export function buildReferencedSessionsPrompt(
   currentSessionId: string,
   mentionedSessionIds?: string[],
-  workspaceId?: string,
   workspaceSlug?: string,
 ): string {
   const uniqueIds = [...new Set((mentionedSessionIds ?? []).filter(Boolean))]
   if (uniqueIds.length === 0) return ''
 
-  const currentWorkspaceId = workspaceId ?? getAgentSessionMeta(currentSessionId)?.workspaceId
   const sessionBlocks: string[] = []
 
   for (const referencedSessionId of uniqueIds) {
     if (referencedSessionId === currentSessionId) continue
 
     const meta = getAgentSessionMeta(referencedSessionId)
-    if (!meta || meta.archived) continue
-    if (currentWorkspaceId && meta.workspaceId !== currentWorkspaceId) continue
+    if (!meta) continue
 
     const title = escapeContextAttr(meta.title)
     const historyPath = getSessionHistoryPath(referencedSessionId)
@@ -211,5 +208,5 @@ export function buildReferencedSessionsPrompt(
 
   if (sessionBlocks.length === 0) return ''
 
-  return `<referenced_sessions>\n用户在消息中明确引用了以下同工作区 Agent 会话。${buildReferencedSessionsHistoryInstruction(workspaceSlug)}\n${sessionBlocks.join('\n\n')}\n</referenced_sessions>`
+  return `<referenced_sessions>\n用户在消息中通过会话 ID 明确引用了以下本地 Agent 会话。${buildReferencedSessionsHistoryInstruction(workspaceSlug)}\n${sessionBlocks.join('\n\n')}\n</referenced_sessions>`
 }

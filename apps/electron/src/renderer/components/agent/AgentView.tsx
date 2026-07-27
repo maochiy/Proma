@@ -275,6 +275,12 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     if (!sessionMeta) return globalWorkspaceId // 数据未加载，回退全局
     return sessionMeta.workspaceId ?? null     // 数据已加载，以会话自身为准
   }, [sessionMeta, globalWorkspaceId])
+  const referenceableSessionIds = React.useMemo(
+    () => sessions
+      .filter((candidate) => candidate.id !== sessionId)
+      .map((candidate) => candidate.id),
+    [sessions, sessionId],
+  )
   const [pendingPrompt, setPendingPrompt] = useAtom(agentPendingPromptAtom)
   const [pendingFiles, setPendingFiles] = useAtom(agentPendingFilesAtomFamily(sessionId))
   const [queuedMessages, setQueuedMessages] = useAtom(agentMessageQueueAtomFamily(sessionId))
@@ -854,7 +860,11 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     const quotedSelectionBlock = message.quotedSelection
       ? buildQuotedSelectionBlock(message.quotedSelection)
       : ''
-    const payload = buildQueuedMessageSendPayload(message, quotedSelectionBlock)
+    const payload = buildQueuedMessageSendPayload(
+      message,
+      quotedSelectionBlock,
+      referenceableSessionIds,
+    )
     if (!payload.rawText || !agentChannelId || !hasAvailableModel) return
 
     clearStoppedByUser()
@@ -893,6 +903,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     clearStoppedByUser,
     hasAvailableModel,
     queueMessageIntoActiveAgent,
+    referenceableSessionIds,
     sessionId,
     setAgentStreamErrors,
     startQueuedMessageRun,
@@ -1989,7 +2000,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
 
     // 2. 构建最终消息
     const finalMessage = fileReferences + effectiveText
-    const mentions = parseQueuedMessageMentions(effectiveText)
+    const mentions = parseQueuedMessageMentions(effectiveText, referenceableSessionIds)
 
     // 清除打断状态（上一轮的打断标记不再显示）
     store.set(stoppedByUserSessionsAtom, (prev: Set<string>) => {
@@ -2071,7 +2082,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         return map
       })
     })
-  }, [inputContent, createBaseAdditionalDirectories, preparePendingFilesForSend, restoreQueuedAttachmentsToPending, sessionId, agentChannelId, agentModelId, selectedRuntimeModel, currentWorkspaceId, runtimeThinking, streaming, backgroundWaiting, suggestion, hasAvailableModel, store, consumeQuotedSelection, setStreamingStates, setAgentStreamErrors, setPromptSuggestions, setInputContent, setLiveMessagesMap, permissionMode, messagesLoaded, setQueuedMessages, setQuotedSelectionMap, sendPlainTextAgentMessage])
+  }, [inputContent, createBaseAdditionalDirectories, preparePendingFilesForSend, restoreQueuedAttachmentsToPending, sessionId, agentChannelId, agentModelId, selectedRuntimeModel, currentWorkspaceId, runtimeThinking, streaming, backgroundWaiting, suggestion, hasAvailableModel, store, consumeQuotedSelection, setStreamingStates, setAgentStreamErrors, setPromptSuggestions, setInputContent, setLiveMessagesMap, permissionMode, messagesLoaded, referenceableSessionIds, setQueuedMessages, setQuotedSelectionMap, sendPlainTextAgentMessage])
 
   /** 停止生成 */
   const handleStop = React.useCallback((): void => {
