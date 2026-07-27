@@ -55,8 +55,8 @@ export function Message({ className, from, ...props }: MessageProps): React.Reac
   return (
     <div
       className={cn(
-        'message-item group flex w-full flex-col gap-0.5 rounded-[10px] px-2.5 py-2.5',
-        from === 'user' ? 'is-user' : 'is-assistant',
+        'message-item group flex w-full flex-col gap-0.5 py-3',
+        from === 'user' ? 'is-user items-end' : 'is-assistant',
         className
       )}
       {...props}
@@ -87,20 +87,20 @@ export function MessageHeader({
   return (
     <div
       className={cn(
-        'flex items-start gap-2.5 mb-2.5',
+        'mb-1.5 flex items-center gap-2',
         'group-[.is-user]:hidden',
         className
       )}
       {...props}
     >
       {logo && (
-        <div className="flex size-[35px] shrink-0 items-center justify-center overflow-hidden rounded-[25%]">
+        <div className="flex size-6 shrink-0 items-center justify-center overflow-hidden rounded-md">
           {logo}
         </div>
       )}
-      <div className="flex flex-col justify-between h-[35px]">
-        {model && <span className="text-sm font-semibold text-foreground/60 leading-none">{model}</span>}
-        {time && <span className="message-time text-[10px] text-foreground/[0.38] leading-none">{time}</span>}
+      <div className="flex min-w-0 items-center gap-2">
+        {model && <span className="truncate text-[12px] font-medium leading-none text-foreground/55">{model}</span>}
+        {time && <span className="message-time text-[10px] leading-none text-foreground/[0.32]">{time}</span>}
       </div>
       {children}
     </div>
@@ -113,8 +113,8 @@ type MessageContentProps = HTMLAttributes<HTMLDivElement>
 
 /**
  * 消息内容区域
- * - user 消息：pl-[46px] 与头像对齐 + 浅色气泡背景
- * - assistant 消息：pl-[46px] 与头像对齐
+ * - user 消息：右对齐浅色气泡
+ * - assistant 消息：与 24px 头像后的正文起点对齐
  */
 export function MessageContent({
   children,
@@ -124,9 +124,9 @@ export function MessageContent({
   return (
     <div
       className={cn(
-        'flex max-w-full min-w-0 flex-col gap-2 overflow-hidden pl-[46px]',
-        'group-[.is-user]:text-foreground group-[.is-user]:items-start',
-        'group-[.is-assistant]:w-full group-[.is-assistant]:text-foreground',
+        'flex max-w-full min-w-0 flex-col gap-2 overflow-hidden',
+        'group-[.is-user]:ml-auto group-[.is-user]:max-w-[78%] group-[.is-user]:items-start group-[.is-user]:rounded-xl group-[.is-user]:bg-muted/70 group-[.is-user]:px-3.5 group-[.is-user]:py-2.5 group-[.is-user]:text-foreground',
+        'group-[.is-assistant]:w-full group-[.is-assistant]:pl-8 group-[.is-assistant]:text-foreground',
         className
       )}
       {...props}
@@ -149,7 +149,8 @@ export function MessageActions({
   return (
     <div
       className={cn(
-        'flex items-center gap-2.5 text-muted-foreground/60 hover:text-muted-foreground/90 transition-colors duration-200',
+        'flex items-center gap-2.5 text-muted-foreground/60 transition-colors duration-200 hover:text-muted-foreground/90',
+        'group-[.is-user]:ml-auto group-[.is-assistant]:pl-8',
         className
       )}
       {...props}

@@ -25,6 +25,8 @@ import { RichTextInput } from '@/components/ai-elements/rich-text-input'
 import { SpeechButton } from '@/components/ai-elements/speech-button'
 import { InputToolbarOverflow, type ToolbarItem } from '@/components/ai-elements/InputToolbarOverflow'
 import {
+  inputAreaContainerClass,
+  inputCardClass,
   inputToolbarActiveButtonClass,
   inputToolbarButtonClass,
   inputToolbarDangerButtonClass,
@@ -318,7 +320,6 @@ export function ChatInput({ conversationId, streaming, pendingAttachments, onSet
   }, [])
 
   const toolbarItems = React.useMemo<ToolbarItem[]>(() => [
-    { key: 'model', node: <ModelSelector excludedProviders={['openai-codex']} useSharedOpenState /> },
     {
       key: 'thinking',
       node: (
@@ -370,7 +371,7 @@ export function ChatInput({ conversationId, streaming, pendingAttachments, onSet
     { key: 'clear', node: <ClearContextButton onClick={onClearContext} /> },
   ], [handleOpenFileDialog, thinkingEnabled, setThinkingEnabled, onClearContext])
 
-  const trailingNode = streaming ? (
+  const inputActionNode = streaming ? (
     <Tooltip>
       <TooltipTrigger asChild>
         <Button
@@ -401,6 +402,12 @@ export function ChatInput({ conversationId, streaming, pendingAttachments, onSet
       <CornerDownLeft className="size-[22px]" />
     </Button>
   )
+  const trailingNode = (
+    <>
+      <ModelSelector excludedProviders={['openai-codex']} useSharedOpenState />
+      {inputActionNode}
+    </>
+  )
 
   // 同批图片附件 — 用于大图预览时左右翻页（提取到 useMemo 避免每次渲染重建）
   const imageAttachmentsList = React.useMemo(
@@ -417,12 +424,10 @@ export function ChatInput({ conversationId, streaming, pendingAttachments, onSet
   )
 
   return (
-    <div className="px-2.5 pb-2.5 md:px-[18px] md:pb-[18px]" data-input-mode="chat">
-        {/* 卡片式输入容器 — 对标 Cherry Studio: border-radius 17px, 0.5px border */}
+    <div className={inputAreaContainerClass} data-input-mode="chat">
         <div
           className={cn(
-            'rounded-[17px] border-[0.5px] border-border bg-background/70 backdrop-blur-sm transition-all duration-200',
-            'focus-within:border-foreground/20',
+            inputCardClass,
             isDragOver && 'border-[2px] border-dashed border-[#2ecc71] bg-[#2ecc71]/[0.03]'
           )}
           onDragOver={handleDragOver}
@@ -461,7 +466,7 @@ export function ChatInput({ conversationId, streaming, pendingAttachments, onSet
             onChange={setContent}
             onSubmit={handleSend}
             onPasteFiles={handlePasteFiles}
-            placeholder={sendWithCmdEnter ? '输入消息... (⌘/Ctrl+Enter 发送，Enter 换行)' : '输入消息... (Enter 发送，Shift+Enter 换行)'}
+            placeholder={sendWithCmdEnter ? '描述问题（⌘/Ctrl+Enter 发送）' : '描述问题或开始对话'}
             autoFocusTrigger={conversationId}
             sendWithCmdEnter={sendWithCmdEnter}
           />

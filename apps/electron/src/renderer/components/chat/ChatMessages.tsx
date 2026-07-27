@@ -247,7 +247,7 @@ export function ChatMessages({
       <img
         src={getModelLogo(streamingModel ?? '', resolveModelProvider(streamingModel ?? '', channels))}
         alt="AI"
-        className="size-[35px] rounded-[25%] object-cover"
+        className="size-6 rounded-md object-cover"
       />
     ),
     [streamingModel, channels]
@@ -438,7 +438,7 @@ export function ChatMessages({
                   )}
                 </MessageContent>
                 {/* 操作栏占位：预留与 MessageActions 相同高度，防止流式结束时布局跳动 */}
-                <div className="pl-[46px] mt-0.5 min-h-[28px]" />
+                <div className="mt-0.5 min-h-[28px] pl-8" />
               </Message>
             )}
           </>

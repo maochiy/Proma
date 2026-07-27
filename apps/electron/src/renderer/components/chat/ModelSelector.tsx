@@ -1,27 +1,15 @@
 /**
- * ModelSelector - 模型选择器（Dialog + Command 搜索）
+ * ModelSelector - 模型选择器（输入区内联 Popover）
  *
- * 现代化设计：
- * - 大尺寸 Dialog，宽敞易读
- * - 按渠道分组，灰色背景供应商标题行
- * - 选中项左侧绿色竖条高亮
- * - 触发按钮：模型 logo + 模型名 + Chevron
+ * - 不打断当前任务，不使用模态弹窗
+ * - 按渠道分组并支持搜索与键盘选择
+ * - 触发按钮保持紧凑，适合放在输入区工具栏
  */
 
 import * as React from 'react'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
-import { ChevronDown, Cpu, Search } from 'lucide-react'
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog'
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '@/components/ui/tooltip'
+import { Check, ChevronDown, Cpu, Search } from 'lucide-react'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import {
   conversationsAtom,
   selectedModelAtom,
@@ -120,11 +108,12 @@ export function ModelSelector({
   const open = useSharedOpenState ? sharedOpen : localOpen
   const setOpen = useSharedOpenState ? setSharedOpen : setLocalOpen
   const [search, setSearch] = React.useState('')
+  const searchInputRef = React.useRef<HTMLInputElement>(null)
 
   // 外部模型优先 → per-conversation 模型
   const selectedModel = externalSelectedModel !== undefined ? externalSelectedModel : conversationModel
 
-  // 每次打开 Dialog 时刷新渠道列表，确保最新
+  // 每次打开菜单时刷新渠道列表，确保最新
   React.useEffect(() => {
     if (open) {
       window.electronAPI.listChannels().then(setChannels).catch(console.error)
@@ -252,60 +241,58 @@ export function ModelSelector({
   }
 
   return (
-    <>
-      {/* 触发按钮 */}
-      <Tooltip open={open || !displayModelInfo ? false : undefined}>
-        <TooltipTrigger asChild>
-          <button
-            type="button"
-            onClick={() => setOpen(true)}
-            className="model-selector-trigger flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-          >
-            {displayModelInfo ? (
-              <img
-                src={getModelLogo(displayModelInfo.modelId, displayModelInfo.provider)}
-                alt={displayModelInfo.modelName}
-                className="size-4 rounded object-cover"
-              />
-            ) : (
-              <Cpu className="size-3.5" />
-            )}
-            <span className="max-w-[200px] truncate">
-              {displayModelInfo
-                ? (showChannelInTrigger ? `${displayModelInfo.channelName} · ${displayModelInfo.modelName}` : displayModelInfo.modelName)
-                : '选择模型'}
-            </span>
-            <ChevronDown className="size-3" />
-          </button>
-        </TooltipTrigger>
-        <TooltipContent side="top">渠道：{displayModelInfo?.channelName}</TooltipContent>
-      </Tooltip>
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label={displayModelInfo ? `当前模型：${displayModelInfo.modelName}` : '选择模型'}
+          aria-expanded={open}
+          className="model-selector-trigger flex min-w-0 max-w-full items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45"
+        >
+          {displayModelInfo ? (
+            <img
+              src={getModelLogo(displayModelInfo.modelId, displayModelInfo.provider)}
+              alt=""
+              className="size-4 rounded object-cover"
+            />
+          ) : (
+            <Cpu className="size-3.5" />
+          )}
+          <span className="min-w-0 max-w-[160px] truncate">
+            {displayModelInfo
+              ? (showChannelInTrigger ? `${displayModelInfo.channelName} · ${displayModelInfo.modelName}` : displayModelInfo.modelName)
+              : '选择模型'}
+          </span>
+          <ChevronDown className="size-3 shrink-0" />
+        </button>
+      </PopoverTrigger>
 
-      {/* 模型选择 Dialog */}
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="p-0 gap-0 max-w-lg" aria-describedby={undefined}>
-          <DialogHeader className="sr-only">
-            <DialogTitle>选择模型</DialogTitle>
-          </DialogHeader>
-
-          {/* 搜索栏 */}
-          <div className="flex items-center gap-2.5 px-4 py-3 border-b border-border/60">
-            <Search className="size-5 text-muted-foreground/60 flex-shrink-0" />
+      <PopoverContent
+        side="top"
+        align="end"
+        sideOffset={8}
+        className="w-[320px] overflow-hidden p-0"
+        onOpenAutoFocus={(event) => {
+          event.preventDefault()
+          requestAnimationFrame(() => searchInputRef.current?.focus())
+        }}
+      >
+        <div className="flex items-center gap-2 border-b border-border/55 px-3 py-2">
+            <Search className="size-4 flex-shrink-0 text-muted-foreground/55" />
             <input
+              ref={searchInputRef}
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               onKeyDown={handleSearchKeyDown}
               placeholder="搜索模型..."
-              className="flex-1 bg-transparent text-base outline-none placeholder:text-muted-foreground/50"
-              autoFocus
+              className="h-7 min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/50"
             />
           </div>
 
-          {/* 模型列表 */}
-          <div className="max-h-[420px] overflow-y-auto scrollbar-thin">
+          <div className="max-h-[360px] overflow-y-auto p-1.5 scrollbar-thin">
             {filteredGrouped.size === 0 ? (
-              <div className="py-10 text-center text-sm text-muted-foreground">
+              <div className="py-8 text-center text-sm text-muted-foreground">
                 未找到模型
               </div>
             ) : (
@@ -317,15 +304,14 @@ export function ModelSelector({
                 const channel = channels.find((c) => c.id === channelId)
 
                 return (
-                  <div key={channelId}>
-                    {/* 供应商标题行 - 灰色背景 */}
-                    <div className="flex items-center gap-2 px-4 py-2 bg-muted/50 border-b border-border/30">
+                  <div key={channelId} className="mb-1 last:mb-0">
+                    <div className="flex items-center gap-2 px-2 py-1.5">
                       <img
                         src={channel ? getChannelLogo(channel) : DefaultLogo}
-                        alt={first.channelName}
-                        className="size-5 rounded object-cover"
+                        alt=""
+                        className="size-4 rounded object-cover"
                       />
-                      <span className="min-w-0 truncate text-sm font-medium text-muted-foreground">
+                      <span className="min-w-0 truncate text-[11px] font-medium text-muted-foreground">
                         {first.channelName}
                       </span>
                       {channel ? <ChannelPlanQuotaBadge channel={channel} /> : null}
@@ -350,23 +336,24 @@ export function ModelSelector({
                           onClick={() => handleSelect(option)}
                           onMouseEnter={() => setHighlightIndex(currentFlatIndex)}
                           className={cn(
-                            'flex items-center gap-3 w-[calc(100%-1rem)] px-4 py-1.5 mx-2 rounded-lg text-left transition-colors',
+                            'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors',
                             'hover:bg-accent',
                             isHighlighted && 'bg-accent',
-                            isSelected && 'bg-foreground/10 border-l-3 border-l-primary'
+                            isSelected && 'bg-accent/80'
                           )}
                         >
                           <img
                             src={getModelLogo(option.modelId, option.provider)}
-                            alt={option.modelName}
-                            className="size-5 rounded object-cover flex-shrink-0"
+                            alt=""
+                            className="size-4 flex-shrink-0 rounded object-cover"
                           />
                           <span className={cn(
-                            'flex-1 text-sm truncate',
+                            'flex-1 truncate text-sm',
                             isSelected ? 'font-medium text-foreground' : 'text-foreground/80'
                           )}>
                             {option.modelName}
                           </span>
+                          {isSelected && <Check className="size-3.5 shrink-0 text-foreground/65" />}
                         </button>
                       )
                     })}
@@ -376,8 +363,7 @@ export function ModelSelector({
               })()
             )}
           </div>
-        </DialogContent>
-      </Dialog>
-    </>
+      </PopoverContent>
+    </Popover>
   )
 }

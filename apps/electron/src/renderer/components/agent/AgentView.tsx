@@ -21,6 +21,7 @@ import { CornerDownLeft, Square, Settings, Paperclip, FolderPlus, X, Copy, Check
 import { AgentMessages } from './AgentMessages'
 import { AgentHeader } from './AgentHeader'
 import { AgentMessageQueue } from './AgentMessageQueue'
+import { AgentProjectPicker } from './AgentProjectPicker'
 import { ContextUsageBadge } from './ContextUsageBadge'
 import { PermissionBanner } from './PermissionBanner'
 import { PermissionModeSelector } from './PermissionModeSelector'
@@ -34,6 +35,8 @@ import { RichTextInput } from '@/components/ai-elements/rich-text-input'
 import { SpeechButton } from '@/components/ai-elements/speech-button'
 import { InputToolbarOverflow, type ToolbarItem } from '@/components/ai-elements/InputToolbarOverflow'
 import {
+  inputAreaContainerClass,
+  inputCardClass,
   inputToolbarActiveButtonClass,
   inputToolbarButtonClass,
   inputToolbarDangerButtonClass,
@@ -115,6 +118,7 @@ import { inferAgentSdkContextWindow, inferContextWindow, MAX_ATTACHMENT_SIZE } f
 import { fileToBase64, formatFileNames, getFileParentPath } from '@/lib/file-utils'
 import { buildQuotedSelectionBlock } from '@/lib/quoted-selection'
 import { createClipboardPendingFile, createClipboardTextDraft, makeUniqueAttachmentName } from '@/lib/clipboard-text-attachment'
+import { canSwitchAgentProject } from '@/lib/agent-project-switch'
 import {
   buildQueuedMessageSendPayload,
   createAgentQueuedMessage,
@@ -333,6 +337,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   const setSettingsOpen = useSetAtom(settingsOpenAtom)
   const setDraftSessionIds = useSetAtom(draftSessionIdsAtom)
   const globalWorkspaceId = useAtomValue(currentAgentWorkspaceIdAtom)
+  const setGlobalWorkspaceId = useSetAtom(currentAgentWorkspaceIdAtom)
   // 从会话元数据派生 workspaceId：会话数据已加载时以自身为准，未加载时回退全局 atom
   const currentWorkspaceId = React.useMemo(() => {
     if (!sessionMeta) return globalWorkspaceId // 数据未加载，回退全局
@@ -469,6 +474,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   const [workspaceFilesPath, setWorkspaceFilesPath] = React.useState<string | null>(null)
   const [isDragOver, setIsDragOver] = React.useState(false)
   const [errorCopied, setErrorCopied] = React.useState(false)
+  const [projectChanging, setProjectChanging] = React.useState(false)
 
   // pendingFiles ref（供 addFilesAsAttachments 读取最新列表，避免闭包旧值）
   const pendingFilesRef = React.useRef(pendingFiles)
@@ -1618,6 +1624,74 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       .catch(console.error)
   }, [sessionId, streaming, backgroundWaiting, setSessionChannelMap, setSessionModelMap, setDefaultChannelId, setDefaultModelId, setAgentSessions])
 
+  /** 输入区项目选择：迁移当前会话，并把选择保存为后续新任务的默认项目。 */
+  const canSwitchProject = canSwitchAgentProject({
+    messagesLoaded,
+    persistedMessageCount: persistedSDKMessages.length,
+    liveMessageCount: liveMessages.length,
+    runtimeSessionId: sessionMeta?.runtimeSessionId,
+    streaming,
+    backgroundWaiting,
+  })
+
+  const handleProjectSelect = React.useCallback(async (targetWorkspaceId: string): Promise<void> => {
+    if (targetWorkspaceId === currentWorkspaceId || projectChanging) return
+    if (!canSwitchProject) {
+      toast.info('已有内容的任务不能直接切换项目', {
+        description: '请在侧栏会话菜单中使用“迁移到其他项目”',
+      })
+      return
+    }
+
+    const targetWorkspace = workspaces.find((workspace) => workspace.id === targetWorkspaceId)
+    setProjectChanging(true)
+    try {
+      const updated = await window.electronAPI.moveAgentSessionToWorkspace({
+        sessionId,
+        targetWorkspaceId,
+      })
+      setAgentSessions((prev) => prev.map((session) => (
+        session.id === updated.id ? updated : session
+      )))
+      window.electronAPI.listAgentSessions()
+        .then(setAgentSessions)
+        .catch((error) => {
+          console.error('[AgentView] 切换项目后刷新会话列表失败:', error)
+        })
+      setGlobalWorkspaceId(targetWorkspaceId)
+      window.electronAPI.updateSettings({ agentWorkspaceId: targetWorkspaceId }).catch(console.error)
+
+      setSessionPathMap((prev) => {
+        if (!prev.has(sessionId)) return prev
+        const map = new Map(prev)
+        map.delete(sessionId)
+        return map
+      })
+
+      toast.success('已切换项目', {
+        description: targetWorkspace?.name ?? '项目上下文已更新',
+      })
+    } catch (error) {
+      console.error('[AgentView] 切换项目失败:', error)
+      toast.error('切换项目失败', {
+        description: error instanceof Error ? error.message : '未知错误',
+      })
+    } finally {
+      setProjectChanging(false)
+    }
+  }, [
+    backgroundWaiting,
+    canSwitchProject,
+    currentWorkspaceId,
+    projectChanging,
+    sessionId,
+    setAgentSessions,
+    setGlobalWorkspaceId,
+    setSessionPathMap,
+    streaming,
+    workspaces,
+  ])
+
   /** 构建 externalSelectedModel 给 ModelSelector */
   const computedSelectedModel = React.useMemo(() => {
     if (!agentChannelId || !agentModelId) return null
@@ -2287,17 +2361,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   const canSend = messagesLoaded && (streaming || !messagesRefreshing) && (hasTextInput || pendingFiles.length > 0 || !!suggestion) && agentChannelId !== null && hasAvailableModel && (!streaming || hasTextInput)
 
   const inputToolbarItems = React.useMemo<ToolbarItem[]>(() => [
-    {
-      key: 'model',
-      node: (
-        <ModelSelector
-          filterChannelIds={agentChannelIds}
-          externalSelectedModel={externalSelectedModel}
-          onModelSelect={handleModelSelect}
-          useSharedOpenState
-        />
-      ),
-    },
     { key: 'permission-mode', node: <PermissionModeSelector sessionId={sessionId} /> },
     {
       key: 'thinking',
@@ -2377,12 +2440,10 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       ),
     },
   ], [
-    agentChannelIds,
     agentChannelId,
     planQuotaChannelId,
     planQuotaChannelUpdatedAt,
     agentModelId,
-    handleModelSelect,
     sessionId,
     agentThinking,
     setAgentThinking,
@@ -2398,7 +2459,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     handleCompact,
   ])
 
-  const inputTrailingNode = streaming && !hasTextInput ? (
+  const inputActionNode = streaming && !hasTextInput ? (
     <Tooltip>
       <TooltipTrigger asChild>
         <Button
@@ -2429,6 +2490,17 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       <CornerDownLeft className="size-[22px]" />
     </Button>
   )
+  const inputTrailingNode = (
+    <>
+      <ModelSelector
+        filterChannelIds={agentChannelIds}
+        externalSelectedModel={externalSelectedModel}
+        onModelSelect={handleModelSelect}
+        useSharedOpenState
+      />
+      {inputActionNode}
+    </>
+  )
 
   // 同批图片附件 — 用于大图预览时左右翻页（提取到 useMemo 避免每次渲染重建）
   const pendingImageFiles = React.useMemo(
@@ -2447,7 +2519,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   return (
     <>
     <AgentSessionProvider sessionId={sessionId}>
-      <div className="flex h-full min-h-0 flex-1 min-w-0 max-w-[min(72rem,100%)] flex-col overflow-hidden mx-auto">
+      <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         {/* Agent Header */}
         <AgentHeader sessionId={sessionId} />
 
@@ -2482,10 +2554,18 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
 
         {/* 输入区域 — 交互横幅显示时隐藏，由横幅替代 */}
         {!hasBannerOverlay && (
-        <div className="px-2.5 pb-2.5 md:px-[18px] md:pb-[18px]" data-input-mode="agent">
+        <div className={inputAreaContainerClass} data-input-mode="agent">
+          <AgentProjectPicker
+            workspaces={workspaces}
+            workspaceId={currentWorkspaceId}
+            changing={projectChanging}
+            disabled={!canSwitchProject}
+            disabledReason="已有内容的任务请通过侧栏菜单迁移项目"
+            onSelect={handleProjectSelect}
+          />
           <div
             className={cn(
-              'rounded-[17px] border-[0.5px] border-border bg-background/70 backdrop-blur-sm transition-all duration-200',
+              inputCardClass,
               (isPlanMode || isPermissionPlanMode) && !isDragOver && 'plan-mode-border',
               isDragOver && 'border-[2px] border-dashed border-[#2ecc71] bg-[#2ecc71]/[0.03]'
             )}
@@ -2581,8 +2661,8 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
               placeholder={
                 agentChannelId && hasAvailableModel
                   ? sendWithCmdEnter
-                    ? '输入消息... (⌘/Ctrl+Enter 发送，Enter 换行，@ 引用文件，/ 调用 Skill，# 调用 MCP，& 引用会话)'
-                    : '输入消息... (Enter 发送，Shift+Enter 换行，@ 引用文件，/ 调用 Skill，# 调用 MCP，& 引用会话)'
+                    ? '描述任务或提出问题（⌘/Ctrl+Enter 发送）'
+                    : '描述任务或提出问题'
                   : !agentChannelId
                     ? '请先在设置中选择 Agent 供应商'
                     : '暂无可用模型，请先在设置中启用渠道'

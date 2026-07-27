@@ -162,7 +162,7 @@ export function InputToolbarOverflow({
   return (
     <div
       className={cn(
-        'flex items-center justify-between px-2 py-1 h-[48px] gap-4',
+        'flex h-10 items-center justify-between gap-4 px-2',
         className
       )}
     >
@@ -212,7 +212,11 @@ export function InputToolbarOverflow({
           </Popover>
         )}
       </div>
-      {trailing && <div className="flex items-center gap-1.5 shrink-0">{trailing}</div>}
+      {trailing && (
+        <div className="flex min-w-0 max-w-[52%] items-center justify-end gap-1.5">
+          {trailing}
+        </div>
+      )}
     </div>
   )
 }

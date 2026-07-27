@@ -119,7 +119,7 @@ export function TabBarItem({
           ref={buttonRef}
           type="button"
           className={cn(
-            'group relative flex items-center justify-center gap-1.5 min-w-[82px] px-3 h-[34px]',
+            'group relative flex h-9 min-w-[82px] items-center justify-center gap-1.5 px-3',
             isClassic ? 'rounded-t-lg' : 'rounded-none',
             'text-xs transition-colors select-none cursor-pointer',
             'border-t border-l border-r border-transparent',
@@ -144,7 +144,7 @@ export function TabBarItem({
 
   return (
     <div
-      className="relative min-w-[132px] max-w-[240px] flex-[1_0_132px] titlebar-no-drag"
+      className="relative min-w-[120px] max-w-[220px] flex-[1_0_120px] titlebar-no-drag"
       onMouseEnter={onHoverEnter}
       onMouseLeave={onHoverLeave}
     >
@@ -152,7 +152,7 @@ export function TabBarItem({
         ref={buttonRef}
         type="button"
         className={cn(
-          'group relative flex items-center gap-1.5 px-3 h-[34px] w-full',
+          'group relative flex h-9 w-full items-center gap-1.5 px-3',
           isClassic ? 'rounded-t-lg' : 'rounded-none',
           'text-xs transition-colors select-none cursor-pointer',
           'border-t border-l border-r border-transparent',

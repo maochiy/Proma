@@ -68,14 +68,14 @@ export function ModeSwitcher(): React.ReactElement {
   }, [mode, restoreSession])
 
   return (
-    <div className="pt-2 titlebar-drag-region select-none">
+    <div className="pt-1 titlebar-drag-region select-none">
       <div
-        className="relative flex rounded-xl p-1 titlebar-drag-region mode-switcher-track sidebar-control-surface"
+        className="relative flex rounded-lg bg-foreground/[0.045] p-0.5 titlebar-drag-region mode-switcher-track"
       >
         {/* 滑动背景指示器 */}
         <div
           className={cn(
-            'mode-slider pointer-events-none absolute top-1 bottom-1 w-[calc(50%-4px)] rounded-lg bg-background shadow-sm transition-transform duration-300 ease-in-out',
+            'mode-slider pointer-events-none absolute top-0.5 bottom-0.5 w-[calc(50%-2px)] rounded-md border border-border/45 bg-background shadow-xs transition-transform duration-200 ease-out',
             mode === 'agent' ? 'translate-x-0' : 'translate-x-full'
           )}
         />
@@ -83,9 +83,10 @@ export function ModeSwitcher(): React.ReactElement {
           <button
             key={value}
             type="button"
+            aria-pressed={mode === value}
             onClick={() => handleModeSwitch(value)}
             className={cn(
-              'mode-btn titlebar-no-drag relative z-[1] h-8 flex-1 flex items-center justify-center gap-1.5 rounded-lg px-3 py-0 text-sm font-medium transition-colors duration-200 select-none',
+              'mode-btn titlebar-no-drag relative z-[1] h-7 flex-1 flex items-center justify-center gap-1.5 rounded-md px-3 py-0 text-[12px] font-medium transition-colors duration-150 select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45',
               mode === value
                 ? 'mode-btn-selected text-foreground'
                 : 'text-muted-foreground hover:text-foreground'

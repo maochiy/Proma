@@ -69,7 +69,7 @@ export function AgentHeader({ sessionId }: AgentHeaderProps): React.ReactElement
   }
 
   return (
-    <div className="relative z-[51] flex items-center gap-2 px-4 h-[48px]">
+    <div className="relative z-[51] flex h-11 items-center gap-2 border-b border-border/35 px-5">
       {/* 拖拽层覆盖整行（Windows 避开右上角 WindowControls ~126px），编辑/标题按钮内部已自带 titlebar-no-drag。 */}
       <div className={cn("absolute inset-0 titlebar-drag-region pointer-events-none", isWindows && WINDOW_CONTROLS_INSET_RIGHT)} />
       {editing ? (
@@ -102,7 +102,7 @@ export function AgentHeader({ sessionId }: AgentHeaderProps): React.ReactElement
         </div>
       ) : (
         <div className="flex items-center gap-1.5 flex-1 min-w-0">
-          <span className="truncate text-sm font-medium text-foreground">
+          <span className="truncate text-[13px] font-medium text-foreground/90">
             {session.title}
           </span>
           <button

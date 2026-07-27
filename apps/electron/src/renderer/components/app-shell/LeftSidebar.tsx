@@ -214,6 +214,25 @@ interface AutomationSidebarEntryProps {
   onClick: () => void
 }
 
+interface NewTaskSidebarEntryProps {
+  onClick: () => void
+}
+
+function NewTaskSidebarEntry({ onClick }: NewTaskSidebarEntryProps): React.ReactElement {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-[13px] font-medium text-foreground/75 transition-colors duration-100 titlebar-no-drag hover:bg-foreground/[0.055] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45"
+    >
+      <span className="flex size-[18px] shrink-0 items-center justify-center rounded-full bg-foreground/[0.07] text-foreground/60 transition-colors group-hover:bg-foreground/[0.1] group-hover:text-foreground">
+        <Plus size={13} />
+      </span>
+      <span>新建任务</span>
+    </button>
+  )
+}
+
 function AutomationSidebarEntry({ count, active, onClick }: AutomationSidebarEntryProps): React.ReactElement {
   return (
     <button
@@ -221,13 +240,13 @@ function AutomationSidebarEntry({ count, active, onClick }: AutomationSidebarEnt
       aria-label={`自动任务，${count} 个任务已创建`}
       onClick={onClick}
       className={cn(
-        'group w-full flex items-center justify-between px-3 py-2 rounded-md text-[13px] transition-colors duration-100 titlebar-no-drag automation-entry',
+        'group w-full flex items-center justify-between px-2 py-1.5 rounded-md text-[13px] transition-colors duration-100 titlebar-no-drag automation-entry',
         active
-          ? 'automation-entry-selected bg-accent-foreground/[0.10] text-foreground shadow-[0_1px_2px_0_rgba(0,0,0,0.05)]'
-          : 'text-foreground/60 hover:bg-accent-foreground/[0.08] hover:text-foreground',
+          ? 'automation-entry-selected bg-foreground/[0.075] text-foreground'
+          : 'text-foreground/65 hover:bg-foreground/[0.045] hover:text-foreground',
       )}
     >
-      <span className="flex items-center gap-3 min-w-0">
+      <span className="flex items-center gap-2 min-w-0">
         <span className={cn('flex-shrink-0 w-[18px] h-[18px] automation-entry-icon', active ? 'text-accent-foreground' : 'text-foreground/45')}>
           <AlarmClock size={16} className="block" />
         </span>
@@ -237,8 +256,8 @@ function AutomationSidebarEntry({ count, active, onClick }: AutomationSidebarEnt
         className={cn(
           'ml-2 flex h-5 min-w-[22px] flex-shrink-0 items-center justify-center rounded-full px-1.5 text-[11px] font-medium tabular-nums automation-entry-badge',
           active
-            ? 'bg-accent-foreground/[0.26] text-primary-foreground'
-            : 'bg-foreground/[0.045] text-foreground/[0.42] group-hover:text-foreground/65',
+            ? 'bg-foreground/[0.08] text-foreground/65'
+            : 'bg-foreground/[0.04] text-foreground/[0.42] group-hover:text-foreground/65',
         )}
       >
         {formatAutomationCount(count)}
@@ -262,13 +281,13 @@ function SkillsSidebarEntry({ count, updateCount, active, onClick }: SkillsSideb
       aria-label={`Agent 技能，${count} 个能力${hasUpdate ? `，${updateCount} 个可更新` : ''}`}
       onClick={onClick}
       className={cn(
-        'group w-full flex items-center justify-between px-3 py-2 rounded-md text-[13px] transition-colors duration-100 titlebar-no-drag',
+        'group w-full flex items-center justify-between px-2 py-1.5 rounded-md text-[13px] transition-colors duration-100 titlebar-no-drag',
         active
-          ? 'bg-accent-foreground/[0.10] text-foreground shadow-[0_1px_2px_0_rgba(0,0,0,0.05)]'
-          : 'text-foreground/60 hover:bg-accent-foreground/[0.08] hover:text-foreground',
+          ? 'bg-foreground/[0.075] text-foreground'
+          : 'text-foreground/65 hover:bg-foreground/[0.045] hover:text-foreground',
       )}
     >
-      <span className="flex items-center gap-3 min-w-0">
+      <span className="flex items-center gap-2 min-w-0">
         <span className={cn('flex-shrink-0 w-[18px] h-[18px]', active ? 'text-accent-foreground' : 'text-foreground/45')}>
           <Blocks size={16} className="block" />
         </span>
@@ -280,7 +299,7 @@ function SkillsSidebarEntry({ count, updateCount, active, onClick }: SkillsSideb
           hasUpdate
             ? 'bg-blue-500/15 text-blue-600 dark:text-blue-400'
             : active
-              ? 'bg-accent-foreground/[0.26] text-primary-foreground'
+              ? 'bg-foreground/[0.08] text-foreground/65'
               : 'bg-foreground/[0.045] text-foreground/[0.42] group-hover:text-foreground/65',
         )}
       >
@@ -781,7 +800,7 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
   // 会话高亮按"激活 Tab 所属会话"判定：预览 Tab 激活时其 owner 会话仍保持高亮
   const activeSessionId = useAtomValue(activeSessionIdAtom)
   const [sidebarCollapsed, setSidebarCollapsed] = useAtom(sidebarCollapsedAtom)
-  const { createChat } = useCreateSession()
+  const { createChat, createAgent } = useCreateSession()
   const openSession = useOpenSession()
   const syncActiveTabSideEffects = useSyncActiveTabSideEffects()
   const store = useStore()
@@ -796,6 +815,13 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
   const searchDialogOpen = useAtomValue(searchDialogOpenAtom)
   const setSearchDialogOpen = useSetAtom(searchDialogOpenAtom)
   const newChatShortcutLabel = getAcceleratorDisplay(getActiveAccelerator('new-session'))
+
+  const handleCreateTask = React.useCallback((): void => {
+    setMode('agent')
+    setViewMode('active')
+    setActiveView('conversations')
+    void createAgent()
+  }, [createAgent, setActiveView, setMode, setViewMode])
 
   const handleOpenSettings = React.useCallback((): void => {
     setSettingsOpen(true)
@@ -2425,6 +2451,20 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
             <TooltipTrigger asChild>
               <button
                 type="button"
+                aria-label="新建任务"
+                onClick={handleCreateTask}
+                className="size-10 flex items-center justify-center rounded-[12px] bg-foreground/[0.055] text-foreground/60 transition-colors titlebar-no-drag hover:bg-foreground/[0.09] hover:text-foreground"
+              >
+                <Plus size={17} />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right">新建任务</TooltipContent>
+          </Tooltip>
+
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
                 aria-label="搜索"
                 onClick={() => setSearchDialogOpen(true)}
                 className="size-10 flex items-center justify-center rounded-[12px] text-foreground/45 sidebar-control-surface hover:text-foreground/70 transition-[background-color,color] duration-150 titlebar-no-drag"
@@ -2561,27 +2601,29 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
         !noTransition && 'transition-[width] duration-300',
         isClassic
           ? 'bg-background rounded-2xl shadow-xl dark:shadow-md'
-          : 'bg-[hsl(var(--sidebar-surface))]'
+          : 'bg-[hsl(var(--sidebar-surface))] text-[13px]'
       )}
-      style={{ width: width ?? 300, minWidth: 200, flexShrink: 0 }}
+      style={{ width: width ?? 288, minWidth: 240, flexShrink: 0 }}
     >
       <SidebarWindowDragStrip
         height={isMac ? SIDEBAR_DRAG_STRIP_HEIGHT.expandedMac : SIDEBAR_DRAG_STRIP_HEIGHT.expanded}
       />
 
       {/* macOS 需要避开左上角红绿灯；边栏覆盖全局标题栏拖拽层，因此留白自身也要可拖拽。 */}
-      <div className={cn('w-full flex-shrink-0 titlebar-drag-region', isMac ? 'h-[30px]' : 'h-1')} />
+      <div className={cn('w-full flex-shrink-0 titlebar-drag-region', isMac ? 'h-[34px]' : 'h-1')} />
 
       {/* 模式切换器 + 搜索 + 折叠按钮 */}
-      <div className="titlebar-drag-region flex items-start gap-1.5 px-3">
+      <div className="titlebar-drag-region flex items-start gap-1 px-3 pb-1">
         <div className="flex-1 min-w-0">
           <ModeSwitcher />
         </div>
         <Tooltip>
           <TooltipTrigger asChild>
             <button
+              type="button"
+              aria-label="搜索对话和会话"
               onClick={() => setSearchDialogOpen(true)}
-              className="mt-2 size-10 flex-shrink-0 flex items-center justify-center rounded-[10px] text-foreground/40 sidebar-control-surface hover:text-foreground/60 transition-[background-color,color] duration-150 titlebar-no-drag"
+              className="mt-1 size-8 flex-shrink-0 flex items-center justify-center rounded-md text-foreground/45 hover:bg-foreground/[0.045] hover:text-foreground/70 transition-[background-color,color] duration-150 titlebar-no-drag focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45"
             >
               <Search size={14} />
             </button>
@@ -2591,9 +2633,11 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
         <Tooltip>
           <TooltipTrigger asChild>
             <button
+              type="button"
+              aria-label="收起侧边栏"
               onClick={() => setSidebarCollapsed(true)}
               className={cn(
-                'sidebar-collapse-button mt-2 size-10 flex-shrink-0 flex items-center justify-center rounded-[10px] text-foreground/40 sidebar-control-surface hover:text-foreground/60 titlebar-no-drag transition-[background-color,color] duration-150'
+                'sidebar-collapse-button mt-1 size-8 flex-shrink-0 flex items-center justify-center rounded-md text-foreground/45 hover:bg-foreground/[0.045] hover:text-foreground/70 titlebar-no-drag transition-[background-color,color] duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45'
               )}
             >
               <PanelLeftClose size={14} />
@@ -2603,8 +2647,13 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
         </Tooltip>
       </div>
 
-      {/* 自动任务入口：作为任务中心入口放在置顶区上方，不参与置顶列表层级。 */}
+      {/* 新建任务：始终创建 Agent 会话，并继承最近一次选择的项目。 */}
       <div className="px-3 pt-2 pb-0.5">
+        <NewTaskSidebarEntry onClick={handleCreateTask} />
+      </div>
+
+      {/* 自动任务入口：作为任务中心入口放在置顶区上方，不参与置顶列表层级。 */}
+      <div className="px-3 pb-0.5">
         <AutomationSidebarEntry
           count={automationCount}
           active={activeView === 'automations'}
@@ -3029,14 +3078,14 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
       </div>
 
       {/* 底部：用户资料 + 设置入口 */}
-      <div className="px-3 pb-3">
-        <div className="flex items-center gap-2 rounded-[10px] px-3 py-2 text-foreground/70 transition-colors titlebar-no-drag hover:bg-foreground/[0.04] hover:text-foreground">
+      <div className="border-t border-border/45 px-3 py-2">
+        <div className="flex items-center gap-2 rounded-md px-2 py-1.5 text-foreground/70 transition-colors titlebar-no-drag hover:bg-foreground/[0.045] hover:text-foreground">
           <button
             onClick={handleOpenSettings}
-            className="min-w-0 flex flex-1 items-center gap-3 text-left"
+            className="min-w-0 flex flex-1 items-center gap-2.5 text-left"
           >
             <UserAvatar avatar={userProfile.avatar} size={28} />
-            <span className="flex-1 text-sm truncate text-left">{userProfile.userName}</span>
+            <span className="flex-1 text-[13px] truncate text-left">{userProfile.userName}</span>
           </button>
           {hasUpdate && (
             <SidebarUpdateButton

@@ -30,8 +30,8 @@ function clampRightPanelWidth(width: number): number {
   return Math.max(MIN_RIGHT_PANEL_WIDTH, Math.min(MAX_RIGHT_PANEL_WIDTH, width))
 }
 
-const MIN_LEFT_SIDEBAR_WIDTH = 300
-const MAX_LEFT_SIDEBAR_WIDTH = 420
+const MIN_LEFT_SIDEBAR_WIDTH = 260
+const MAX_LEFT_SIDEBAR_WIDTH = 360
 
 function clampLeftSidebarWidth(width: number): number {
   return Math.max(MIN_LEFT_SIDEBAR_WIDTH, Math.min(MAX_LEFT_SIDEBAR_WIDTH, width))
@@ -176,7 +176,7 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
       {/* Windows 自定义窗口控制按钮（最小化/最大化/关闭） */}
       <WindowControls />
 
-      <div className="shell-bg h-screen w-screen flex overflow-hidden bg-gradient-to-br from-zinc-50 to-zinc-100 dark:from-zinc-950 dark:to-zinc-900">
+      <div className="shell-bg h-screen w-screen flex overflow-hidden bg-background">
         {/* 左侧边栏：可折叠，可拖拽调整宽度 */}
         <div className={cn(isClassic ? 'p-2 pr-0' : '', 'relative z-[60] crt-sidebar')}>
           <LeftSidebar width={clampedLeftSidebarWidth} noTransition={isDraggingLeftSidebar} />
@@ -184,14 +184,14 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
           {!sidebarCollapsed && (
             <div
               className={cn(
-                'absolute right-0 top-0 bottom-0 w-4 translate-x-1/2 cursor-col-resize hover:bg-primary/5 active:bg-primary/50 transition-colors z-20'
+                'absolute right-0 top-0 bottom-0 w-2 translate-x-1/2 cursor-col-resize hover:bg-foreground/[0.035] active:bg-primary/20 transition-colors z-20'
               )}
               onMouseDown={handleLeftSidebarMouseDown}
             />
           )}
         </div>
         {!isClassic && (
-          <div aria-hidden="true" className="relative z-[61] w-px flex-shrink-0 bg-border/80 dark:bg-border/70" />
+          <div aria-hidden="true" className="relative z-[61] w-px flex-shrink-0 bg-border/55" />
         )}
 
         {/* 中间容器：relative z-[60] 使其在 z-50 拖动区域之上 */}
@@ -218,7 +218,7 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
             {isPanelOpen && (
               <div
                 className={cn(
-                  'absolute left-0 top-0 bottom-0 w-[8px] -translate-x-1/2 cursor-col-resize active:bg-primary/50 transition-colors',
+                  'absolute left-0 top-0 bottom-0 w-[8px] -translate-x-1/2 cursor-col-resize hover:bg-foreground/[0.035] active:bg-primary/20 transition-colors',
                   isClassic ? 'z-10' : 'z-20'
                 )}
                 onMouseDown={handleMouseDown}

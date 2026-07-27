@@ -46,13 +46,11 @@ import {
   UserMessageContent,
   TurnFileMapProvider,
 } from '@/components/ai-elements/message'
-import { UserAvatar } from '@/components/chat/UserAvatar'
 import { CopyButton } from '@/components/chat/CopyButton'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { formatMessageTime } from '@/components/chat/ChatMessageItem'
 import { getModelLogo, resolveModelDisplayName, resolveModelProvider } from '@/lib/model-logo'
-import { userProfileAtom } from '@/atoms/user-profile'
 import { channelsAtom, modelSelectorOpenAtom } from '@/atoms/chat-atoms'
 import { agentSessionPendingFilesAtom } from '@/atoms/agent-atoms'
 import { agentSessionsAtom } from '@/atoms/agent-atoms'
@@ -132,7 +130,7 @@ function PermissionDeniedNotice({ message }: { message: SDKSystemMessage }): Rea
   const reason = typeof message.decision_reason === 'string' ? message.decision_reason : undefined
 
   return (
-    <div className="my-3 pl-[46px] pr-1">
+    <div className="my-3 pl-8 pr-1">
       <div className="flex items-start gap-2.5 rounded-md border border-amber-500/20 bg-amber-500/5 px-3 py-2.5 text-xs text-foreground/80">
         <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-amber-500" />
         <div className="min-w-0 space-y-1">
@@ -186,7 +184,7 @@ function CompactStatusNotice({ message }: { message: SDKSystemMessage }): React.
   if (compactStatus === 'failed') {
     const error = typeof message.compact_error === 'string' ? message.compact_error : undefined
     return (
-      <div className="my-3 pl-[46px] pr-1">
+      <div className="my-3 pl-8 pr-1">
         <div className="flex items-start gap-2.5 rounded-md border border-destructive/25 bg-destructive/5 px-3 py-2.5 text-xs text-foreground/80">
           <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-destructive" />
           <div className="min-w-0 space-y-1">
@@ -276,13 +274,13 @@ function AssistantLogo({ model }: { model?: string }): React.ReactElement {
       <img
         src={getModelLogo(model, resolveModelProvider(model, channels))}
         alt={model}
-        className="size-[35px] rounded-[25%] object-cover"
+        className="size-6 rounded-md object-cover"
       />
     )
   }
   return (
-    <div className="size-[35px] rounded-[25%] bg-primary/10 flex items-center justify-center">
-      <Bot size={18} className="text-primary" />
+    <div className="flex size-6 items-center justify-center rounded-md bg-primary/10">
+      <Bot size={14} className="text-primary" />
     </div>
   )
 }
@@ -588,7 +586,7 @@ export function AssistantTurnRenderer({ turn, allMessages, basePath, onFork, onR
         const hasDuration = durationMs != null
         if (!hasDuration && !hasActions && !showStoppedBadge) return null
         return (
-          <MessageActions className="pl-[46px] mt-0.5 min-h-[28px] justify-start">
+          <MessageActions className="mt-0.5 min-h-[28px] justify-start">
             {hasDuration && <DurationBadge durationMs={durationMs!} usage={usage} />}
             {textContent && <CopyButton content={textContent} />}
             {onFork && lastUuid && (
@@ -908,7 +906,6 @@ function ScheduledRunBadge(): React.ReactElement {
 }
 
 function UserInputMessage({ message }: { message: SDKUserMessage }): React.ReactElement {
-  const userProfile = useAtomValue(userProfileAtom)
   const rawText = extractUserText(message) ?? ''
   const isScheduledRun = rawText.includes(SCHEDULED_RUN_MARKER)
   const { files: attachedFiles, quotes, text } = parseAttachedFiles(stripScheduledRunMarker(rawText))
@@ -916,7 +913,6 @@ function UserInputMessage({ message }: { message: SDKUserMessage }): React.React
   const activeSessionId = useAtomValue(activeSessionIdAtom)
   const setSessionPendingFiles = useSetAtom(agentSessionPendingFilesAtom)
   const nonImageFiles = attachedFiles.filter((f) => !isImageFile(f.filename))
-  const meta = extractMeta(message as unknown as SDKMessage)
 
   const handleImageEditComplete = React.useCallback((editedDataUrl: string): void => {
     const base64 = editedDataUrl.split(',')[1]
@@ -972,23 +968,12 @@ function UserInputMessage({ message }: { message: SDKUserMessage }): React.React
 
   return (
     <Message from="user">
-      <div className="flex items-start gap-2.5 mb-2.5">
-        <UserAvatar avatar={userProfile.avatar} size={35} />
-        <div className="flex flex-col justify-between h-[35px]">
-          <span className="text-sm font-semibold text-foreground/60 leading-none">{userProfile.userName}</span>
-          {(meta.createdAt || isScheduledRun) && (
-            <span className="flex items-center gap-2 leading-none">
-              {meta.createdAt && (
-                <span className="message-time text-[10px] text-foreground/[0.38]">{formatMessageTime(meta.createdAt)}</span>
-              )}
-              {isScheduledRun && (
-                <ScheduledRunBadge />
-              )}
-            </span>
-          )}
-        </div>
-      </div>
       <MessageContent>
+        {isScheduledRun && (
+          <div className="flex justify-end">
+            <ScheduledRunBadge />
+          </div>
+        )}
         {/* 引用文件 Chip */}
         {quotes.length > 0 && (
           <div className="flex flex-wrap gap-1.5 mb-2">
@@ -1032,7 +1017,7 @@ function UserInputMessage({ message }: { message: SDKUserMessage }): React.React
         />
       )}
       {text && (
-        <MessageActions className="pl-[46px] mt-0.5">
+        <MessageActions className="mt-0.5">
           <CopyButton content={text} />
         </MessageActions>
       )}
@@ -1285,8 +1270,8 @@ function ErrorMessage({ message, onRetry, onRetryInNewSession, onCompact }: Erro
         model={undefined}
         time={meta.createdAt ? formatMessageTime(meta.createdAt) : undefined}
         logo={
-          <div className="size-[35px] rounded-[25%] bg-destructive/10 flex items-center justify-center">
-            <AlertTriangle size={18} className="text-destructive" />
+          <div className="flex size-6 items-center justify-center rounded-md bg-destructive/10">
+            <AlertTriangle size={14} className="text-destructive" />
           </div>
         }
       />
@@ -1299,7 +1284,7 @@ function ErrorMessage({ message, onRetry, onRetryInNewSession, onCompact }: Erro
           standalone
         />
       </MessageContent>
-      <MessageActions className="pl-[46px] mt-0.5">
+      <MessageActions className="mt-0.5">
         <CopyButton content={copyText} />
       </MessageActions>
     </Message>

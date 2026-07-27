@@ -77,8 +77,8 @@
    * 深色态额外加 inset 顶高光来制造"浮起"感（弥补黑底缺乏自然阴影的问题）。
    */
   :root {
-    --radius: 0.375rem;
-    --radius-cap: 6px;
+    --radius: 0.5rem;
+    --radius-cap: 8px;
     --radius-xl-extra: 2px;
     --radius-2xl-extra: 4px;
     --shadow-xs: 0 1px 1px 0 rgb(0 0 0 / 0.04);
@@ -120,13 +120,13 @@
     --dialog: 0 0% 100%;
     --dialog-foreground: 0 0% 3.9%;
     --content-area: 0 0% 100%;            /* 主内容区域背景 */
-    --sidebar-surface: 60 14.3% 98.6%;    /* 默认浅色侧栏：RGB 252/252/251 */
-    --tabbar-surface: 60 14.3% 98.6%;     /* 默认浅色未选中 Tab 背景：RGB 252/252/251 */
+    --sidebar-surface: 45 10% 97%;         /* 默认浅色侧栏：接近 Claude Desktop 的暖灰 */
+    --tabbar-surface: 0 0% 100%;
     --tab-indicator: var(--primary);       /* 顶部 Tab 选中条，默认跟随主色 */
-    --sidebar-control-surface: 60 7% 93%;
-    --sidebar-control-surface-hover: 60 7% 90%;
+    --sidebar-control-surface: 45 6% 93%;
+    --sidebar-control-surface-hover: 45 6% 90%;
     --sidebar-control-stroke: 0 0% 9% / 0.10;
-    --input-surface: 60 14.3% 98.6%;      /* 默认浅色输入框：RGB 252/252/251 */
+    --input-surface: 0 0% 100%;
     --tab-surface: 0 0% 100%;             /* 与内容区域无缝衔接 */
     /* 毛玻璃 Tooltip：深色半透明背景 + 白色文字 */
     --tooltip: 0 0% 15%;
@@ -984,10 +984,10 @@
 .main-tabbar .app-tab-active::after {
   left: 5px;
   right: 5px;
-  height: 3px;
+  height: 2px;
   border-radius: 0;
   background-color: hsl(var(--tab-indicator));
-  box-shadow: 0 0 10px hsl(var(--tab-indicator) / 0.28);
+  box-shadow: none;
   z-index: 2;
 }
 
@@ -1141,9 +1141,7 @@
 /* 设置卡片样式：只有默认深色主题用透明，其他都用卡片背景 */
 .settings-card {
   background: hsl(var(--card));
-  box-shadow:
-    0 1px 2px 0 rgb(0 0 0 / 0.03),
-    0 1px 3px 0 rgb(0 0 0 / 0.06);
+  box-shadow: 0 1px 2px 0 rgb(0 0 0 / 0.035);
 }
 .dark:not([class*="theme-"]) .settings-card {
   background: transparent;

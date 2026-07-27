@@ -173,19 +173,19 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
               <img
                 src={getModelLogo(message.model ?? '', resolveModelProvider(message.model ?? '', channels))}
                 alt={message.model ?? 'AI'}
-                className="size-[35px] rounded-[25%] object-cover"
+                className="size-6 rounded-md object-cover"
               />
             }
           />
         )}
 
-        {/* user 头像 + 用户名 + 时间 */}
-        {message.role === 'user' && (
-          <div className="flex items-start gap-2.5 mb-2.5">
-            <UserAvatar avatar={userProfile.avatar} size={35} />
-            <div className="flex flex-col justify-between h-[35px]">
-              <span className="text-sm font-semibold text-foreground/60 leading-none">{userProfile.userName}</span>
-              <span className="message-time text-[10px] text-foreground/[0.38] leading-none">{formatMessageTime(message.createdAt)}</span>
+        {/* 并排模式保留用户身份；普通会话使用右对齐气泡，不重复显示头像。 */}
+        {message.role === 'user' && isParallelMode && (
+          <div className="mb-1.5 flex items-center gap-2">
+            <UserAvatar avatar={userProfile.avatar} size={24} />
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="truncate text-[12px] font-medium leading-none text-foreground/55">{userProfile.userName}</span>
+              <span className="message-time text-[10px] leading-none text-foreground/[0.32]">{formatMessageTime(message.createdAt)}</span>
             </div>
           </div>
         )}
@@ -268,7 +268,7 @@ export const ChatMessageItem = React.memo(function ChatMessageItem({
 
         {/* 操作按钮（非 streaming 时显示，hover 时可见） */}
         {(message.content || message.error || (message.attachments && message.attachments.length > 0)) && !isStreaming && !isInlineEditing && (
-          <MessageActions className="pl-[46px] mt-0.5 min-h-[28px]">
+          <MessageActions className="mt-0.5 min-h-[28px]">
             <CopyButton content={message.role === 'user' ? parsedUserContent.text : message.content} />
             {message.role === 'assistant' && conversationId && (
               <MigrateToAgentButton conversationId={conversationId} />

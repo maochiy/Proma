@@ -211,7 +211,7 @@ function MessageColumn({
                 <img
                   src={getModelLogo(streamingModel ?? '', resolveModelProvider(streamingModel ?? '', channels))}
                   alt="AI"
-                  className="size-[35px] rounded-[25%] object-cover"
+                  className="size-6 rounded-md object-cover"
                 />
               }
             />

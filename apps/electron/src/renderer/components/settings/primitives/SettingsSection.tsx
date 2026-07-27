@@ -26,7 +26,7 @@ export function SettingsSection({
   children,
 }: SettingsSectionProps): React.ReactElement {
   return (
-    <div className="space-y-3">
+    <div className="space-y-3.5">
       {/* 区块头部 */}
       <div className="flex items-start justify-between">
         <div>

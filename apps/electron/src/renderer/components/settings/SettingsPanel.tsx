@@ -23,11 +23,11 @@ import {
   Mic,
   HardDriveDownload,
   HardDrive,
+  Search,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { settingsTabAtom, channelFormDirtyAtom, settingsCloseRequestedAtom, settingsOpenAtom } from "@/atoms/settings-tab";
 import type { SettingsTab } from "@/atoms/settings-tab";
-import { appModeAtom } from "@/atoms/app-mode";
 import { activeViewAtom } from "@/atoms/active-view";
 import { automationFormAtom } from "@/atoms/automation-atoms";
 import { hasUpdateAtom } from "@/atoms/updater";
@@ -61,6 +61,11 @@ interface TabItem {
   id: SettingsTab;
   label: string;
   icon: React.ReactNode;
+}
+
+interface TabGroup {
+  label: string;
+  tabs: TabItem[];
 }
 
 /** 基础 Tabs（所有模式都有） */
@@ -103,6 +108,27 @@ const TAIL_TABS: TabItem[] = [
   { id: "storage", label: "磁盘管理", icon: <HardDrive size={16} /> },
   { id: "appearance", label: "外观设置", icon: <Palette size={16} /> },
   { id: "about", label: "关于/更新", icon: <Info size={16} /> },
+];
+
+const TAB_GROUPS: TabGroup[] = [
+  {
+    label: "Proma",
+    tabs: BASE_TABS,
+  },
+  {
+    label: "工作与交互",
+    tabs: [
+      TOOLS_TAB,
+      VOICE_INPUT_TAB,
+      BOTS_TAB,
+      TUTORIAL_TAB,
+      SHORTCUTS_TAB,
+    ],
+  },
+  {
+    label: "桌面应用",
+    tabs: TAIL_TABS,
+  },
 ];
 
 /** 根据标签页 id 渲染对应内容 */
@@ -151,11 +177,11 @@ export function SettingsPanel({
   const setSettingsOpen = useSetAtom(settingsOpenAtom);
   const setActiveView = useSetAtom(activeViewAtom);
   const setAutomationForm = useSetAtom(automationFormAtom);
-  const appMode = useAtomValue(appModeAtom);
   const hasUpdate = useAtomValue(hasUpdateAtom);
   const hasEnvironmentIssues = useAtomValue(hasEnvironmentIssuesAtom);
   const [mainTabs, setMainTabs] = useAtom(tabsAtom);
   const setMainActiveTabId = useSetAtom(activeTabIdAtom);
+  const [searchQuery, setSearchQuery] = React.useState("");
 
   /** 统一的退出拦截对话框状态 */
   type PendingAction = { type: 'tab'; tabId: SettingsTab } | { type: 'close' } | null
@@ -215,81 +241,93 @@ export function SettingsPanel({
     }
   }, [closeRequested, activeTab, setCloseRequested])
 
-  // 工具 tab 两种模式都显示，Agent Skills / MCP 独立在侧边栏能力中心管理。
-  const tabs = React.useMemo(() => {
-    if (appMode === "agent") {
-      return [
-        ...BASE_TABS,
-        TOOLS_TAB,
-        VOICE_INPUT_TAB,
-        BOTS_TAB,
-        TUTORIAL_TAB,
-        SHORTCUTS_TAB,
-        ...TAIL_TABS,
-      ];
-    }
-    return [
-      ...BASE_TABS,
-      TOOLS_TAB,
-      VOICE_INPUT_TAB,
-      BOTS_TAB,
-      TUTORIAL_TAB,
-      SHORTCUTS_TAB,
-      ...TAIL_TABS,
-    ];
-  }, [appMode]);
-
-  // 当前 tab 标题
-  const activeTabLabel = tabs.find((t) => t.id === activeTab)?.label ?? "设置";
+  const filteredGroups = React.useMemo(() => {
+    const query = searchQuery.trim().toLocaleLowerCase();
+    if (!query) return TAB_GROUPS;
+    return TAB_GROUPS
+      .map((group) => ({
+        ...group,
+        tabs: group.tabs.filter((tab) => tab.label.toLocaleLowerCase().includes(query)),
+      }))
+      .filter((group) => group.tabs.length > 0);
+  }, [searchQuery]);
 
   return (
-    <div className="flex flex-col h-full">
-      {/* 顶部 Header 栏 */}
-      <div className="h-12 flex items-center justify-between px-5 border-b border-border/50 flex-shrink-0">
-        <h2 className="text-sm font-medium text-foreground">
-          {activeTabLabel}
-        </h2>
-        {onClose && (
-          <button
-            onClick={handleClose}
-            className="rounded-md p-1.5 text-muted-foreground/60 hover:text-foreground hover:bg-muted transition-colors"
-          >
-            <X size={16} />
-          </button>
-        )}
-      </div>
-
-      {/* 下方主体：左导航 + 右内容 */}
-      <div className="flex flex-1 min-h-0">
-        {/* 左侧 Tab 导航 */}
-        <div className="w-[160px] border-r border-border/50 pt-3 px-2 flex-shrink-0 overflow-y-auto scrollbar-thin">
-          <nav className="flex flex-col gap-0.5">
-            {tabs.map((tab) => (
-              <button
-                key={tab.id}
-                onClick={() => handleTabChange(tab.id)}
-                className={cn(
-                  "flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors",
-                  activeTab === tab.id
-                    ? "bg-muted text-foreground font-medium"
-                    : "text-muted-foreground hover:bg-muted/50 hover:text-foreground",
-                )}
-              >
-                {tab.icon}
-                <span>{tab.label}</span>
-                {tab.id === "about" && (hasUpdate || hasEnvironmentIssues) && (
-                  <span className="w-2 h-2 rounded-full bg-red-500" />
-                )}
-              </button>
-            ))}
-          </nav>
+    <div className="flex h-full min-h-0">
+      <aside className="flex w-[208px] flex-shrink-0 flex-col border-r border-border/50 bg-muted/35">
+        <div className="px-3 pb-2 pt-3">
+          <div className="flex h-8 items-center gap-2 rounded-lg border border-border/65 bg-background/75 px-2.5 text-muted-foreground shadow-xs focus-within:border-foreground/20">
+            <Search size={14} className="shrink-0" />
+            <input
+              value={searchQuery}
+              onChange={(event) => setSearchQuery(event.target.value)}
+              aria-label="搜索设置"
+              placeholder="搜索设置"
+              className="min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none placeholder:text-muted-foreground/70"
+            />
+          </div>
         </div>
 
-        {/* 右侧内容区域 */}
-        <ScrollArea className="flex-1">
-          <div className="px-6 py-4">{renderTabContent(activeTab)}</div>
+        <ScrollArea className="min-h-0 flex-1">
+          <nav aria-label="设置页面" className="space-y-4 px-2 pb-4 pt-1">
+            {filteredGroups.map((group) => (
+              <section key={group.label}>
+                <div className="px-2 pb-1 text-[11px] font-medium text-muted-foreground/70">
+                  {group.label}
+                </div>
+                <div className="space-y-0.5">
+                  {group.tabs.map((tab) => (
+                    <button
+                      key={tab.id}
+                      type="button"
+                      aria-current={activeTab === tab.id ? "page" : undefined}
+                      onClick={() => handleTabChange(tab.id)}
+                      className={cn(
+                        "flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45",
+                        activeTab === tab.id
+                          ? "bg-foreground/[0.08] font-medium text-foreground"
+                          : "text-muted-foreground hover:bg-foreground/[0.045] hover:text-foreground",
+                      )}
+                    >
+                      <span className="flex size-4 items-center justify-center [&>svg]:size-[15px]">
+                        {tab.icon}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate">{tab.label}</span>
+                      {tab.id === "about" && (hasUpdate || hasEnvironmentIssues) && (
+                        <span className="size-1.5 rounded-full bg-red-500" />
+                      )}
+                    </button>
+                  ))}
+                </div>
+              </section>
+            ))}
+            {filteredGroups.length === 0 && (
+              <div className="px-2 py-6 text-center text-xs text-muted-foreground">
+                没有匹配的设置
+              </div>
+            )}
+          </nav>
         </ScrollArea>
-      </div>
+      </aside>
+
+      <section className="relative flex min-w-0 flex-1 flex-col bg-dialog">
+        {onClose && (
+          <button
+            type="button"
+            aria-label="关闭设置"
+            onClick={handleClose}
+            className="absolute right-4 top-3 z-10 flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+          >
+            <X size={17} />
+          </button>
+        )}
+
+        <ScrollArea className="min-h-0 flex-1">
+          <div className="mx-auto w-full max-w-[760px] px-7 pb-7 pt-6">
+            {renderTabContent(activeTab)}
+          </div>
+        </ScrollArea>
+      </section>
 
       {/* 退出拦截弹窗（侧边栏导航 / X 关闭 / Cmd+W） */}
       <AlertDialog open={showNavDialog} onOpenChange={(open) => { if (!open) cancelPendingAction() }}>
