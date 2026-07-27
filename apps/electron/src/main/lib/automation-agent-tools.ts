@@ -6,7 +6,6 @@
  */
 
 import {
-  type AgentRuntime,
   type Automation,
   type AutomationScheduleType,
   type CreateAutomationInput,
@@ -24,12 +23,12 @@ import {
   runAutomationNow,
 } from './automation-scheduler'
 import { getAgentSessionMeta } from './agent-session-manager'
+import type { BuiltinMcpToolFactory } from './builtin-mcp/tool-definition'
 
 interface AutomationAgentToolContext {
   sessionId: string
   channelId: string
   modelId?: string
-  agentRuntime?: AgentRuntime
   workspaceId?: string
   triggeredBy?: 'user' | 'automation' | 'delegation'
 }
@@ -79,9 +78,6 @@ function validateScheduleFields(input: Partial<CreateAutomationInput | UpdateAut
   if (input.maxRuns !== undefined && (!isFiniteInt(input.maxRuns) || input.maxRuns < 1)) {
     throw new Error(`非法的 maxRuns: ${String(input.maxRuns)}（应为 ≥1 的整数）`)
   }
-  if (input.agentRuntime !== undefined && input.agentRuntime !== 'claude' && input.agentRuntime !== 'pi') {
-    throw new Error(`非法的 agentRuntime: ${String(input.agentRuntime)}`)
-  }
   if (input.sessionMode !== undefined && input.sessionMode !== 'daily' && input.sessionMode !== 'reuse') {
     throw new Error(`非法的 sessionMode: ${String(input.sessionMode)}`)
   }
@@ -100,7 +96,6 @@ function summarizeAutomation(a: Automation, includeHistory: boolean): Record<str
     scheduledAt: a.scheduledAt,
     maxRuns: a.maxRuns,
     runCount: a.runCount ?? 0,
-    agentRuntime: a.agentRuntime ?? 'claude',
     completedAt: a.completedAt,
     sessionMode: a.sessionMode,
     workspaceId: a.workspaceId,
@@ -134,7 +129,6 @@ function getCurrentAutomationId(ctx: AutomationAgentToolContext): string | undef
 function buildAutomationSchemas(z: ZodModule['z']) {
   const scheduleType = z.enum(['interval', 'daily', 'weekly', 'monthly', 'once'])
   const sessionMode = z.enum(['daily', 'reuse'])
-  const agentRuntime = z.enum(['claude', 'pi'])
   return {
     list: {
       active: z.boolean().optional().describe('只列出启用或暂停任务；不传则列出全部'),
@@ -154,7 +148,6 @@ function buildAutomationSchemas(z: ZodModule['z']) {
       scheduledAt: z.number().int().positive().optional().describe('一次性任务的绝对触发时间（毫秒时间戳）；scheduleType=once 时必填。用于"在某个具体时间点跑一次"，如 N 小时/天后或某个日期时刻'),
       maxRuns: z.number().int().min(1).optional().describe('最大运行次数上限（按实际执行次数计，成功+失败都算）；达到后任务自动停用。不传=不限次。可与任意 scheduleType 叠加，如 interval+maxRuns=3 表示"每隔一段时间跑，共跑 3 次就停"'),
       active: z.boolean().optional().describe('创建后是否启用，默认 true'),
-      agentRuntime: agentRuntime.optional().describe('运行该任务的 Agent runtime：claude 或 pi。不传则继承当前会话 runtime'),
       sessionMode: sessionMode.optional().describe('会话模式：daily=同一自然日内的触发复用同一个子会话，跨日新建（默认）；reuse=始终复用同一个子会话（保留长期上下文，token 成本更高）'),
     },
     update: {
@@ -169,7 +162,6 @@ function buildAutomationSchemas(z: ZodModule['z']) {
       scheduledAt: z.number().int().positive().optional().describe('新的一次性触发时间（毫秒时间戳），scheduleType=once 时使用'),
       maxRuns: z.number().int().min(1).optional().describe('新的最大运行次数上限（按实际执行次数计）；改动会重置已执行次数计数'),
       active: z.boolean().optional().describe('启用或暂停任务'),
-      agentRuntime: agentRuntime.optional().describe('新的 Agent runtime：claude 或 pi'),
       sessionMode: sessionMode.optional().describe('新的会话模式：daily=同一自然日内复用，跨日新建；reuse=始终复用同一个子会话'),
     },
     delete: {
@@ -182,7 +174,7 @@ function buildAutomationSchemas(z: ZodModule['z']) {
 }
 
 export async function injectAutomationMcpServer(
-  sdk: typeof import('@anthropic-ai/claude-agent-sdk'),
+  sdk: BuiltinMcpToolFactory,
   mcpServers: Record<string, Record<string, unknown>>,
   ctx: AutomationAgentToolContext,
 ): Promise<void> {
@@ -236,7 +228,6 @@ export async function injectAutomationMcpServer(
             dayOfMonth: args.dayOfMonth,
             scheduledAt: args.scheduledAt,
             maxRuns: args.maxRuns,
-            agentRuntime: args.agentRuntime ?? ctx.agentRuntime,
             channelId: ctx.channelId,
             modelId: ctx.modelId,
             workspaceId: ctx.workspaceId,
@@ -284,7 +275,6 @@ export async function injectAutomationMcpServer(
             scheduledAt: args.scheduledAt,
             maxRuns: args.maxRuns,
             active: args.active,
-            agentRuntime: args.agentRuntime,
             sessionMode: args.sessionMode,
           }
           if (input.name !== undefined) assertNonBlank(input.name, 'name')

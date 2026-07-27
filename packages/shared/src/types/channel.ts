@@ -63,7 +63,7 @@ export const PROVIDER_DEFAULT_URLS: Record<ProviderType, string> = {
   'qwen-token-plan': 'https://token-plan.cn-beijing.maas.aliyuncs.com/apps/anthropic/v1/messages',
   xiaomi: 'https://api.xiaomimimo.com/anthropic',
   'xiaomi-token-plan': 'https://token-plan-cn.xiaomimimo.com/anthropic',
-  // ChatGPT 订阅登录：baseUrl 由 Pi SDK 内部管理（登录后从 OAuth token 派生），无需用户填写。
+  // ChatGPT 订阅登录：baseUrl 由 CCB Runtime 内部管理，无需用户填写。
   'openai-codex': '',
   custom: '',
 }
@@ -97,25 +97,33 @@ export const PROVIDER_LABELS: Record<ProviderType, string> = {
 }
 
 /**
- * 支持 Claude Agent Core 的供应商类型
+ * 支持 CCB Desktop Runtime 的供应商类型。
  *
- * Claude Agent SDK 通过 Anthropic 兼容协议调用 `/v1/messages` 端点，
- * 因此所有 Anthropic 协议兼容的供应商都可以用于 Agent。
+ * CCB 可按 Channel 配置切换 Anthropic、OpenAI、Gemini 与 ChatGPT 订阅后端。
  */
 export const AGENT_COMPATIBLE_PROVIDERS: ReadonlySet<ProviderType> = new Set<ProviderType>([
   'anthropic',
   'anthropic-compatible',
+  'openai',
+  'openai-responses',
   'deepseek',
+  'google',
   'kimi-api',
   'kimi-coding',
+  'opencode-go-openai',
+  'zhipu',
   'zhipu-coding',
   'zhipu-coding-team',
   'ark-coding-plan',
   'minimax',
+  'doubao',
+  'qwen',
   'xiaomi',
   'xiaomi-token-plan',
   'qwen-anthropic',
   'qwen-token-plan',
+  'openai-codex',
+  'custom',
 ])
 
 /**
@@ -194,7 +202,7 @@ export function extractZhipuCodingTeamApiToken(secret: string): string {
  * （access/refresh/expires），expires 为 Unix 毫秒时间戳。
  */
 export interface CodexOAuthCredentials {
-  /** access token（作为 bearer token 传给 Pi SDK provider） */
+  /** access token（作为 bearer token 传给 CCB Runtime） */
   access: string
   /** refresh token（过期时用于换取新 token） */
   refresh: string

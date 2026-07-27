@@ -14,7 +14,6 @@ import { app } from 'electron'
 import {
   getConfigDir,
   getAgentSessionsDir,
-  getSdkConfigDir,
   getAgentWorkspacesDir,
   getAttachmentsDir,
   getConversationsDir,
@@ -209,15 +208,6 @@ function getActiveSessionIds(): Set<string> {
   return new Set(listAgentSessions().map((s) => s.id))
 }
 
-function getActiveSdkSessionIds(): Set<string> {
-  const ids = new Set<string>()
-  for (const s of listAgentSessions()) {
-    if (s.sdkSessionId) ids.add(s.sdkSessionId)
-    if (s.forkSourceSdkSessionId) ids.add(s.forkSourceSdkSessionId)
-  }
-  return ids
-}
-
 function getActiveWorkspaceSlugs(): Set<string> {
   return new Set(listAgentWorkspaces().map((w) => w.slug))
 }
@@ -266,101 +256,18 @@ async function calcAgentSessionsCategory(): Promise<StorageCategory> {
 }
 
 async function calcSdkConfigCategory(): Promise<StorageCategory> {
-  const sdkDir = getSdkConfigDir()
-  const activeSdkIds = getActiveSdkSessionIds()
-  let bytes = 0, count = 0, orphanBytes = 0, orphanCount = 0
-  const orphanItems: StorageOrphanItem[] = []
-  let orphanItemsTruncated = false
-
-  const projectsDir = join(sdkDir, 'projects')
-  if (existsSync(projectsDir)) {
-    try {
-      const hashDirs = await fsPromises.readdir(projectsDir)
-      for (const hashDir of hashDirs) {
-        const projPath = join(projectsDir, hashDir)
-        try {
-          if (!(await fsPromises.lstat(projPath)).isDirectory()) continue
-          const files = await fsPromises.readdir(projPath)
-          for (const file of files) {
-            if (!file.endsWith('.jsonl')) continue
-            const fullPath = join(projPath, file)
-            try {
-              const stat = await fsPromises.stat(fullPath)
-              const sdkId = basename(file, '.jsonl')
-              bytes += stat.size
-              count++
-              if (!activeSdkIds.has(sdkId)) {
-                orphanBytes += stat.size
-                orphanCount++
-                orphanItemsTruncated = addOrphanItem(orphanItems, {
-                  kind: 'file',
-                  path: displayStoragePath(fullPath),
-                  bytes: stat.size,
-                  count: 1,
-                }) || orphanItemsTruncated
-              }
-            } catch { /* skip */ }
-          }
-        } catch { /* skip */ }
-      }
-    } catch { /* skip */ }
-  }
-
-  const fileHistoryDir = join(sdkDir, 'file-history')
-  if (existsSync(fileHistoryDir)) {
-    try {
-      const sdkIds = await fsPromises.readdir(fileHistoryDir)
-      for (const sdkId of sdkIds) {
-        const histPath = join(fileHistoryDir, sdkId)
-        try {
-          if (!(await fsPromises.lstat(histPath)).isDirectory()) continue
-          const sub = await getDirSize(histPath)
-          bytes += sub.bytes
-          count += sub.count
-          if (!activeSdkIds.has(sdkId)) {
-            orphanBytes += sub.bytes
-            orphanCount += sub.count
-            orphanItemsTruncated = addOrphanItem(orphanItems, {
-              kind: 'directory',
-              path: displayStoragePath(histPath),
-              bytes: sub.bytes,
-              count: sub.count,
-            }) || orphanItemsTruncated
-          }
-        } catch { /* skip */ }
-      }
-    } catch { /* skip */ }
-  }
-
-  // sdk-config 其他子目录（sessions, backups 等）
-  if (existsSync(sdkDir)) {
-    try {
-      const entries = await fsPromises.readdir(sdkDir)
-      for (const entry of entries) {
-        if (entry === 'projects' || entry === 'file-history') continue
-        const fullPath = join(sdkDir, entry)
-        try {
-          const stat = await fsPromises.lstat(fullPath)
-          if (stat.isDirectory()) {
-            const sub = await getDirSize(fullPath)
-            bytes += sub.bytes
-            count += sub.count
-          } else {
-            bytes += stat.size
-            count++
-          }
-        } catch { /* skip */ }
-      }
-    } catch { /* skip */ }
-  }
+  const runtimeDir = join(getConfigDir(), 'runtime', 'ccb')
+  const { bytes, count } = await getDirSize(runtimeDir)
 
   return {
-    label: 'SDK 会话数据',
+    label: 'CCB Runtime 数据',
     key: 'sdk-config',
     bytes, count,
-    hasOrphans: orphanCount > 0,
-    orphanBytes, orphanCount,
-    orphanItems, orphanItemsTruncated,
+    hasOrphans: false,
+    orphanBytes: 0,
+    orphanCount: 0,
+    orphanItems: [],
+    orphanItemsTruncated: false,
   }
 }
 
@@ -555,58 +462,8 @@ async function cleanupOrphanAgentSessions(): Promise<CleanupResult> {
 }
 
 async function cleanupOrphanSdkConfig(): Promise<CleanupResult> {
-  const sdkDir = getSdkConfigDir()
-  const activeSdkIds = getActiveSdkSessionIds()
-  let freedBytes = 0, deletedCount = 0
-  const errors: string[] = []
-
-  const projectsDir = join(sdkDir, 'projects')
-  if (existsSync(projectsDir)) {
-    try {
-      const hashDirs = await fsPromises.readdir(projectsDir)
-      for (const hashDir of hashDirs) {
-        const projPath = join(projectsDir, hashDir)
-        try {
-          if (!(await fsPromises.lstat(projPath)).isDirectory()) continue
-          const files = await fsPromises.readdir(projPath)
-          for (const file of files) {
-            if (!file.endsWith('.jsonl')) continue
-            const sdkId = basename(file, '.jsonl')
-            if (activeSdkIds.has(sdkId)) continue
-            const freed = safeUnlink(join(projPath, file))
-            if (freed > 0) { freedBytes += freed; deletedCount++ }
-          }
-          // 若目录为空则删除
-          const remaining = await fsPromises.readdir(projPath)
-          if (remaining.length === 0) {
-            rmSyncWithRetry(projPath, { recursive: true, force: true })
-          }
-        } catch { /* skip */ }
-      }
-    } catch (e) {
-      errors.push(`清理孤儿 SDK projects 失败: ${e}`)
-    }
-  }
-
-  const fileHistoryDir = join(sdkDir, 'file-history')
-  if (existsSync(fileHistoryDir)) {
-    try {
-      const sdkIds = await fsPromises.readdir(fileHistoryDir)
-      for (const sdkId of sdkIds) {
-        if (activeSdkIds.has(sdkId)) continue
-        const histPath = join(fileHistoryDir, sdkId)
-        try {
-          if (!(await fsPromises.lstat(histPath)).isDirectory()) continue
-          const freed = await safeRmDir(histPath)
-          if (freed > 0) { freedBytes += freed; deletedCount++ }
-        } catch { /* skip */ }
-      }
-    } catch (e) {
-      errors.push(`清理孤儿 file-history 失败: ${e}`)
-    }
-  }
-
-  return { freedBytes, deletedCount, errors }
+  // Runtime Session 的引用关系由 CCB Runtime 自己维护，Proma 不按目录名猜测孤儿数据。
+  return { freedBytes: 0, deletedCount: 0, errors: [] }
 }
 
 async function cleanupOrphanWorkspaces(): Promise<CleanupResult> {
@@ -647,7 +504,6 @@ async function cleanupOrphanWorkspaces(): Promise<CleanupResult> {
 function cleanupArchivedSessions(beforeDays: number): CleanupResult {
   const cutoff = Date.now() - beforeDays * 24 * 60 * 60 * 1000
   const sessions = listAgentSessions()
-  const sdkDir = getSdkConfigDir()
   let freedBytes = 0, deletedCount = 0
   const errors: string[] = []
 
@@ -661,16 +517,6 @@ function cleanupArchivedSessions(beforeDays: number): CleanupResult {
       if (freed > 0) { freedBytes += freed; deletedCount++ }
     }
 
-    // 清理 SDK file-history（同步删除，safeRmDir 的同步路径）
-    if (session.sdkSessionId) {
-      const histDir = join(sdkDir, 'file-history', session.sdkSessionId)
-      if (existsSync(histDir)) {
-        try {
-          rmSyncWithRetry(histDir, { recursive: true, force: true })
-          deletedCount++
-        } catch { /* skip */ }
-      }
-    }
   }
 
   if (freedBytes > 0) {

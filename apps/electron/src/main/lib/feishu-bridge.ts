@@ -10,6 +10,7 @@
  */
 
 import { BrowserWindow } from 'electron'
+import { z } from 'zod'
 import type {
   AgentStreamPayload,
   AgentSendInput,
@@ -91,6 +92,8 @@ import {
 } from './feishu/prompt-builder'
 
 import { redactSensitiveLogText, redactSensitiveLogValue } from './bridge-log-redaction'
+import { builtinMcpToolFactory } from './builtin-mcp/tool-definition'
+import { promaBuiltinMcpHttpHost } from './builtin-mcp/http-host'
 
 // ===== 类型定义 =====
 
@@ -1101,7 +1104,6 @@ class FeishuBridge {
       channelId,
       workspaceId,
       undefined,
-      appSettings.agentRuntime ?? 'claude',
     )
 
     // 绑定
@@ -1733,9 +1735,9 @@ class FeishuBridge {
     // 群聊时注入动态 MCP 工具（允许 Agent 主动拉取更多群聊历史）
     let customMcpServers: Record<string, Record<string, unknown>> | undefined
     if (msgCtx.chatType === 'group') {
-      const mcpServer = await this.createFeishuChatMcpServer(chatId)
+      const mcpServer = await this.createFeishuChatMcpServer(binding.sessionId, chatId)
       if (mcpServer) {
-        customMcpServers = { feishu_chat: mcpServer as unknown as Record<string, unknown> }
+        customMcpServers = { feishu_chat: mcpServer }
       }
     }
 
@@ -2373,17 +2375,15 @@ class FeishuBridge {
    * 提供 `fetch_group_chat_history` 工具，让 Agent 可以主动拉取更多群聊历史。
    */
   private async createFeishuChatMcpServer(
+    sessionId: string,
     chatId: string,
   ): Promise<Record<string, unknown> | null> {
     try {
-      const sdk = await import('@anthropic-ai/claude-agent-sdk')
-      const { z } = await import('zod')
-
-      const server = sdk.createSdkMcpServer({
+      const server = builtinMcpToolFactory.createSdkMcpServer({
         name: 'feishu_chat',
         version: '1.0.0',
         tools: [
-          sdk.tool(
+          builtinMcpToolFactory.tool(
             'fetch_group_chat_history',
             '获取飞书群聊的历史消息。当你需要了解更多群聊上下文来完成任务时使用此工具。' +
             '返回指定数量的历史消息，包含发送者、时间和内容。',
@@ -2420,8 +2420,11 @@ class FeishuBridge {
         ],
       })
 
+      const materialized = await promaBuiltinMcpHttpHost.materialize(sessionId, {
+        feishu_chat: server as unknown as Record<string, unknown>,
+      })
       console.log('[飞书 Bridge] 已创建群聊 MCP 工具')
-      return server as unknown as Record<string, unknown>
+      return materialized.feishu_chat ?? null
     } catch (error) {
       console.warn('[飞书 Bridge] 创建群聊 MCP 工具失败:', redactSensitiveLogValue(error))
       return null

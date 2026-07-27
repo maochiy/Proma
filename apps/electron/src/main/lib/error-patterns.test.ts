@@ -25,7 +25,7 @@ describe('isTransientNetworkError', () => {
     expect(isTransientNetworkError(msg)).toBe(true)
   })
 
-  // #903 新增覆盖：这些断连此前会绕过自动重试、误入终止分支并清除 sdkSessionId
+  // #903 新增覆盖：这些断连此前会绕过自动重试、误入终止分支并清除 runtimeSessionId
   test.each([
     'The operation was aborted',
     'This operation was aborted',

@@ -9,7 +9,7 @@
  * - 动态 per-message 上下文（buildDynamicContext）：注入到用户消息前，每次实时读取磁盘
  */
 
-import type { AgentRuntime, PromaPermissionMode } from '@proma/shared'
+import type { PromaPermissionMode } from '@proma/shared'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { getUserProfile } from './user-profile-service'
@@ -31,7 +31,6 @@ const TOOL_USAGE_GUIDELINES = `## 工具使用指南
 
 /** buildSystemPrompt 所需的上下文 */
 interface SystemPromptContext {
-  agentRuntime?: AgentRuntime
   workspaceName?: string
   workspaceSlug?: string
   sessionId: string
@@ -54,7 +53,7 @@ function buildWorkspacePromptPaths(workspaceSlug: string, sessionId: string) {
     claudeMd: join(workspaceRoot, 'CLAUDE.md'),
     autoMemoryDir,
     autoMemoryIndex: join(autoMemoryDir, 'MEMORY.md'),
-    sdkConfigDir: join(homedir(), configDirName, 'sdk-config'),
+    runtimeConfigDir: join(homedir(), configDirName, 'runtime', 'ccb'),
   }
 }
 
@@ -70,8 +69,6 @@ function buildWorkspacePromptPaths(workspaceSlug: string, sessionId: string) {
 export function buildSystemPrompt(ctx: SystemPromptContext): string {
   const profile = getUserProfile()
   const userName = profile.userName || '用户'
-  const agentRuntime = ctx.agentRuntime ?? 'claude'
-  const runtimeName = agentRuntime === 'pi' ? 'Pi Agent SDK' : 'Claude Agent SDK'
   const workspacePaths = ctx.workspaceSlug
     ? buildWorkspacePromptPaths(ctx.workspaceSlug, ctx.sessionId)
     : undefined
@@ -81,20 +78,7 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
   // Agent 角色定义
   sections.push(`# Proma Agent
 
-你是 Proma Agent — 一个集成在 Proma 桌面应用中的通用AI助手，由 ${runtimeName} 驱动。你有极强的自主性和主观能动性，可以完成任何任务，尽最大努力帮助用户。`)
-
-  if (agentRuntime === 'pi') {
-    sections.push(`## Pi Agent Runtime
-
-当前会话运行在 Pi Agent SDK 上。你仍然遵循 Proma Agent 的统一行为规范，但底层工具、权限和消息流由 Proma 的 Pi adapter 桥接：
-
-- 使用 Proma 暴露给你的 Read、Write、Edit、Bash、Grep、Glob、LS、Skill 和产品工具完成任务
-- 调用 \`write\` 时必须在同一次调用中同时提供 \`path\` 和完整的字符串 \`content\`；不要只提供路径。需要创建空文件时显式传入 \`content: ""\`
-- 遵循本提示词中的工作区、权限、计划模式、Context 和知识维护规则
-- 不要假设当前处于 Claude Code CLI 原生运行环境，也不要依赖只存在于 Claude runtime 的内置配置
-- 当 Proma 提供附加目录时，可以按提示中的绝对路径直接访问这些用户授权范围
-- **默认直接执行**：工具调用不是向用户索要许可。目标已足够明确时，立即用工具推进；不要因低风险、可验证或可回滚的操作反复请求确认。完成后报告结果与关键假设。`)
-  }
+你是 Proma Agent — 一个集成在 Proma 桌面应用中的通用 AI 助手，由 Claude Code Best Desktop Runtime 驱动。你有极强的自主性和主观能动性，可以完成任何任务，尽最大努力帮助用户。`)
 
   // 工具使用指南（复用常量）
   sections.push(TOOL_USAGE_GUIDELINES)
@@ -139,7 +123,7 @@ Proma 提供内置 \`collaboration\` 工具，用来创建真实可见、可追�
 - 工作区 CLAUDE.md: ${workspacePaths?.claudeMd}
 - 工作区 Auto Memory 目录: ${workspacePaths?.autoMemoryDir}
 - 工作区 Auto Memory 索引: ${workspacePaths?.autoMemoryIndex}
-- SDK 隔离配置目录: ${workspacePaths?.sdkConfigDir}（用于 Proma 与 Claude Code CLI 的 SDK 配置隔离；不要把它当作工作区长期 memory 目录）
+- CCB Runtime 隔离配置目录: ${workspacePaths?.runtimeConfigDir}（用于 Proma 与 CCB CLI 的配置隔离；不要把它当作工作区长期 memory 目录）
 - MCP 配置: ${workspacePaths?.mcpConfig}（顶层 key 是 \`servers\`）
 - Skills 目录: ${workspacePaths?.skillsDir}/（Proma 只从此目录加载 skill；npx skills add 等外部命令安装到 .agents/skills/ 不会被加载，需手动 mv 到此目录）
 

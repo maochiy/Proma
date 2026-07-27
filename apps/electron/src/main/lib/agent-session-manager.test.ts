@@ -47,12 +47,6 @@ function writeAgentSessionJsonl(sessionId: string, rows: string[]): void {
   writeFileSync(join(dir, `${sessionId}.jsonl`), jsonl(rows), 'utf-8')
 }
 
-function writeSdkSessionJsonl(sdkSessionId: string, rows: string[]): void {
-  const dir = join(tempHome, '.proma', 'sdk-config', 'projects', 'test-project')
-  mkdirSync(dir, { recursive: true })
-  writeFileSync(join(dir, `${sdkSessionId}.jsonl`), jsonl(rows), 'utf-8')
-}
-
 function writeAgentSessionsIndex(sessions: Array<{
   id: string
   title: string
@@ -62,7 +56,7 @@ function writeAgentSessionsIndex(sessions: Array<{
 }>): void {
   const dir = join(tempHome, '.proma')
   mkdirSync(dir, { recursive: true })
-  writeFileSync(join(dir, 'agent-sessions.json'), JSON.stringify({ version: 1, sessions }), 'utf-8')
+  writeFileSync(join(dir, 'agent-sessions.json'), JSON.stringify({ version: 2, sessions }), 'utf-8')
 }
 
 function createIndexedSessions(count: number) {
@@ -115,30 +109,6 @@ describe('Agent 会话 JSONL 读取', () => {
     expect(messages.map((message) => message.type)).toEqual(['user', 'assistant'])
   })
 
-  test('Given SDK rewind JSONL 存在损坏行 When 从快照恢复文件 Then 严格失败避免误报成功', () => {
-    const cwd = join(tempHome, 'workspace')
-    mkdirSync(cwd, { recursive: true })
-    writeSdkSessionJsonl('sdk-session-with-bad-line', [
-      JSON.stringify({ type: 'user', uuid: 'user-1', message: { content: [{ type: 'text', text: '修改文件' }] } }),
-      '{ 这不是合法 JSON',
-      JSON.stringify({
-        type: 'file-history-snapshot',
-        isSnapshotUpdate: false,
-        snapshot: {
-          messageId: 'user-1',
-          trackedFileBackups: {
-            'a.txt': { backupFileName: null },
-          },
-        },
-      }),
-    ])
-
-    const result = manager.rewindFilesFromSnapshot('sdk-session-with-bad-line', 'user-1', cwd)
-
-    expect(result.canRewind).toBe(false)
-    expect(result.error).toContain('JSONL 第 2 行解析失败')
-  })
-
   test('Given 会话 JSONL 存在损坏行 When 截断 SDKMessage Then 抛错避免重写不完整历史', () => {
     writeAgentSessionJsonl('session-truncate-bad-line', [
       JSON.stringify({ type: 'assistant', uuid: 'assistant-1', message: { content: [{ type: 'text', text: '完成' }] } }),
@@ -150,68 +120,7 @@ describe('Agent 会话 JSONL 读取', () => {
   })
 })
 
-describe('Agent 会话 runtime 元数据', () => {
-  test('Given 已保存 OpenAI medium 默认值 When 新建 Pi 或 Claude 会话 Then 默认并持久化 medium', () => {
-    const settingsPath = join(tempHome, '.proma', 'settings.json')
-    mkdirSync(join(tempHome, '.proma'), { recursive: true })
-    writeFileSync(settingsPath, JSON.stringify({
-      agentThinking: { type: 'adaptive' },
-      agentEffort: 'max',
-      defaultOpenAIThinkingLevel: 'medium',
-    }), 'utf-8')
-
-    try {
-      const defaultRuntimeSession = manager.createAgentSession('默认内核会话')
-      const claudeRuntimeSession = manager.createAgentSession('Claude 内核会话', undefined, undefined, undefined, 'claude')
-
-      expect(defaultRuntimeSession.agentRuntime).toBe('pi')
-      expect(claudeRuntimeSession.agentRuntime).toBe('claude')
-      expect(manager.getAgentSessionMeta(defaultRuntimeSession.id)?.agentRuntime).toBe('pi')
-      expect(manager.getAgentSessionMeta(claudeRuntimeSession.id)?.agentRuntime).toBe('claude')
-      expect(defaultRuntimeSession.openAIThinkingLevel).toBe('medium')
-      expect(claudeRuntimeSession.openAIThinkingLevel).toBe('medium')
-      expect(manager.getAgentSessionMeta(defaultRuntimeSession.id)?.openAIThinkingLevel).toBe('medium')
-      expect(manager.getAgentSessionMeta(claudeRuntimeSession.id)?.openAIThinkingLevel).toBe('medium')
-    } finally {
-      rmSync(settingsPath, { force: true })
-    }
-  })
-
-  test('Given 新安装用户保存关闭思考 When 连续新建会话 Then 不被旧版迁移改回 high', () => {
-    const settingsPath = join(tempHome, '.proma', 'settings.json')
-    const indexPath = join(tempHome, '.proma', 'agent-sessions.json')
-    const indexBackupPath = `${indexPath}.bak`
-    mkdirSync(join(tempHome, '.proma'), { recursive: true })
-    rmSync(indexPath, { force: true })
-    rmSync(indexBackupPath, { force: true })
-    writeFileSync(settingsPath, JSON.stringify({
-      agentThinking: { type: 'adaptive' },
-      agentEffort: 'medium',
-      defaultOpenAIThinkingLevel: 'off',
-    }), 'utf-8')
-
-    try {
-      const firstSession = manager.createAgentSession('关闭思考会话一')
-      const secondSession = manager.createAgentSession('关闭思考会话二')
-
-      expect(manager.getAgentSessionMeta(firstSession.id)?.openAIThinkingLevel).toBe('off')
-      expect(manager.getAgentSessionMeta(secondSession.id)?.openAIThinkingLevel).toBe('off')
-    } finally {
-      rmSync(settingsPath, { force: true })
-      rmSync(indexPath, { force: true })
-      rmSync(indexBackupPath, { force: true })
-    }
-  })
-
-  test('Given Codex session settings When updating Then persists depth per session', () => {
-    const session = manager.createAgentSession('Codex 会话', undefined, undefined, undefined, 'pi')
-
-    const updated = manager.updateAgentSessionMeta(session.id, { openAIThinkingLevel: 'xhigh' })
-
-    expect(updated.openAIThinkingLevel).toBe('xhigh')
-    expect(manager.getAgentSessionMeta(session.id)).toMatchObject({ openAIThinkingLevel: 'xhigh' })
-  })
-
+describe('Agent 会话元数据', () => {
   test('Given a session When star state is updated Then it persists without changing freshness or archive state', () => {
     const session = manager.createAgentSession('星标会话')
     const archived = manager.updateAgentSessionMeta(session.id, { archived: true })

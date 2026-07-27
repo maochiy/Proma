@@ -687,7 +687,7 @@ export function SDKMessageRenderer({
               />
             ))}
           </div>
-          {/* Pi runtime 下「provider 已吐正文 + 收尾报错」的混合消息：末尾挂错误横幅 */}
+          {/* Provider 已吐正文但收尾报错的混合消息：末尾挂错误横幅。 */}
           {aMsg.error && (
             <AssistantErrorTail message={aMsg} />
           )}
@@ -1072,7 +1072,7 @@ interface AssistantErrorTailProps {
 /**
  * 助手消息的错误尾部（诊断详情 + recovery 按钮 + 简短错误描述）。
  *
- * 抽出这个组件是为了让「Pi runtime 已经吐了正文，但收尾时上游报错」这种混合消息
+ * 抽出这个组件是为了让「Provider 已经吐了正文，但收尾时上游报错」这种混合消息
  * 也能保留正文的 markdown 排版，同时把错误提示以尾部 banner 形式挂在最下面。
  *
  * standalone=true 时兼容旧 ErrorMessage 的行为：把 error.message / content 里的所有 text

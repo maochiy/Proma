@@ -13,7 +13,7 @@ import { Switch } from '@/components/ui/switch'
 import { PROVIDER_LABELS, isAgentCompatibleProvider } from '@proma/shared'
 import type { Channel } from '@proma/shared'
 import { getChannelLogo, PromaLogo } from '@/lib/model-logo'
-import { getEnabledClaudeAgentChannelIds } from '@/lib/agent-channel-selection'
+import { getEnabledAgentChannelIds } from '@/lib/agent-channel-selection'
 import { agentChannelIdAtom, agentModelIdAtom, agentChannelIdsAtom } from '@/atoms/agent-atoms'
 import { channelsAtom } from '@/atoms/chat-atoms'
 import { SettingsSection, SettingsCard, SettingsRow } from './primitives'
@@ -72,10 +72,10 @@ export function ChannelSettings(): React.ReactElement {
     loadChannels()
   }, [loadChannels])
 
-  // 渠道的启用状态是唯一开关：同步衍生的 Claude 白名单，清理旧版独立开关留下的状态。
+  // 渠道的启用状态是唯一开关：同步衍生的 Agent 白名单，清理旧版独立开关留下的状态。
   React.useEffect(() => {
     if (loading) return
-    const derivedIds = getEnabledClaudeAgentChannelIds(channels)
+    const derivedIds = getEnabledAgentChannelIds(channels)
     const currentIds = agentChannelIdsRef.current
     const unchanged = derivedIds.length === currentIds.length
       && derivedIds.every((id, index) => id === currentIds[index])

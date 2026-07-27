@@ -17,7 +17,7 @@ import * as React from 'react'
 import { unstable_batchedUpdates } from 'react-dom'
 import { useAtom, useAtomValue, useSetAtom, useStore } from 'jotai'
 import { toast } from 'sonner'
-import { Box, CornerDownLeft, Square, Settings, Paperclip, FolderPlus, X, Copy, Check, Brain, Sparkles, ChevronDown } from 'lucide-react'
+import { CornerDownLeft, Square, Settings, Paperclip, FolderPlus, X, Copy, Check, Brain, Sparkles } from 'lucide-react'
 import { AgentMessages } from './AgentMessages'
 import { AgentHeader } from './AgentHeader'
 import { AgentMessageQueue } from './AgentMessageQueue'
@@ -44,7 +44,6 @@ import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Switch } from '@/components/ui/switch'
-import { Slider } from '@/components/ui/slider'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -67,7 +66,6 @@ import {
   agentChannelIdAtom,
   agentModelIdAtom,
   agentChannelIdsAtom,
-  agentRuntimeAtom,
   agentSessionChannelMapAtom,
   agentSessionModelMapAtom,
   currentAgentWorkspaceIdAtom,
@@ -92,7 +90,6 @@ import {
   workspaceAttachedFilesMapAtom,
   liveMessagesMapAtom,
   agentThinkingAtom,
-  agentEffortAtom,
   stoppedByUserSessionsAtom,
   agentPlanModeSessionsAtom,
   agentPermissionModeMapAtom,
@@ -113,8 +110,8 @@ import { AgentSessionProvider } from '@/contexts/session-context'
 import { draftSessionIdsAtom } from '@/atoms/draft-session-atoms'
 import { sendWithCmdEnterAtom } from '@/atoms/shortcut-atoms'
 import { useOpenPreview } from '@/components/diff/preview-opener'
-import type { AgentRuntime, AgentSendInput, AgentPendingFile, AgentThinkingLevel, FileDialogLargeFile, ModelOption, SDKMessage, SDKUserMessage, ProviderType } from '@proma/shared'
-import { inferAgentSdkContextWindow, inferContextWindow, isCodexFastModeSupportedModel, isOpenAIReasoningMaxSupportedModel, isOpenAIReasoningSupportedModel, MAX_ATTACHMENT_SIZE } from '@proma/shared'
+import type { AgentSendInput, AgentPendingFile, FileDialogLargeFile, ModelOption, SDKMessage, SDKUserMessage, ProviderType } from '@proma/shared'
+import { inferAgentSdkContextWindow, inferContextWindow, MAX_ATTACHMENT_SIZE } from '@proma/shared'
 import { fileToBase64, formatFileNames, getFileParentPath } from '@/lib/file-utils'
 import { buildQuotedSelectionBlock } from '@/lib/quoted-selection'
 import { createClipboardPendingFile, createClipboardTextDraft, makeUniqueAttachmentName } from '@/lib/clipboard-text-attachment'
@@ -219,50 +216,16 @@ function isStaleAgentQueueError(error: unknown): boolean {
 
 // ===== 思考模式 Hover Popover =====
 
-const OPENAI_THINKING_LEVELS = ['off', 'low', 'medium', 'high', 'xhigh', 'max'] as const satisfies readonly AgentThinkingLevel[]
-const OPENAI_STANDARD_THINKING_LEVELS = OPENAI_THINKING_LEVELS.slice(0, -1)
-type OpenAIThinkingLevel = (typeof OPENAI_THINKING_LEVELS)[number]
-const OPENAI_THINKING_LABELS: Record<OpenAIThinkingLevel, string> = {
-  off: '关闭',
-  low: '低',
-  medium: '中',
-  high: '高',
-  xhigh: '极高',
-  max: '最大',
-}
-
-function normalizeOpenAIThinkingLevel(
-  level: AgentThinkingLevel | undefined,
-  levels: readonly OpenAIThinkingLevel[],
-): OpenAIThinkingLevel {
-  if (level === 'minimal') return 'low'
-  // max 会话设置在切到非 GPT-5.6 时由主进程降级为 xhigh；UI 同步展示有效档位。
-  if (level === 'max' && !levels.includes('max')) return 'xhigh'
-  return levels.includes(level as OpenAIThinkingLevel) ? level as OpenAIThinkingLevel : 'off'
-}
-
-interface CodexThinkingConfig {
-  thinkingLevel: AgentThinkingLevel
-  levels: readonly OpenAIThinkingLevel[]
-  disabled: boolean
-  onThinkingLevelChange: (level: AgentThinkingLevel) => void
-}
-
 interface AgentThinkingPopoverProps {
   agentThinking: import('@proma/shared').ThinkingConfig | undefined
   onToggle: () => void
-  codexConfig?: CodexThinkingConfig
 }
 
-function AgentThinkingPopover({ agentThinking, onToggle, codexConfig }: AgentThinkingPopoverProps): React.ReactElement {
+function AgentThinkingPopover({ agentThinking, onToggle }: AgentThinkingPopoverProps): React.ReactElement {
   const [thinkingExpanded, setThinkingExpanded] = useAtom(thinkingExpandedAtom)
   const [open, setOpen] = React.useState(false)
   const hoverTimeout = React.useRef<ReturnType<typeof setTimeout> | null>(null)
-  const isCodex = Boolean(codexConfig)
-  const thinkingLevels = codexConfig?.levels ?? OPENAI_STANDARD_THINKING_LEVELS
-  const normalizedLevel = normalizeOpenAIThinkingLevel(codexConfig?.thinkingLevel, thinkingLevels)
-  const isEnabled = isCodex ? normalizedLevel !== 'off' : agentThinking?.type === 'adaptive'
-  const sliderPosition = thinkingLevels.indexOf(normalizedLevel)
+  const isEnabled = agentThinking?.type === 'adaptive'
 
   const handleMouseEnter = React.useCallback(() => {
     if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
@@ -279,14 +242,6 @@ function AgentThinkingPopover({ agentThinking, onToggle, codexConfig }: AgentThi
     }
   }, [])
 
-  const handleButtonClick = (): void => {
-    if (codexConfig) {
-      codexConfig.onThinkingLevelChange(isEnabled ? 'off' : 'high')
-      return
-    }
-    onToggle()
-  }
-
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
@@ -295,10 +250,9 @@ function AgentThinkingPopover({ agentThinking, onToggle, codexConfig }: AgentThi
           variant="ghost"
           size="icon"
           className={cn(inputToolbarButtonClass, isEnabled && inputToolbarActiveButtonClass)}
-          onClick={handleButtonClick}
+          onClick={onToggle}
           onMouseEnter={handleMouseEnter}
           onMouseLeave={handleMouseLeave}
-          disabled={codexConfig?.disabled}
         >
           <Brain className="size-5" />
         </Button>
@@ -313,39 +267,14 @@ function AgentThinkingPopover({ agentThinking, onToggle, codexConfig }: AgentThi
         onOpenAutoFocus={(e) => e.preventDefault()}
       >
         <div className="flex flex-col gap-3">
-          {codexConfig ? (
-            <>
-              <div className="space-y-2.5">
-                <div className="flex items-center justify-between gap-4">
-                  <span className="text-xs font-medium text-foreground/80">思考深度</span>
-                  <span className="text-xs tabular-nums text-muted-foreground">
-                    {OPENAI_THINKING_LABELS[normalizedLevel]}
-                  </span>
-                </div>
-                <Slider
-                  value={[sliderPosition]}
-                  onValueChange={([position]) => codexConfig.onThinkingLevelChange(thinkingLevels[position!]!)}
-                  min={0}
-                  max={thinkingLevels.length - 1}
-                  step={1}
-                  disabled={codexConfig.disabled}
-                  aria-label="OpenAI 思考深度"
-                />
-                <div className="flex justify-between text-[10px] text-muted-foreground">
-                  {thinkingLevels.map((level) => <span key={level}>{OPENAI_THINKING_LABELS[level]}</span>)}
-                </div>
-              </div>
-            </>
-          ) : (
-            <div className="flex items-center justify-between gap-4">
-              <span className="text-xs text-foreground/70">思考模式</span>
-              <Switch
-                checked={isEnabled}
-                onCheckedChange={onToggle}
-                className="h-4 w-7 [&>span]:size-3 [&>span]:data-[state=checked]:translate-x-3"
-              />
-            </div>
-          )}
+          <div className="flex items-center justify-between gap-4">
+            <span className="text-xs text-foreground/70">思考模式</span>
+            <Switch
+              checked={isEnabled}
+              onCheckedChange={onToggle}
+              className="h-4 w-7 [&>span]:size-3 [&>span]:data-[state=checked]:translate-x-3"
+            />
+          </div>
           <div className="h-px bg-border" />
           <div className="flex items-center justify-between gap-4">
             <span className="text-xs text-foreground/70">展开思考</span>
@@ -355,100 +284,6 @@ function AgentThinkingPopover({ agentThinking, onToggle, codexConfig }: AgentThi
               className="h-4 w-7 [&>span]:size-3 [&>span]:data-[state=checked]:translate-x-3"
             />
           </div>
-        </div>
-      </PopoverContent>
-    </Popover>
-  )
-}
-
-const AGENT_RUNTIME_OPTIONS: Array<{ value: AgentRuntime; label: string; description: string }> = [
-  { value: 'claude', label: 'Claude', description: '使用 Claude Agent SDK' },
-  { value: 'pi', label: 'Pi', description: '使用 Pi Agent SDK' },
-]
-
-interface AgentRuntimeSelectorProps {
-  runtime: AgentRuntime
-  disabled?: boolean
-  onChange: (runtime: AgentRuntime) => void
-}
-
-function AgentRuntimeSelector({ runtime, disabled = false, onChange }: AgentRuntimeSelectorProps): React.ReactElement {
-  const [open, setOpen] = React.useState(false)
-  const current = AGENT_RUNTIME_OPTIONS.find((option) => option.value === runtime) ?? AGENT_RUNTIME_OPTIONS[0]!
-
-  const handleOpenChange = (nextOpen: boolean): void => {
-    if (disabled && nextOpen) return
-    setOpen(nextOpen)
-  }
-
-  const handleSelect = (nextRuntime: AgentRuntime): void => {
-    onChange(nextRuntime)
-    setOpen(false)
-  }
-
-  return (
-    <Popover open={open} onOpenChange={handleOpenChange}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <PopoverTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              disabled={disabled}
-              aria-label={`Agent 内核：${current.label}`}
-              className={cn(
-                'model-selector-trigger flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground hover:bg-accent hover:text-foreground',
-                disabled && 'cursor-not-allowed opacity-60 hover:bg-transparent hover:text-muted-foreground'
-              )}
-            >
-              <Box className="size-3.5" />
-              <span>{current.label}</span>
-              <ChevronDown className="size-3" />
-            </Button>
-          </PopoverTrigger>
-        </TooltipTrigger>
-        <TooltipContent side="top" className="max-w-[220px]">
-          <p className="font-medium">{current.description}</p>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            {disabled ? 'Agent 运行中，完成后可切换' : '切换当前会话下一轮使用的内核'}
-          </p>
-        </TooltipContent>
-      </Tooltip>
-      <PopoverContent
-        side="top"
-        align="start"
-        sideOffset={8}
-        className="w-[180px] p-1.5"
-        onOpenAutoFocus={(e) => e.preventDefault()}
-      >
-        <div className="flex flex-col gap-1">
-          {AGENT_RUNTIME_OPTIONS.map((option) => {
-            const active = runtime === option.value
-            return (
-              <Button
-                key={option.value}
-                type="button"
-                variant="ghost"
-                aria-pressed={active}
-                className={cn(
-                  'h-auto justify-start rounded-md px-2.5 py-2 text-left',
-                  active && 'bg-accent text-accent-foreground'
-                )}
-                onClick={() => handleSelect(option.value)}
-              >
-                <div className="flex w-full items-center gap-2">
-                  <Box className="size-4 shrink-0 text-muted-foreground" />
-                  <div className="min-w-0 flex-1">
-                    <div className="text-xs font-medium">{option.label}</div>
-                    <div className="mt-0.5 truncate text-[11px] font-normal text-muted-foreground">
-                      {option.description}
-                    </div>
-                  </div>
-                  {active && <Check className="size-3.5 shrink-0" />}
-                </div>
-              </Button>
-            )
-          })}
         </div>
       </PopoverContent>
     </Popover>
@@ -494,9 +329,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   const agentChannelId = sessionMetaChannelId ?? sessionChannelMap.get(sessionId) ?? defaultChannelId
   const agentModelId = sessionMetaModelId ?? sessionModelMap.get(sessionId) ?? defaultModelId
   const agentChannelIds = useAtomValue(agentChannelIdsAtom)
-  const [agentRuntime, setAgentRuntime] = useAtom(agentRuntimeAtom)
   const [agentThinking, setAgentThinking] = useAtom(agentThinkingAtom)
-  const agentEffort = useAtomValue(agentEffortAtom)
   const setSettingsOpen = useSetAtom(settingsOpenAtom)
   const setDraftSessionIds = useSetAtom(draftSessionIdsAtom)
   const globalWorkspaceId = useAtomValue(currentAgentWorkspaceIdAtom)
@@ -517,9 +350,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   // 已有会话首次打开时，从会话元数据初始化 per-session map。
   // setter 内的 `prev.has(sessionId)` 守卫保证幂等，外层不再订阅 Map atom，
   // 避免 setter 写入 → atom 引用变化 → effect 重跑的自循环（React #185）。
-  const sessionAgentRuntime: AgentRuntime = hasSessionMeta
-    ? sessionMeta?.agentRuntime ?? 'claude'
-    : agentRuntime
   // 只有会话元数据尚未加载时，才允许使用全局默认值初始化新会话。
   React.useEffect(() => {
     if (!sessionId) return
@@ -657,41 +487,20 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     : null
   const planQuotaChannelUpdatedAt = planQuotaChannelId ? stableChannel?.updatedAt : undefined
   const agentChannelProvider = React.useMemo(
-    () => globalChannels.find((c) => c.id === agentChannelId)?.provider,
+    () => globalChannels.find((channel) => channel.id === agentChannelId)?.provider,
     [globalChannels, agentChannelId],
   )
-  const isCodexFastModeAvailable = hasSessionMeta
-    && sessionAgentRuntime === 'pi'
-    && agentChannelProvider === 'openai-codex'
-    && isCodexFastModeSupportedModel(agentModelId ?? undefined)
-  const codexFastModeEnabled = isCodexFastModeAvailable && sessionMeta?.codexFastMode === true
-  const isOpenAIThinkingAvailable = hasSessionMeta
-    && sessionAgentRuntime === 'pi'
-    && (agentChannelProvider === 'openai-codex' || agentChannelProvider === 'openai-responses' || agentChannelProvider === 'openai' || agentChannelProvider === 'custom')
-    && isOpenAIReasoningSupportedModel(agentModelId ?? undefined)
-  const openAIThinkingLevels = isOpenAIReasoningMaxSupportedModel(agentModelId ?? undefined)
-    ? OPENAI_THINKING_LEVELS
-    : OPENAI_STANDARD_THINKING_LEVELS
-  const fallbackOpenAIThinkingLevel: AgentThinkingLevel = agentEffort === 'max'
-    ? 'xhigh'
-    : agentEffort ?? (agentThinking?.type === 'adaptive' ? 'high' : 'off')
-  const openAIThinkingLevel = sessionMeta?.openAIThinkingLevel ?? fallbackOpenAIThinkingLevel
-
   // 检查 Agent 渠道列表中是否存在可用的模型（渠道 enabled + 模型 enabled）
   const hasAvailableModel = React.useMemo(() => {
     // Proma 官方渠道（商业版）：只要 enabled 且有可用模型，直接视为可用
     const promaOfficial = globalChannels.find((c) => c.id === 'proma-official')
     if (promaOfficial?.enabled && promaOfficial.models.some((m) => m.enabled)) return true
-    // Pi runtime 支持所有协议，任何已启用渠道都可用
-    if (sessionAgentRuntime === 'pi') {
-      return globalChannels.some((c) => c.enabled && c.models.some((m) => m.enabled))
-    }
-    // Claude runtime：需在 agentChannelIds 白名单中
+    // Desktop Runtime 仅使用已启用的 Agent 渠道。
     if (!agentChannelIds || agentChannelIds.length === 0) return false
     return globalChannels.some(
       (c) => c.enabled && agentChannelIds.includes(c.id) && c.models.some((m) => m.enabled),
     )
-  }, [globalChannels, agentChannelIds, sessionAgentRuntime])
+  }, [globalChannels, agentChannelIds])
   React.useEffect(() => {
     if (!agentChannelId || agentModelId) return
 
@@ -948,7 +757,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         userMessage: text,
         channelId,
         modelId: agentModelId || undefined,
-        agentRuntime: sessionAgentRuntime,
         workspaceId: currentWorkspaceId || undefined,
         startedAt: streamStartedAt,
         permissionModeOverride: permissionMode,
@@ -975,7 +783,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     createBaseAdditionalDirectories,
     currentWorkspaceId,
     permissionMode,
-    sessionAgentRuntime,
     sessionId,
     setStreamingStates,
   ])
@@ -1218,7 +1025,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         userMessage: snapshot.message,
         channelId: snapshot.channelId,
         modelId: snapshot.modelId,
-        agentRuntime: sessionAgentRuntime,
         workspaceId: snapshot.workspaceId,
         startedAt: streamStartedAt,
         permissionModeOverride: permissionMode,
@@ -1237,7 +1043,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         })
       })
     })
-  }, [messagesLoaded, pendingPrompt, sessionId, agentChannelId, agentModelId, sessionAgentRuntime, agentChannelProvider, currentWorkspaceId, streaming, setPendingPrompt, setStreamingStates, permissionMode, attachedDirs, attachedFileDirectories])
+  }, [messagesLoaded, pendingPrompt, sessionId, agentChannelId, agentModelId, agentChannelProvider, currentWorkspaceId, streaming, setPendingPrompt, setStreamingStates, permissionMode, attachedDirs, attachedFileDirectories])
   // ===== 附件处理 =====
 
   /** 为文件生成唯一文件名（避免粘贴多张图片时文件名重复导致覆盖） */
@@ -1812,98 +1618,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       .catch(console.error)
   }, [sessionId, streaming, backgroundWaiting, setSessionChannelMap, setSessionModelMap, setDefaultChannelId, setDefaultModelId, setAgentSessions])
 
-  const handleAgentRuntimeChange = React.useCallback(async (runtime: AgentRuntime): Promise<void> => {
-    if (runtime === sessionAgentRuntime) {
-      requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-input-mode="agent"] .ProseMirror')?.focus())
-      return
-    }
-    if (streaming || backgroundWaiting) {
-      toast.info('Agent 运行中，完成后再切换内核')
-      return
-    }
-
-    const previousDefaultRuntime = agentRuntime
-    const previousSessionMeta = sessionMeta
-    setAgentRuntime(runtime)
-    if (sessionMeta) {
-      setAgentSessions((prev) => prev.map((item) =>
-        item.id === sessionId
-          ? { ...item, agentRuntime: runtime, sdkSessionId: undefined, updatedAt: Date.now() }
-          : item
-      ))
-    }
-
-    try {
-      const updated = await window.electronAPI.updateSessionAgentRuntime(sessionId, runtime)
-      setAgentSessions((prev) => prev.map((item) => item.id === sessionId ? updated : item))
-      window.electronAPI.updateSettings({ agentRuntime: runtime }).catch((error) => {
-        console.error('[AgentView] 保存 Agent Runtime 默认值失败:', error)
-      })
-    } catch (error) {
-      console.error('[AgentView] 切换 Agent Runtime 失败:', error)
-      setAgentRuntime(previousDefaultRuntime)
-      if (previousSessionMeta) {
-        setAgentSessions((prev) => prev.map((item) => item.id === sessionId ? previousSessionMeta : item))
-      }
-      toast.error('Agent Runtime 切换失败', { description: getErrorMessage(error) })
-    } finally {
-      requestAnimationFrame(() => document.querySelector<HTMLElement>('[data-input-mode="agent"] .ProseMirror')?.focus())
-    }
-  }, [
-    agentRuntime,
-    backgroundWaiting,
-    sessionAgentRuntime,
-    sessionId,
-    sessionMeta,
-    setAgentRuntime,
-    setAgentSessions,
-    streaming,
-  ])
-
-  const handleCodexFastModeChange = React.useCallback(async (): Promise<void> => {
-    if (!isCodexFastModeAvailable || streaming || backgroundWaiting || !sessionMeta) return
-
-    const previousSessionMeta = sessionMeta
-    const nextEnabled = !codexFastModeEnabled
-    setAgentSessions((prev) => prev.map((item) => (
-      item.id === sessionId ? { ...item, codexFastMode: nextEnabled, updatedAt: Date.now() } : item
-    )))
-
-    try {
-      const updated = await window.electronAPI.updateSessionCodexFastMode(sessionId, nextEnabled)
-      setAgentSessions((prev) => prev.map((item) => item.id === sessionId ? updated : item))
-    } catch (error) {
-      console.error('[AgentView] 切换 Codex Fast Mode 失败:', error)
-      setAgentSessions((prev) => prev.map((item) => item.id === sessionId ? previousSessionMeta : item))
-      toast.error('快速模式切换失败', { description: getErrorMessage(error) })
-    }
-  }, [backgroundWaiting, codexFastModeEnabled, isCodexFastModeAvailable, sessionId, sessionMeta, setAgentSessions, streaming])
-
-  const updateOpenAIThinkingLevel = React.useCallback(async (thinkingLevel: AgentThinkingLevel): Promise<void> => {
-    if (!isOpenAIThinkingAvailable || streaming || backgroundWaiting || !sessionMeta) return
-
-    const previousSessionMeta = sessionMeta
-    setAgentSessions((prev) => prev.map((item) => (
-      item.id === sessionId ? { ...item, openAIThinkingLevel: thinkingLevel, updatedAt: Date.now() } : item
-    )))
-
-    try {
-      const updated = await window.electronAPI.updateSessionOpenAIThinkingLevel(sessionId, thinkingLevel)
-      setAgentSessions((prev) => prev.map((item) => item.id === sessionId ? updated : item))
-
-      try {
-        await window.electronAPI.updateSettings({ defaultOpenAIThinkingLevel: thinkingLevel })
-      } catch (error) {
-        console.error('[AgentView] 保存 OpenAI 默认思考深度失败:', error)
-        toast.error('默认思考深度保存失败', { description: getErrorMessage(error) })
-      }
-    } catch (error) {
-      console.error('[AgentView] 更新 OpenAI 思考深度失败:', error)
-      setAgentSessions((prev) => prev.map((item) => item.id === sessionId ? previousSessionMeta : item))
-      toast.error('思考深度切换失败', { description: getErrorMessage(error) })
-    }
-  }, [backgroundWaiting, isOpenAIThinkingAvailable, sessionId, sessionMeta, setAgentSessions, streaming])
-
   /** 构建 externalSelectedModel 给 ModelSelector */
   const computedSelectedModel = React.useMemo(() => {
     if (!agentChannelId || !agentModelId) return null
@@ -2097,7 +1811,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       userMessage: finalMessage,
       channelId: agentChannelId,
       modelId: agentModelId || undefined,
-      agentRuntime: sessionAgentRuntime,
       workspaceId: currentWorkspaceId || undefined,
       startedAt: streamStartedAt,
       permissionModeOverride: permissionMode,
@@ -2125,7 +1838,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         return map
       })
     })
-  }, [inputContent, createBaseAdditionalDirectories, preparePendingFilesForSend, restoreQueuedAttachmentsToPending, sessionId, agentChannelId, agentModelId, sessionAgentRuntime, agentChannelProvider, currentWorkspaceId, streaming, backgroundWaiting, suggestion, hasAvailableModel, store, consumeQuotedSelection, setStreamingStates, setAgentStreamErrors, setPromptSuggestions, setInputContent, setLiveMessagesMap, permissionMode, messagesLoaded, setQueuedMessages, setQuotedSelectionMap, sendPlainTextAgentMessage])
+  }, [inputContent, createBaseAdditionalDirectories, preparePendingFilesForSend, restoreQueuedAttachmentsToPending, sessionId, agentChannelId, agentModelId, agentChannelProvider, currentWorkspaceId, streaming, backgroundWaiting, suggestion, hasAvailableModel, store, consumeQuotedSelection, setStreamingStates, setAgentStreamErrors, setPromptSuggestions, setInputContent, setLiveMessagesMap, permissionMode, messagesLoaded, setQueuedMessages, setQuotedSelectionMap, sendPlainTextAgentMessage])
 
   /** 停止生成 */
   const handleStop = React.useCallback((): void => {
@@ -2201,7 +1914,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       userMessage: '/compact',
       channelId: agentChannelId,
       modelId: agentModelId || undefined,
-      agentRuntime: sessionAgentRuntime,
       workspaceId: currentWorkspaceId || undefined,
       startedAt: streamStartedAt,
       permissionModeOverride: permissionMode,
@@ -2224,7 +1936,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         return map
       })
     })
-  }, [sessionId, agentChannelId, agentModelId, sessionAgentRuntime, currentWorkspaceId, streaming, setStreamingStates, store, permissionMode])
+  }, [sessionId, agentChannelId, agentModelId, currentWorkspaceId, streaming, setStreamingStates, store, permissionMode])
 
   /** 复制错误信息到剪贴板 */
   const handleCopyError = React.useCallback(async (): Promise<void> => {
@@ -2289,13 +2001,12 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       userMessage: lastUserMessage,
       channelId: agentChannelId,
       modelId: agentModelId || undefined,
-      agentRuntime: sessionAgentRuntime,
       workspaceId: currentWorkspaceId || undefined,
       startedAt: streamStartedAt,
       permissionModeOverride: permissionMode,
       ...(retryOfErrorUuid && { retryOfErrorUuid }),
     }).catch(console.error)
-  }, [persistedSDKMessages, sessionId, agentChannelId, agentModelId, sessionAgentRuntime, agentChannelProvider, currentWorkspaceId, streaming, setAgentStreamErrors, setStreamingStates, setMessagesCache, permissionMode])
+  }, [persistedSDKMessages, sessionId, agentChannelId, agentModelId, agentChannelProvider, currentWorkspaceId, streaming, setAgentStreamErrors, setStreamingStates, setMessagesCache, permissionMode])
 
   /** 在新对话继续：创建新会话 + 切换 tab + 使用 &session 引用旧会话 */
   const handleRetryInNewSession = React.useCallback(async (): Promise<void> => {
@@ -2332,7 +2043,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         userMessage: prompt,
         channelId: agentChannelId,
         modelId: agentModelId || undefined,
-        agentRuntime: sessionAgentRuntime,
         workspaceId: currentWorkspaceId || undefined,
         mentionedSessionIds: [sessionId],
         startedAt: streamStartedAt,
@@ -2341,7 +2051,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     } catch (error) {
       console.error('[AgentView] 在新会话中重试失败:', error)
     }
-  }, [sessionId, agentChannelId, agentModelId, sessionAgentRuntime, currentWorkspaceId, openSession, setAgentSessions, setStreamingStates, permissionMode])
+  }, [sessionId, agentChannelId, agentModelId, currentWorkspaceId, openSession, setAgentSessions, setStreamingStates, permissionMode])
 
   /** 分叉会话：从指定消息处创建新会话并自动切换 */
   const handleFork = React.useCallback(async (upToMessageUuid: string): Promise<void> => {
@@ -2581,42 +2291,10 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       key: 'model',
       node: (
         <ModelSelector
-          filterChannelIds={sessionAgentRuntime === 'pi' ? undefined : agentChannelIds}
+          filterChannelIds={agentChannelIds}
           externalSelectedModel={externalSelectedModel}
           onModelSelect={handleModelSelect}
           useSharedOpenState
-        />
-      ),
-    },
-    ...(isCodexFastModeAvailable ? [{
-      key: 'codex-fast-mode',
-      node: (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              className="h-8 min-w-10 rounded-md px-2 text-xs font-medium text-foreground/60 transition-transform hover:bg-muted/50 hover:text-foreground active:scale-[0.96]"
-              onClick={handleCodexFastModeChange}
-              disabled={streaming || backgroundWaiting}
-              aria-pressed={codexFastModeEnabled}
-            >
-              {codexFastModeEnabled ? '快速' : '标准'}
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="top">
-            <p>{codexFastModeEnabled ? '已启用快速模式：优先响应，消耗更多额度' : '开启快速模式：优先响应，消耗更多额度'}</p>
-          </TooltipContent>
-        </Tooltip>
-      ),
-    }] : []),
-    {
-      key: 'runtime',
-      node: (
-        <AgentRuntimeSelector
-          runtime={sessionAgentRuntime}
-          disabled={streaming || backgroundWaiting}
-          onChange={handleAgentRuntimeChange}
         />
       ),
     },
@@ -2633,12 +2311,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
             setAgentThinking(next)
             window.electronAPI.updateSettings({ agentThinking: next })
           }}
-          codexConfig={isOpenAIThinkingAvailable ? {
-            thinkingLevel: openAIThinkingLevel,
-            levels: openAIThinkingLevels,
-            disabled: streaming || backgroundWaiting,
-            onThinkingLevelChange: (level) => { void updateOpenAIThinkingLevel(level) },
-          } : undefined}
         />
       ),
     },
@@ -2709,18 +2381,8 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     agentChannelId,
     planQuotaChannelId,
     planQuotaChannelUpdatedAt,
-    isCodexFastModeAvailable,
-    codexFastModeEnabled,
-    handleCodexFastModeChange,
-    isOpenAIThinkingAvailable,
-    openAIThinkingLevel,
-    openAIThinkingLevels,
-    updateOpenAIThinkingLevel,
     agentModelId,
     handleModelSelect,
-    sessionAgentRuntime,
-    backgroundWaiting,
-    handleAgentRuntimeChange,
     sessionId,
     agentThinking,
     setAgentThinking,

@@ -11,6 +11,7 @@ import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs'
 import { extname, resolve, isAbsolute, join } from 'node:path'
 import { getToolState, getToolCredentials } from '../chat-tool-config'
 import { getBuiltinMcpName } from '../builtin-mcp/baseline'
+import type { BuiltinMcpToolFactory } from '../builtin-mcp/tool-definition'
 import { saveAttachment, isImageAttachment } from '../attachment-service'
 
 // ===== Gemini API 类型（REST API 使用 camelCase） =====
@@ -326,7 +327,7 @@ async function callGeminiAndBuildResult(
  * 检查配置后创建 SDK MCP Server，由内置 MCP registry 统一注入。
  */
 export async function injectNanoBananaMcpServer(
-  sdk: typeof import('@anthropic-ai/claude-agent-sdk'),
+  sdk: BuiltinMcpToolFactory,
   mcpServers: Record<string, Record<string, unknown>>,
   sessionId: string,
   agentCwd?: string,

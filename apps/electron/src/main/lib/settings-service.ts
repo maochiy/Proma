@@ -7,7 +7,7 @@
 
 import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { getSettingsPath } from './config-paths'
-import { DEFAULT_AGENT_RUNTIME, DEFAULT_INTERFACE_VARIANT, DEFAULT_THEME_MODE } from '../../types'
+import { DEFAULT_INTERFACE_VARIANT, DEFAULT_THEME_MODE } from '../../types'
 import type { AppSettings } from '../../types'
 
 /**
@@ -29,7 +29,6 @@ export function getSettings(): AppSettings {
       richTextRenderingEnabled: false,
       feishuSessionMirror: { mode: 'off' },
       builtinMcpDisabledIds: [],
-      agentRuntime: DEFAULT_AGENT_RUNTIME,
       windowsShellPreference: 'auto',
       agentThinking: { type: 'adaptive' },
       gitAttributionEnabled: true,
@@ -38,9 +37,16 @@ export function getSettings(): AppSettings {
 
   try {
     const raw = readFileSync(filePath, 'utf-8')
-    const data = JSON.parse(raw) as Partial<AppSettings> & { experimentalAgentRuntimeSwitchEnabled?: boolean }
-    // Pi runtime 已默认可用；读取时清理旧版本遗留的实验开关。
-    const { experimentalAgentRuntimeSwitchEnabled: _legacyRuntimeSwitch, ...settings } = data
+    const data = JSON.parse(raw) as Partial<AppSettings> & {
+      experimentalAgentRuntimeSwitchEnabled?: boolean
+      agentEffort?: unknown
+    }
+    // 读取时清理旧 Runtime Selector 与独立 effort 设置。
+    const {
+      experimentalAgentRuntimeSwitchEnabled: _legacyRuntimeSwitch,
+      agentEffort: _legacyAgentEffort,
+      ...settings
+    } = data
     return {
       ...settings,
       themeMode: data.themeMode || DEFAULT_THEME_MODE,
@@ -52,7 +58,6 @@ export function getSettings(): AppSettings {
       richTextRenderingEnabled: data.richTextRenderingEnabled ?? false,
       feishuSessionMirror: data.feishuSessionMirror ?? { mode: 'off' },
       builtinMcpDisabledIds: settings.builtinMcpDisabledIds ?? [],
-      agentRuntime: settings.agentRuntime ?? DEFAULT_AGENT_RUNTIME,
       windowsShellPreference: settings.windowsShellPreference ?? 'auto',
       agentThinking: settings.agentThinking ?? { type: 'adaptive' },
       // 缺省 true：老配置文件未写该字段时保持推广默认开启
@@ -70,7 +75,6 @@ export function getSettings(): AppSettings {
       richTextRenderingEnabled: false,
       feishuSessionMirror: { mode: 'off' },
       builtinMcpDisabledIds: [],
-      agentRuntime: DEFAULT_AGENT_RUNTIME,
       windowsShellPreference: 'auto',
       agentThinking: { type: 'adaptive' },
       gitAttributionEnabled: true,

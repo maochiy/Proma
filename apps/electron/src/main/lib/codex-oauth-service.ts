@@ -1,146 +1,227 @@
 /**
- * ChatGPT (OpenAI Codex) OAuth 登录服务
+ * ChatGPT (Codex) Device OAuth。
  *
- * 复用 Pi SDK（@earendil-works/pi-ai/oauth）内置的 Codex OAuth 流程完成登录：
- * - 登录必须在主进程（Node 侧）执行——SDK 使用 Node crypto 生成 PKCE，并在
- *   本地 127.0.0.1:1455 起回调服务接收授权码，无法在渲染进程运行。
- * - 浏览器由本服务通过 shell.openExternal 打开；SDK 内部的回调服务负责接收
- *   redirect 并完成 code→token 交换，最终返回 { access, refresh, expires, accountId }。
- *
- * token 的加密存储与过期刷新由上层（channel-manager / pi-model-registry）负责，
- * 本服务只封装"跑一次登录流程""刷新一次 token"两个纯操作。
+ * Proma 负责完成 OAuth 并把凭据交给 Channel
+ * 的 safeStorage 持久化，CCB Desktop Runtime 通过清洗后的 Worker 环境读取凭据。
  */
 
-import { shell } from 'electron'
+import { clipboard, dialog, shell } from 'electron'
 import type { CodexOAuthCredentials } from '@proma/shared'
-/** Pi 0.80.10 将 OAuth 流程收敛到 ModelRuntime。保持动态 import，避免 Electron 主包将 Pi runtime 内联。 */
-type PiSdk = typeof import('@earendil-works/pi-coding-agent')
+import { getEffectiveProxyUrl } from './proxy-settings-service'
+import { getFetchFn } from './proxy-fetch'
 
-let piSdkPromise: Promise<PiSdk> | undefined
+const ISSUER = 'https://auth.openai.com'
+const CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
+const LOGIN_TIMEOUT_MS = 15 * 60 * 1000
 
-function loadPiSdk(): Promise<PiSdk> {
-  piSdkPromise ??= import('@earendil-works/pi-coding-agent')
-  return piSdkPromise
+interface DeviceCode {
+  verificationUrl: string
+  userCode: string
+  deviceAuthId: string
+  intervalSeconds: number
 }
 
-type OAuthCredential = { type: 'oauth'; access: string; refresh: string; expires: number; [key: string]: unknown }
-
-/**
- * Pi 的 ModelRuntime 只要求 CredentialStore 的结构契约。OAuth 凭据仍由 Proma
- * channel-manager 加密持久化；这里使用内存 store，避免 Pi 写入自己的 ~/.pi 配置。
- */
-function createEphemeralCredentialStore(initial?: OAuthCredential) {
-  let credential = initial
-  return {
-    async read(): Promise<OAuthCredential | undefined> { return credential },
-    async list(): Promise<readonly { providerId: string; type: 'oauth' }[]> {
-      return credential ? [{ providerId: 'openai-codex', type: 'oauth' }] : []
-    },
-    async modify(_providerId: string, fn: (current: OAuthCredential | undefined) => Promise<OAuthCredential | undefined>) {
-      credential = await fn(credential)
-      return credential
-    },
-    async delete(): Promise<void> { credential = undefined },
-  }
+interface TokenResponse {
+  id_token: string
+  access_token: string
+  refresh_token?: string
 }
 
-function normalizeCredentials(value: unknown): CodexOAuthCredentials {
-  if (!value || typeof value !== 'object') throw new Error('Pi OAuth 未返回有效凭据')
-  const credential = value as Partial<OAuthCredential>
-  if (typeof credential.access !== 'string' || typeof credential.refresh !== 'string' || typeof credential.expires !== 'number') {
-    throw new Error('Pi OAuth 返回的凭据缺少 access、refresh 或 expires')
-  }
-  return {
-    access: credential.access,
-    refresh: credential.refresh,
-    expires: credential.expires,
-    ...(typeof credential.accountId === 'string' && credential.accountId ? { accountId: credential.accountId } : {}),
-  }
-}
-
-/** 进行中的登录流程的取消控制器（同一时刻只允许一个登录流程）。 */
 let activeLoginAbort: AbortController | undefined
 
-/**
- * 注意：Pi 0.80.10 的公开 OAuth API 不再接收 fetch 注入。依赖升级补丁会把
- * Proma 的代理 fetch 重新接回该流程；本 service 只负责与公开 ModelRuntime 交互。
- */
-
-export interface CodexLoginCallbacks {
-  /** SDK 生成授权 URL 后回调，用于（除自动开浏览器外）通知渲染层展示 URL。 */
-  onAuthUrl?: (url: string) => void
-  /** 进度消息回调。 */
-  onProgress?: (message: string) => void
+function parseJsonRecord(text: string): Record<string, unknown> | null {
+  try {
+    const value = JSON.parse(text) as unknown
+    return value && typeof value === 'object' ? value as Record<string, unknown> : null
+  } catch {
+    return null
+  }
 }
 
-/**
- * 发起一次 ChatGPT (Codex) 浏览器 OAuth 登录。
- *
- * 成功返回规范化的 OAuth 凭据；用户取消或失败则抛错。
- * 登录期间自动用系统浏览器打开授权页，SDK 内部回调服务（:1455）接收授权码。
- */
-export async function loginCodexOAuth(callbacks?: CodexLoginCallbacks): Promise<CodexOAuthCredentials> {
-  const sdk = await loadPiSdk()
+function decodeJwtPayload(token: string): Record<string, unknown> | null {
+  const payload = token.split('.')[1]
+  if (!payload) return null
+  try {
+    const normalized = payload.replace(/-/g, '+').replace(/_/g, '/')
+    const padded = normalized.padEnd(normalized.length + ((4 - normalized.length % 4) % 4), '=')
+    return parseJsonRecord(Buffer.from(padded, 'base64').toString('utf-8'))
+  } catch {
+    return null
+  }
+}
 
-  // 取消上一个仍在进行的登录流程，避免 :1455 端口占用与并发回调。
+function tokenExpiresAt(token: string): number {
+  const exp = decodeJwtPayload(token)?.exp
+  return typeof exp === 'number' ? exp * 1000 : Date.now() + 60 * 60 * 1000
+}
+
+function extractAccountId(...tokens: Array<string | undefined>): string | undefined {
+  for (const token of tokens) {
+    if (!token) continue
+    const payload = decodeJwtPayload(token)
+    const nested = payload?.['https://api.openai.com/auth']
+    const claims = nested && typeof nested === 'object'
+      ? nested as Record<string, unknown>
+      : payload
+    for (const key of ['chatgpt_account_id', 'chatgpt_account_user_id', 'account_id']) {
+      const value = claims?.[key]
+      if (typeof value === 'string' && value) return value
+    }
+  }
+  return undefined
+}
+
+async function getOAuthFetch(): Promise<typeof globalThis.fetch> {
+  return getFetchFn(await getEffectiveProxyUrl())
+}
+
+async function requestDeviceCode(fetchFn: typeof globalThis.fetch): Promise<DeviceCode> {
+  const response = await fetchFn(`${ISSUER}/api/accounts/deviceauth/usercode`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ client_id: CLIENT_ID }),
+  })
+  if (!response.ok) throw new Error(`ChatGPT 授权请求失败 (${response.status})`)
+
+  const data = await response.json() as {
+    device_auth_id?: unknown
+    user_code?: unknown
+    usercode?: unknown
+    interval?: unknown
+  }
+  const deviceAuthId = typeof data.device_auth_id === 'string' ? data.device_auth_id : ''
+  const userCode = typeof data.user_code === 'string'
+    ? data.user_code
+    : typeof data.usercode === 'string' ? data.usercode : ''
+  if (!deviceAuthId || !userCode) throw new Error('ChatGPT 授权响应缺少设备码')
+  const interval = typeof data.interval === 'number'
+    ? data.interval
+    : Number.parseInt(typeof data.interval === 'string' ? data.interval : '5', 10)
+  return {
+    verificationUrl: `${ISSUER}/codex/device`,
+    userCode,
+    deviceAuthId,
+    intervalSeconds: Number.isFinite(interval) && interval > 0 ? interval : 5,
+  }
+}
+
+async function pollAuthorizationCode(
+  fetchFn: typeof globalThis.fetch,
+  deviceCode: DeviceCode,
+  signal: AbortSignal,
+): Promise<{ authorizationCode: string; codeVerifier: string }> {
+  const startedAt = Date.now()
+  while (Date.now() - startedAt < LOGIN_TIMEOUT_MS) {
+    if (signal.aborted) throw new Error('登录已取消')
+    const response = await fetchFn(`${ISSUER}/api/accounts/deviceauth/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        device_auth_id: deviceCode.deviceAuthId,
+        user_code: deviceCode.userCode,
+      }),
+      signal,
+    })
+    if (response.ok) {
+      const data = await response.json() as {
+        authorization_code?: unknown
+        code_verifier?: unknown
+      }
+      if (typeof data.authorization_code === 'string' && typeof data.code_verifier === 'string') {
+        return {
+          authorizationCode: data.authorization_code,
+          codeVerifier: data.code_verifier,
+        }
+      }
+      throw new Error('ChatGPT 授权响应缺少 authorization code')
+    }
+    if (response.status !== 403 && response.status !== 404) {
+      throw new Error(`ChatGPT 设备授权失败 (${response.status})`)
+    }
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(resolve, deviceCode.intervalSeconds * 1000)
+      signal.addEventListener('abort', () => {
+        clearTimeout(timer)
+        reject(new Error('登录已取消'))
+      }, { once: true })
+    })
+  }
+  throw new Error('ChatGPT 登录等待超时')
+}
+
+async function exchangeToken(
+  fetchFn: typeof globalThis.fetch,
+  body: URLSearchParams,
+): Promise<TokenResponse> {
+  const response = await fetchFn(`${ISSUER}/oauth/token`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/x-www-form-urlencoded' },
+    body,
+  })
+  if (!response.ok) {
+    const detail = await response.text().catch(() => '')
+    throw new Error(`ChatGPT Token 请求失败 (${response.status})${detail ? `: ${detail}` : ''}`)
+  }
+  return response.json() as Promise<TokenResponse>
+}
+
+function toCredentials(tokens: TokenResponse, fallbackRefresh?: string): CodexOAuthCredentials {
+  const refresh = tokens.refresh_token ?? fallbackRefresh
+  if (!tokens.access_token || !refresh) throw new Error('ChatGPT Token 响应缺少 access/refresh token')
+  const accountId = extractAccountId(tokens.id_token, tokens.access_token)
+  return {
+    access: tokens.access_token,
+    refresh,
+    expires: tokenExpiresAt(tokens.access_token),
+    ...(accountId ? { accountId } : {}),
+  }
+}
+
+export async function loginCodexOAuth(): Promise<CodexOAuthCredentials> {
   activeLoginAbort?.abort()
   const abort = new AbortController()
   activeLoginAbort = abort
 
   try {
-    const runtime = await sdk.ModelRuntime.create({
-      credentials: createEphemeralCredentialStore(),
-      allowModelNetwork: false,
+    const fetchFn = await getOAuthFetch()
+    const deviceCode = await requestDeviceCode(fetchFn)
+    clipboard.writeText(deviceCode.userCode)
+    await shell.openExternal(deviceCode.verificationUrl)
+    void dialog.showMessageBox({
+      type: 'info',
+      title: 'ChatGPT 授权',
+      message: `授权码：${deviceCode.userCode}`,
+      detail: '授权码已复制到剪贴板。请在浏览器中粘贴并完成授权；完成后可关闭此提示。',
+      buttons: ['知道了'],
+      noLink: true,
     })
-    const credentials = await runtime.login('openai-codex', 'oauth', {
-      signal: abort.signal,
-      prompt: async (prompt) => {
-        // Pi 先要求选择登录方式；Proma v1 固定浏览器授权，回调服务会处理 code。
-        if (prompt.type === 'select') return 'browser'
-        return new Promise<string>((_resolve, reject) => {
-          prompt.signal?.addEventListener('abort', () => reject(new Error('登录已取消')), { once: true })
-          abort.signal.addEventListener('abort', () => reject(new Error('登录已取消')), { once: true })
-        })
-      },
-      notify: (event) => {
-        if (event.type === 'auth_url') {
-          callbacks?.onAuthUrl?.(event.url)
-          shell.openExternal(event.url).catch((err) => console.error('[Codex OAuth] 打开浏览器失败:', err))
-        } else if (event.type === 'progress' || event.type === 'info') {
-          console.log(`[Codex OAuth] ${event.message}`)
-          callbacks?.onProgress?.(event.message)
-        }
-      },
-    })
-    return normalizeCredentials(credentials)
+
+    const code = await pollAuthorizationCode(fetchFn, deviceCode, abort.signal)
+    const tokens = await exchangeToken(fetchFn, new URLSearchParams({
+      grant_type: 'authorization_code',
+      code: code.authorizationCode,
+      redirect_uri: `${ISSUER}/deviceauth/callback`,
+      client_id: CLIENT_ID,
+      code_verifier: code.codeVerifier,
+    }))
+    return toCredentials(tokens)
   } finally {
-    if (activeLoginAbort === abort) {
-      activeLoginAbort = undefined
-    }
+    if (activeLoginAbort === abort) activeLoginAbort = undefined
   }
 }
 
-/** 取消进行中的 Codex OAuth 登录流程（若有）。 */
 export function cancelCodexOAuthLogin(): void {
   activeLoginAbort?.abort()
   activeLoginAbort = undefined
 }
 
-/**
- * 用 refresh token 刷新 Codex OAuth 凭据。
- *
- * 返回新的规范化凭据（含新的 expires）。SDK 在 refresh token 未轮换时会复用旧值。
- */
 export async function refreshCodexOAuth(refreshToken: string): Promise<CodexOAuthCredentials> {
-  const sdk = await loadPiSdk()
-  const store = createEphemeralCredentialStore({
-    type: 'oauth',
-    access: '',
-    refresh: refreshToken,
-    expires: 0,
-  })
-  const runtime = await sdk.ModelRuntime.create({ credentials: store, allowModelNetwork: false })
-  // getAuth() 走 provider 的标准 refresh 流程，并通过 store 原子更新凭据。
-  await runtime.getAuth('openai-codex')
-  return normalizeCredentials(await store.read())
+  const fetchFn = await getOAuthFetch()
+  const tokens = await exchangeToken(fetchFn, new URLSearchParams({
+    grant_type: 'refresh_token',
+    refresh_token: refreshToken,
+    client_id: CLIENT_ID,
+    scope: 'openid profile email offline_access api.connectors.read api.connectors.invoke',
+  }))
+  return toCredentials(tokens, refreshToken)
 }

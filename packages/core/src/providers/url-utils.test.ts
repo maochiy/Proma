@@ -83,7 +83,7 @@ describe('normalizeAnthropicBaseUrlForSdk', () => {
 })
 
 describe('normalizeOpenAIBaseUrlForSdk', () => {
-  test('去除完整 /responses 端点，供 Pi runtime 重新拼接', () => {
+  test('去除完整 /responses 端点，供 CCB Provider 客户端重新拼接', () => {
     expect(normalizeOpenAIBaseUrlForSdk('https://api.openai.com/v1/responses')).toBe('https://api.openai.com/v1')
   })
 

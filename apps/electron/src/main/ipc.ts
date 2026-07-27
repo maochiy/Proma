@@ -44,8 +44,6 @@ import type {
   RecentMessagesResult,
   AgentSessionMeta,
   AgentSendInput,
-  AgentRuntime,
-  AgentThinkingLevel,
   AgentWorkspace,
   AgentGenerateTitleInput,
   AgentSaveFilesInput,
@@ -186,13 +184,12 @@ import {
   deleteAgentSession,
   migrateChatToAgentSession,
   moveSessionToWorkspace,
-  forkAgentSession,
   autoArchiveAgentSessions,
   cleanupStaleAttachedPaths,
   searchAgentSessionMessages,
   searchAgentSessionReferences,
 } from './lib/agent-session-manager'
-import { runAgent, stopAgent, generateAgentTitle, saveFilesToAgentSession, saveFilesToWorkspaceFiles, isAgentSessionActive, queueAgentMessage, updateAgentPermissionMode, rewindAgentSession } from './lib/agent-service'
+import { runAgent, stopAgent, generateAgentTitle, saveFilesToAgentSession, saveFilesToWorkspaceFiles, isAgentSessionActive, queueAgentMessage, updateAgentPermissionMode, rewindAgentSession, forkAgentRuntimeSession } from './lib/agent-service'
 import { permissionService } from './lib/agent-permission-service'
 import { askUserService } from './lib/agent-ask-user-service'
 import { exitPlanService } from './lib/agent-exit-plan-service'
@@ -820,10 +817,6 @@ function isFailureCacheFresh(key: string): boolean {
 function cacheNull(key: string): null {
   defaultAppFailureCache.set(key, Date.now())
   return null
-}
-
-function isAgentRuntime(value: unknown): value is AgentRuntime {
-  return value === 'claude' || value === 'pi'
 }
 
 /**
@@ -1826,7 +1819,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     AGENT_IPC_CHANNELS.CREATE_SESSION,
     async (_, title?: string, channelId?: string, workspaceId?: string, modelId?: string): Promise<AgentSessionMeta> => {
-      const session = createAgentSession(title, channelId, workspaceId, modelId, getSettings().agentRuntime ?? 'pi')
+      const session = createAgentSession(title, channelId, workspaceId, modelId)
       feishuBridgeManager.ensureSessionMirror(session).catch((error) => {
         console.error('[飞书 Session 镜像] 新会话建群失败:', error)
       })
@@ -1988,7 +1981,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     AGENT_IPC_CHANNELS.FORK_SESSION,
     async (_, input: ForkSessionInput): Promise<AgentSessionMeta> => {
-      return forkAgentSession(input)
+      return forkAgentRuntimeSession(input)
     }
   )
 
@@ -2409,68 +2402,6 @@ export function registerIpcHandlers(): void {
           throw err
         })
       }
-    }
-  )
-
-  // 切换指定会话的 Agent runtime（空闲后下一轮生效）
-  ipcMain.handle(
-    AGENT_IPC_CHANNELS.UPDATE_SESSION_CODEX_FAST_MODE,
-    async (_, sessionId: string, enabled: boolean): Promise<AgentSessionMeta> => {
-      if (typeof enabled !== 'boolean') {
-        throw new Error(`无效的 Codex Fast Mode 状态: ${String(enabled)}`)
-      }
-      if (!getAgentSessionMeta(sessionId)) {
-        throw new Error(`Agent 会话不存在: ${sessionId}`)
-      }
-      if (isAgentSessionActive(sessionId)) {
-        throw new Error('Agent 正在运行，完成后再切换快速模式')
-      }
-      return updateAgentSessionMeta(sessionId, { codexFastMode: enabled })
-    }
-  )
-
-  ipcMain.handle(
-    AGENT_IPC_CHANNELS.UPDATE_SESSION_OPENAI_REASONING,
-    async (_, sessionId: string, thinkingLevel: AgentThinkingLevel): Promise<AgentSessionMeta> => {
-      const validThinkingLevels: AgentThinkingLevel[] = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
-      if (!validThinkingLevels.includes(thinkingLevel)) {
-        throw new Error(`无效的 Codex 思考深度: ${String(thinkingLevel)}`)
-      }
-      if (!getAgentSessionMeta(sessionId)) {
-        throw new Error(`Agent 会话不存在: ${sessionId}`)
-      }
-      if (isAgentSessionActive(sessionId)) {
-        throw new Error('Agent 正在运行，完成后再切换思考深度')
-      }
-      return updateAgentSessionMeta(sessionId, { openAIThinkingLevel: thinkingLevel })
-    }
-  )
-
-  ipcMain.handle(
-    AGENT_IPC_CHANNELS.UPDATE_SESSION_AGENT_RUNTIME,
-    async (_, sessionId: string, runtime: AgentRuntime): Promise<AgentSessionMeta> => {
-      if (!isAgentRuntime(runtime)) {
-        throw new Error(`无效的 Agent runtime: ${String(runtime)}`)
-      }
-      const current = getAgentSessionMeta(sessionId)
-      if (!current) {
-        throw new Error(`Agent 会话不存在: ${sessionId}`)
-      }
-
-      if (isAgentSessionActive(sessionId)) {
-        throw new Error('Agent 正在运行，完成后再切换内核')
-      }
-
-      // 历史会话缺失 runtime 时按 Claude 处理，避免将 Claude SDK 会话 ID 交给 Pi 恢复。
-      const previousRuntime: AgentRuntime = isAgentRuntime(current.agentRuntime) ? current.agentRuntime : 'claude'
-      const updates: Partial<Pick<AgentSessionMeta, 'agentRuntime' | 'sdkSessionId'>> = {
-        agentRuntime: runtime,
-      }
-      if (previousRuntime !== runtime) {
-        updates.sdkSessionId = undefined
-      }
-
-      return updateAgentSessionMeta(sessionId, updates)
     }
   )
 
@@ -4467,9 +4398,6 @@ export function registerIpcHandlers(): void {
     if (i.maxRuns !== undefined && (!isFiniteInt(i.maxRuns) || i.maxRuns < 1)) {
       throw new Error(`非法的 maxRuns: ${String(i.maxRuns)}`)
     }
-    if (i.agentRuntime !== undefined && !isAgentRuntime(i.agentRuntime)) {
-      throw new Error(`非法的 agentRuntime: ${String(i.agentRuntime)}`)
-    }
     if (i.permissionMode !== undefined && !validPermissionMode(i.permissionMode)) {
       throw new Error(`非法的 permissionMode: ${String(i.permissionMode)}`)
     }
@@ -4477,21 +4405,6 @@ export function registerIpcHandlers(): void {
       throw new Error(`非法的 sessionMode: ${String(i.sessionMode)}`)
     }
     validateAutomationNotificationTargets(i.notificationTargets)
-  }
-
-  const validateAutomationRuntimePolicy = (
-    input: Partial<CreateAutomationInput | UpdateAutomationInput>,
-    existing?: Automation,
-  ): void => {
-    // 更新历史任务时，缺失的持久化 runtime 仍按 Claude 解释；仅新建任务使用 Pi 默认值。
-    const finalRuntime: AgentRuntime = input.agentRuntime ?? existing?.agentRuntime ?? (existing ? 'claude' : 'pi')
-    const finalChannelId = input.channelId !== undefined ? input.channelId : existing?.channelId
-    if (finalRuntime === 'claude' && finalChannelId) {
-      const agentChannelIds = getSettings().agentChannelIds ?? []
-      if (!agentChannelIds.includes(finalChannelId)) {
-        throw new Error('Claude Agent 内核只能使用已启用的 Agent 兼容渠道')
-      }
-    }
   }
 
   const validateAutomationScheduleComplete = (
@@ -4536,7 +4449,6 @@ export function registerIpcHandlers(): void {
       if (!isNonEmptyString(input.prompt)) throw new Error('prompt 必填')
       // channelId / workspaceId 允许为空（草稿态），但此时任务不能被启用
       validateAutomationFields(input)
-      validateAutomationRuntimePolicy(input)
       validateAutomationScheduleComplete(input)
       const a = createAutomation(input)
       broadcastAutomationsChanged()
@@ -4554,7 +4466,6 @@ export function registerIpcHandlers(): void {
       const existing = getAutomation(input.id)
       if (!existing) return undefined
       validateAutomationFields(input)
-      validateAutomationRuntimePolicy(input, existing)
       validateAutomationScheduleComplete(input, existing)
       const a = updateAutomation(input)
       broadcastAutomationsChanged()

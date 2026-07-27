@@ -3,7 +3,7 @@ import type { ProviderType } from './channel'
 /**
  * Agent 相关类型定义
  *
- * 包含 Agent SDK 集成所需的事件类型、会话管理、消息持久化和 IPC 通道常量。
+ * 包含 CCB Desktop Runtime 集成所需的事件类型、会话管理、消息持久化和 IPC 通道常量。
  */
 
 // ===== Agent 工作区 =====
@@ -22,8 +22,6 @@ export interface AgentWorkspace {
   updatedAt: number
 }
 
-// ===== SDK 新增类型声明（0.2.52 ~ 0.2.63） =====
-
 /**
  * 思考模式配置
  *
@@ -38,52 +36,9 @@ export type ThinkingConfig =
   | { type: 'disabled' }
 
 /**
- * 推理深度等级
- *
- * 与 adaptive thinking 配合使用，引导思考深度：
- * - low: 最少思考，最快响应
- * - medium: 适度思考
- * - high: 深度推理（默认）
- * - max: 最大深度（仅 Opus 4.6）
- */
-export type AgentEffort = 'low' | 'medium' | 'high' | 'max'
-
-/** Agent 思考等级（用于 Pi runtime；Claude runtime 继续使用 ThinkingConfig/AgentEffort） */
-export type AgentThinkingLevel = 'off' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh' | 'max'
-
-/** 是否为 Proma 可暴露 reasoning.effort 的 OpenAI 推理模型。 */
-export function isOpenAIReasoningSupportedModel(modelId: string | undefined): boolean {
-  const normalized = modelId?.toLowerCase() ?? ''
-  // Pi catalog 中 gpt-5*-chat-latest 是非 reasoning 的对话变体；它们不能接受
-  // reasoning.effort，必须在 UI 层与请求层共同排除。
-  if (normalized.endsWith('-chat-latest')) return false
-  return normalized.startsWith('gpt-5') || /^(o1|o3|o4)(?:-|$)/.test(normalized)
-}
-
-/** GPT-5.6 系列支持 Pi/OpenAI 的 max 思考等级。 */
-export function isOpenAIReasoningMaxSupportedModel(modelId: string | undefined): boolean {
-  const normalized = modelId?.toLowerCase() ?? ''
-  return /^gpt-5\.6(?:-|$)/.test(normalized) && isOpenAIReasoningSupportedModel(modelId)
-}
-
-/** 支持 ChatGPT Codex Fast Mode（priority service tier）的模型。 */
-export const CODEX_FAST_MODE_MODEL_IDS = [
-  'gpt-5.4',
-  'gpt-5.5',
-  'gpt-5.6-sol',
-  'gpt-5.6-terra',
-  'gpt-5.6-luna',
-] as const
-
-/** 模型 ID 是否可通过 ChatGPT Codex OAuth 使用 Fast Mode。 */
-export function isCodexFastModeSupportedModel(modelId: string | undefined): boolean {
-  return modelId !== undefined && (CODEX_FAST_MODE_MODEL_IDS as readonly string[]).includes(modelId.toLowerCase())
-}
-
-/**
  * 自定义子代理定义
  *
- * 通过 SDK 的 agents 选项注册可被 Agent 工具调用的自定义子代理。
+ * 通过 CCB Agent Definitions 注册可被 Agent 工具调用的自定义子代理。
  */
 export interface AgentDefinition {
   /** 自然语言描述，说明何时使用该代理 */
@@ -613,24 +568,24 @@ export type AgentStreamPayload =
 export interface AgentSessionMeta {
   /** 会话唯一标识 */
   id: string
+  /** CCB Desktop Runtime 内部会话 ID。 */
+  runtimeSessionId?: string
+  /** CCB Desktop Runtime 版本。 */
+  runtimeVersion?: string
+  /** Runtime Artifact 对应的 Git commit。 */
+  runtimeArtifactCommit?: string
+  /** Runtime 协议版本。 */
+  runtimeProtocolVersion?: number
+  /** 已确认的最后事件序号。 */
+  runtimeLastSequence?: number
+  /** Session Worker 当前状态。 */
+  runtimeWorkerState?: 'cold' | 'starting' | 'ready' | 'busy' | 'suspended' | 'crashed'
   /** 会话标题 */
   title: string
   /** 使用的渠道 ID */
   channelId?: string
   /** 使用的模型 ID（自动任务子会话恢复输入框模型选择时使用） */
   modelId?: string
-  /** SDK 内部会话 ID（用于 resume 衔接上下文） */
-  sdkSessionId?: string
-  /** Pi session JSONL 的精确路径；避免仅按 session ID 子串定位 artifact。 */
-  piSessionFile?: string
-  /** Proma assistant UI UUID 到 Pi 树状 session entry ID 的持久映射。 */
-  piEntryBindings?: Record<string, string>
-  /** 当前会话使用的 Agent runtime；历史会话缺省为 claude */
-  agentRuntime?: import('./agent-provider').AgentRuntime
-  /** ChatGPT Codex Fast Mode 开关；仅 Pi + ChatGPT OAuth 的受支持模型实际生效。 */
-  codexFastMode?: boolean
-  /** 本会话的 OpenAI（Codex OAuth / Responses API）推理深度；未设置时兼容旧版全局思考设置。 */
-  openAIThinkingLevel?: AgentThinkingLevel
   /** 所属工作区 ID */
   workspaceId?: string
   /** 是否置顶 */
@@ -643,10 +598,6 @@ export interface AgentSessionMeta {
   attachedDirectories?: string[]
   /** 附加的外部文件路径列表（绝对路径，发送时以父目录作为 SDK additionalDirectories） */
   attachedFiles?: string[]
-  /** 分叉来源：源会话的 Proma 工作目录（SDK session 文件在此目录的项目空间中，首次 resume 后清除） */
-  forkSourceDir?: string
-  /** 分叉来源：源会话的 SDK session ID（用于 rewind 时读取源会话的 file-history-snapshot 和备份文件） */
-  forkSourceSdkSessionId?: string
   /** 回退后的 resume 截断点：下次发消息时传给 SDK resumeSessionAt（消费后清除） */
   resumeAtMessageUuid?: string
   /** 历史兼容字段：旧版手动保留状态 */
@@ -971,8 +922,6 @@ export interface AgentSendInput {
   channelId: string
   /** 模型 ID */
   modelId?: string
-  /** 本轮请求使用的 Agent runtime（用于输入区快速切换后的兜底同步） */
-  agentRuntime?: import('./agent-provider').AgentRuntime
   /** 工作区 ID（用于确定 cwd） */
   workspaceId?: string
   /** 附加的外部目录（绝对路径，传递给 SDK additionalDirectories） */
@@ -1638,12 +1587,6 @@ export const AGENT_IPC_CHANNELS = {
   PERMISSION_RESPOND: 'agent:permission:respond',
   /** 热切换指定会话的权限模式（运行中生效，不广播到其他会话） */
   UPDATE_SESSION_PERMISSION_MODE: 'agent:update-session-permission-mode',
-  /** 切换指定会话的 Agent runtime（下一轮生效，跨 runtime 时清空 SDK resume ID） */
-  UPDATE_SESSION_AGENT_RUNTIME: 'agent:update-session-agent-runtime',
-  /** 切换指定会话的 ChatGPT Codex Fast Mode（下一轮 Pi 请求生效） */
-  UPDATE_SESSION_CODEX_FAST_MODE: 'agent:update-session-codex-fast-mode',
-  /** 更新指定会话的 OpenAI 推理设置（下一轮 Pi 请求生效） */
-  UPDATE_SESSION_OPENAI_REASONING: 'agent:update-session-openai-reasoning',
 
   // AskUserQuestion 交互式问答
   /** AskUser 响应（渲染进程 → 主进程） */

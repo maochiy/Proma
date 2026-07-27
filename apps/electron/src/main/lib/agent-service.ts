@@ -27,10 +27,11 @@ import type {
   PromaPermissionMode,
   AgentExternalRunSource,
   AgentMessage,
+  ForkSessionInput,
+  AgentSessionMeta,
 } from '@proma/shared'
-import { ClaudeAgentAdapter, scanAndKillOrphanedClaudeSubprocesses } from './adapters/claude-agent-adapter'
-import { PiAgentAdapter, cleanupPiRuntimeResources } from './adapters/pi-agent-adapter'
-import { RuntimeRoutingAgentAdapter } from './adapters/runtime-routing-agent-adapter'
+import { CcbDesktopRuntimeAdapter } from './ccb-runtime/ccb-agent-adapter'
+import { ccbDesktopRuntimeClient } from './ccb-runtime/runtime-client'
 import { AgentEventBus } from './agent-event-bus'
 import { AgentOrchestrator } from './agent-orchestrator'
 import { getAgentSessionWorkspacePath, getWorkspaceFilesDir } from './config-paths'
@@ -41,10 +42,7 @@ import { sendAgentStreamComplete } from './agent-completion-payload'
 // ===== 实例创建 =====
 
 const eventBus = new AgentEventBus()
-const adapter = new RuntimeRoutingAgentAdapter({
-  claude: new ClaudeAgentAdapter(),
-  pi: new PiAgentAdapter(),
-})
+const adapter = new CcbDesktopRuntimeAdapter()
 const orchestrator = new AgentOrchestrator(adapter, eventBus)
 
 /** 导出 EventBus 供飞书 Bridge 等外部服务订阅事件 */
@@ -335,6 +333,13 @@ export async function rewindAgentSession(
   return orchestrator.rewindSession(sessionId, assistantMessageUuid)
 }
 
+/** 使用 CCB Runtime 原生 transcript 分叉并创建 Proma 会话投影。 */
+export async function forkAgentRuntimeSession(
+  input: ForkSessionInput,
+): Promise<AgentSessionMeta> {
+  return orchestrator.forkSession(input)
+}
+
 /**
  * 检查指定会话是否正在运行
  */
@@ -348,20 +353,16 @@ export function stopAllAgents(): void {
 }
 
 /**
- * 退出前最后兜底：扫描并强杀所有孤儿 claude-agent-sdk 子进程
- *
- * 必须在 stopAllAgents() 之后调用。针对 pidMap 未覆盖、dispose 漏杀等极端场景。
- * 同步执行，不 await，确保 before-quit 能在 Electron 超时前完成。
+ * 退出前关闭 CCB Desktop Runtime Host 及其 Session Worker 进程树。
  */
-export function killOrphanedClaudeSubprocesses(): void {
-  scanAndKillOrphanedClaudeSubprocesses()
-  cleanupPiRuntimeResources()
+export function shutdownAgentRuntime(): void {
+  void ccbDesktopRuntimeClient.shutdown()
 }
 
 /**
  * 运行中动态切换会话的权限模式
  *
- * 同时更新 Proma 侧（canUseTool 动态读取）和 SDK 侧（query.setPermissionMode）。
+ * 同时更新 Proma 侧权限状态和 CCB Session Worker 的权限模式。
  */
 export async function updateAgentPermissionMode(sessionId: string, mode: PromaPermissionMode): Promise<void> {
   await orchestrator.updateSessionPermissionMode(sessionId, mode)

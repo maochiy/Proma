@@ -35,7 +35,6 @@ import {
 } from '@proma/shared'
 import { refreshCodexOAuth } from './codex-oauth-service'
 import { parseCodexPlanQuotaResponse } from './codex-plan-quota'
-import { listCodexModels } from './adapters/pi-model-registry'
 import { getFetchFn } from './proxy-fetch'
 import { getEffectiveProxyUrl } from './proxy-settings-service'
 import {
@@ -86,6 +85,14 @@ const ARK_CODING_PLAN_MODELS: ChannelModel[] = [
   { id: 'minimax-m3', name: 'MiniMax M3', enabled: true },
   { id: 'deepseek-v4-flash', name: 'DeepSeek V4 Flash', enabled: true },
   { id: 'deepseek-v4-pro', name: 'DeepSeek V4 Pro', enabled: true },
+]
+const CODEX_PRESET_MODELS: ChannelModel[] = [
+  { id: 'gpt-5.5', name: 'GPT-5.5', enabled: true },
+  { id: 'gpt-5.4', name: 'GPT-5.4', enabled: true },
+  { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini', enabled: true },
+  { id: 'gpt-5.3-codex', name: 'GPT-5.3 Codex', enabled: true },
+  { id: 'gpt-5.3-codex-spark', name: 'GPT-5.3 Codex Spark', enabled: true },
+  { id: 'gpt-5.2', name: 'GPT-5.2', enabled: true },
 ]
 
 /**
@@ -451,7 +458,7 @@ export function persistCodexOAuthCredentials(channelId: string, credentials: Cod
 
 /**
  * 解析渠道存储的 ChatGPT (Codex) OAuth 凭据，按需刷新并回写。
- * Pi runtime 必须接收完整 credential，才能在长时间运行时按真实 expires 刷新 token。
+ * CCB Desktop Runtime 接收完整 credential，才能在长时间运行时按真实 expires 刷新 token。
  */
 export async function resolveCodexOAuthCredentials(channelId: string): Promise<CodexOAuthCredentials> {
   const config = readConfig()
@@ -1615,13 +1622,7 @@ export async function fetchModels(input: FetchModelsInput): Promise<FetchModelsR
       case 'qwen-token-plan':
       case 'openai-codex':
         if (provider === 'openai-codex') {
-          // ChatGPT (Codex) 走 Pi SDK 内置模型目录，不依赖 baseUrl/apiKey。
-          const codexModels = await listCodexModels()
-          return {
-            success: true,
-            message: `已加载 ${codexModels.length} 个 ChatGPT (Codex) 模型`,
-            models: codexModels.map((m) => ({ id: m.id, name: m.name, enabled: true, source: 'fetched' as const })),
-          }
+          return createPresetModelsResult('ChatGPT (Codex)', CODEX_PRESET_MODELS)
         }
         if (provider === 'deepseek') {
           return await fetchDeepSeekModels(input.baseUrl, input.apiKey, proxyUrl)

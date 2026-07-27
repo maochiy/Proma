@@ -2,13 +2,10 @@
  * Agent Provider 适配器接口
  *
  * 定义 Proma 自己的 Agent 接口层，让底层 SDK 可替换。
- * 当前实现：ClaudeAgentAdapter / PiAgentAdapter 双 runtime。
+ * 当前实现：Claude Code Best Desktop Runtime。
  */
 
-import type { SDKMessage } from './agent'
-
-/** Agent runtime 实现 */
-export type AgentRuntime = 'claude' | 'pi'
+import type { PromaPermissionMode, SDKMessage, ThinkingConfig } from './agent'
 
 /** SDK 用户消息（队列消息注入用，匹配 SDK SDKUserMessage 结构） */
 export interface SDKUserMessageInput {
@@ -37,8 +34,6 @@ export interface SendQueuedMessageOptions {
  * SDK 特定配置通过 Adapter 的扩展输入类型传入。
  */
 export interface AgentQueryInput {
-  /** 本轮使用的 Agent runtime */
-  agentRuntime?: AgentRuntime
   /** 会话 ID */
   sessionId: string
   /** 用户 prompt（已包含上下文注入） */
@@ -49,6 +44,30 @@ export interface AgentQueryInput {
   cwd?: string
   /** 中止信号 */
   abortSignal?: AbortSignal
+}
+
+/** 空闲 Session 操作所需的 Runtime 启动参数。 */
+export interface AgentRuntimeSessionOperationInput {
+  sessionId: string
+  runtimeSessionId: string
+  cwd: string
+  model?: string
+  fallbackModel?: string
+  env?: Record<string, string | undefined>
+  permissionMode?: PromaPermissionMode
+  thinkingConfig?: ThinkingConfig
+  mcpServers?: Record<string, unknown>
+  systemPrompt?: string
+}
+
+export interface AgentRuntimeForkResult {
+  runtimeSessionId: string
+  messageCount: number
+}
+
+export interface AgentRuntimeRewindResult {
+  runtimeSessionId: string
+  resumeAtMessageUuid?: string
 }
 
 /**
@@ -75,4 +94,19 @@ export interface AgentProviderAdapter {
   cancelQueuedMessage?(sessionId: string, messageUuid: string): Promise<void>
   /** 动态切换活跃查询的权限模式（可选，仅支持 SDK 原生 setPermissionMode 的 Provider） */
   setPermissionMode?(sessionId: string, mode: string): Promise<void>
+  /** 使用 Runtime 原生 Session 分叉能力。 */
+  forkSession?(
+    input: AgentRuntimeSessionOperationInput,
+    upToMessageUuid?: string,
+  ): Promise<AgentRuntimeForkResult>
+  /** 使用 Runtime 原生文件与会话联合回退能力。 */
+  rewindSession?(
+    input: AgentRuntimeSessionOperationInput,
+    messageUuid: string,
+  ): Promise<AgentRuntimeRewindResult>
+  /** 使用 Runtime 原生 compact 能力。 */
+  compactSession?(
+    input: AgentRuntimeSessionOperationInput,
+    instructions?: string,
+  ): Promise<void>
 }

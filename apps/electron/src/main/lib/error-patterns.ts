@@ -5,7 +5,7 @@
  * DNS 抖动、fetch 层超时、连接被中止（undici "The operation was aborted" /
  * AbortError）、对端提前关闭等。这些错误无 HTTP 状态码，SDK HTTP 客户端层
  * 内置的 2 次重试无法完全消化时，会穿透到 Orchestrator 应用层兜底。
- * 命中此模式的错误会走「保留 resume 的自动重试」，不会清除 sdkSessionId（#903）。
+ * 命中此模式的错误会走「保留 resume 的自动重试」，不会清除 runtimeSessionId（#903）。
  *
  * 同时覆盖 OpenAI/Anthropic provider 的流中断错误：
  * - "stream ended before a terminal response event"（OpenAI Responses API）
@@ -28,7 +28,7 @@ export function isTransientNetworkError(message?: string, stderr?: string): bool
 /**
  * 上游响应体解析失败模式
  *
- * SDK native CLI（Bun/JavaScriptCore）将上游响应解析为 JSON 失败时抛出，
+ * CCB Provider 客户端将上游响应解析为 JSON 失败时抛出，
  * 典型形如 "API Error: JSON Parse error: Unable to parse JSON string"。
  * 成因多为网关返回 HTML 错误页、SSE 流被截断、代理注入脏数据等瞬时异常，
  * 与瞬时网络错误同属上游抖动，重试通常即可恢复。
