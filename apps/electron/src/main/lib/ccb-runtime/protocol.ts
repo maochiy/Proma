@@ -1,8 +1,14 @@
-import type { SDKMessage, ThinkingConfig } from '@proma/shared'
+import type {
+  AgentRuntimeModelCatalog,
+  AgentRuntimeProviderConfiguration,
+  SDKMessage,
+  ThinkingConfig,
+  ThinkingEffortLevel,
+} from '@proma/shared'
 
-export const CCB_PROTOCOL_VERSION = 1
-export const EXPECTED_CCB_RUNTIME_VERSION = '2.8.6'
-export const EXPECTED_CCB_RUNTIME_COMMIT = '8bff7279c45d3f9d88de8e4192f2e9eb995c83f5'
+export const CCB_PROTOCOL_VERSION = 2
+export const EXPECTED_CCB_RUNTIME_VERSION = '2.8.9'
+export const EXPECTED_CCB_RUNTIME_COMMIT = '9c2a5caf5bd19f8af9f480679f16b165fe04d745'
 
 export type CcbPermissionMode =
   | 'default'
@@ -28,11 +34,13 @@ export interface CcbSessionOptions {
   model?: string
   fallbackModel?: string
   thinkingConfig?: ThinkingConfig
+  effortLevel?: ThinkingEffortLevel
   permissionMode: CcbPermissionMode
   environment: {
     variables: Record<string, string>
     configDir: string
   }
+  providerConfiguration?: AgentRuntimeProviderConfiguration
   mcpServers?: Record<string, unknown>
   systemPrompt?: string
   appendSystemPrompt?: string
@@ -58,7 +66,22 @@ export type CcbRuntimeCommand =
   | { type: 'session.suspend' }
   | { type: 'session.close' }
   | { type: 'session.getState' }
+  | {
+      type: 'session.resolveModelCatalog'
+      environment: {
+        variables: Record<string, string>
+        configDir: string
+      }
+      providerConfiguration: AgentRuntimeProviderConfiguration
+    }
   | { type: 'session.setPermissionMode'; mode: CcbPermissionMode }
+  | {
+      type: 'session.updateConfig'
+      model?: string
+      thinkingConfig?: ThinkingConfig
+      effortLevel?: ThinkingEffortLevel
+    }
+  | { type: 'session.setEffortLevel'; level?: ThinkingEffortLevel }
   | { type: 'session.compact'; instructions?: string }
   | { type: 'session.fork'; upToMessageUuid?: string }
   | { type: 'session.rewind'; messageUuid: string }
@@ -149,3 +172,5 @@ export interface CcbRuntimeManifest {
   capabilitiesHash: string
   files: Array<{ path: string; sha256: string; executable?: boolean }>
 }
+
+export type CcbRuntimeModelCatalog = Omit<AgentRuntimeModelCatalog, 'channelId'>

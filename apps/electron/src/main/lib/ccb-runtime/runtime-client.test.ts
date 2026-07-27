@@ -3,13 +3,14 @@ import type {
   CcbRuntimeEnvelope,
   CcbRuntimeEvent,
 } from './protocol'
+import { CCB_PROTOCOL_VERSION } from './protocol'
 import { CcbSessionEventSequencer } from './session-event-sequencer'
 
 function runtimeMessageEnvelope(
   sequence: number,
 ): CcbRuntimeEnvelope<CcbRuntimeEvent> {
   return {
-    protocolVersion: 1,
+    protocolVersion: CCB_PROTOCOL_VERSION,
     requestId: `event-${sequence}`,
     sessionId: 'session-a',
     sequence,

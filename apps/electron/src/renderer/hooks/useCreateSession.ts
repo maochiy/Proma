@@ -27,6 +27,8 @@ interface CreateSessionOptions {
   channelId?: string
   /** 覆盖默认模型 ID（仅 Agent 会话） */
   modelId?: string
+  /** 覆盖默认工作区 ID（仅 Agent 会话） */
+  workspaceId?: string
 }
 
 interface CreateSessionActions {
@@ -81,7 +83,7 @@ export function useCreateSession(): CreateSessionActions {
       const meta = await window.electronAPI.createAgentSession(
         undefined,
         options?.channelId ?? agentChannelId ?? undefined,
-        currentWorkspaceId || undefined,
+        options?.workspaceId ?? currentWorkspaceId ?? undefined,
         options?.modelId ?? agentModelId ?? undefined,
       )
       setAgentSessions((prev) => [meta, ...prev])

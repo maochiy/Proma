@@ -48,6 +48,8 @@ export function buildModelOptions(
         modelId: model.id,
         modelName: model.name,
         provider: channel.provider,
+        thinkingEffortLevels: model.thinkingEffortLevels,
+        defaultThinkingEffortLevel: model.defaultThinkingEffortLevel,
       })
     }
   }
@@ -85,6 +87,10 @@ interface ModelSelectorProps {
   excludedProviders?: readonly ProviderType[]
   /** 是否使用全局 modelSelectorOpenAtom 控制打开状态（用于外部拉起，如错误提示按钮） */
   useSharedOpenState?: boolean
+  /** Agent 模式由 CCB Runtime 返回的模型选项；传入后不再从 Channel 模型配置构建列表 */
+  runtimeModelOptions?: ModelOption[]
+  /** CCB Runtime 模型目录是否仍在加载 */
+  runtimeModelsLoading?: boolean
 }
 
 export function ModelSelector({
@@ -95,6 +101,8 @@ export function ModelSelector({
   showChannelInTrigger = false,
   excludedProviders,
   useSharedOpenState = false,
+  runtimeModelOptions,
+  runtimeModelsLoading = false,
 }: ModelSelectorProps = {}): React.ReactElement {
   const [conversationModel, setConversationModel] = useConversationModelOptional()
   const conversationId = useConversationIdOptional()
@@ -122,8 +130,20 @@ export function ModelSelector({
   }, [open, setChannels])
 
   const modelOptions = React.useMemo(
-    () => buildModelOptions(channels, filterChannelId, filterChannelIds, excludedProviders),
-    [channels, filterChannelId, filterChannelIds, excludedProviders],
+    () => runtimeModelOptions
+      ?? buildModelOptions(
+        channels,
+        filterChannelId,
+        filterChannelIds,
+        excludedProviders,
+      ),
+    [
+      channels,
+      excludedProviders,
+      filterChannelId,
+      filterChannelIds,
+      runtimeModelOptions,
+    ],
   )
   const grouped = React.useMemo(() => groupByChannel(modelOptions), [modelOptions])
 
@@ -176,10 +196,18 @@ export function ModelSelector({
   // 查找当前选中的模型信息
   const currentModelInfo = React.useMemo(() => {
     if (!selectedModel) return null
-    return modelOptions.find(
+    const exact = modelOptions.find(
       (o) => o.channelId === selectedModel.channelId && o.modelId === selectedModel.modelId
+    )
+    if (exact || runtimeModelOptions === undefined) return exact ?? null
+
+    const normalizedModelId = selectedModel.modelId.replace(/\[1m\]$/i, '')
+    return modelOptions.find(
+      (o) =>
+        o.channelId === selectedModel.channelId
+        && o.modelId === normalizedModelId,
     ) ?? null
-  }, [selectedModel, modelOptions])
+  }, [selectedModel, modelOptions, runtimeModelOptions])
 
   // 保持上次有效的模型信息，避免渠道未加载时闪烁"选择模型"
   const stableModelInfoRef = React.useRef(currentModelInfo)
@@ -231,7 +259,16 @@ export function ModelSelector({
     }
   }
 
-  if (channelsLoaded && modelOptions.length === 0) {
+  if (runtimeModelsLoading && modelOptions.length === 0) {
+    return (
+      <div className="flex items-center gap-1.5 px-2 py-1 text-xs text-muted-foreground">
+        <Cpu className="size-3.5 animate-pulse" />
+        <span>加载模型...</span>
+      </div>
+    )
+  }
+
+  if ((runtimeModelOptions !== undefined || channelsLoaded) && modelOptions.length === 0) {
     return (
       <div className="flex items-center gap-1.5 text-xs text-muted-foreground px-2 py-1">
         <Cpu className="size-3.5" />

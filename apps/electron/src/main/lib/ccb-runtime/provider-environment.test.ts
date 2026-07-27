@@ -1,5 +1,9 @@
 import { describe, expect, test } from 'bun:test'
-import { buildCcbProviderEnvironment } from './provider-environment'
+import {
+  buildCcbProviderConfiguration,
+  buildCcbProviderEnvironment,
+  resolveCcbModelType,
+} from './provider-environment'
 
 describe('CCB Provider 环境映射', () => {
   test('Given Anthropic Bearer 渠道 When 构建环境 Then 使用 Anthropic 认证变量', () => {
@@ -66,5 +70,49 @@ describe('CCB Provider 环境映射', () => {
     expect(env.OPENAI_CHATGPT_REFRESH_TOKEN).toBe('refresh-token')
     expect(env.OPENAI_CHATGPT_EXPIRES_AT).toBe('123456')
     expect(env.OPENAI_API_KEY).toBeUndefined()
+  })
+
+  test('Given Proma Channel When 构建 Provider 配置 Then 只传启用模型并由 CCB 解析能力', () => {
+    const configuration = buildCcbProviderConfiguration({
+      id: 'channel-1',
+      name: 'OpenAI Gateway',
+      provider: 'custom',
+      baseUrl: 'https://gateway.example.com/v1',
+      apiKey: 'encrypted',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 2,
+      models: [
+        {
+          id: 'reasoner-a',
+          name: 'Reasoner A',
+          enabled: true,
+          thinkingEffortLevels: ['low', 'high'],
+        },
+        {
+          id: 'disabled-model',
+          name: 'Disabled',
+          enabled: false,
+        },
+      ],
+    }, 'reasoner-a')
+
+    expect(configuration).toEqual({
+      modelType: 'openai',
+      defaultModel: 'reasoner-a',
+      models: [
+        {
+          id: 'reasoner-a',
+          name: 'Reasoner A',
+          effortLevels: ['low', 'high'],
+        },
+      ],
+    })
+  })
+
+  test('Given Provider 类型 When 映射 CCB modelType Then 使用 CCB 原生 Provider 分类', () => {
+    expect(resolveCcbModelType('google')).toBe('gemini')
+    expect(resolveCcbModelType('openai-codex')).toBe('openai')
+    expect(resolveCcbModelType('deepseek')).toBe('anthropic')
   })
 })

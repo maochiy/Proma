@@ -34,6 +34,7 @@ import {
   workspaceCapabilitiesVersionAtom,
   workspaceFilesVersionAtom,
   agentThinkingAtom,
+  agentThinkingEffortLevelAtom,
   agentMaxBudgetUsdAtom,
   agentMaxTurnsAtom,
   agentSettingsReadyAtom,
@@ -168,6 +169,7 @@ function AgentSettingsInitializer(): null {
   const bumpCapabilities = useSetAtom(workspaceCapabilitiesVersionAtom)
   const bumpFiles = useSetAtom(workspaceFilesVersionAtom)
   const setThinking = useSetAtom(agentThinkingAtom)
+  const setThinkingEffortLevel = useSetAtom(agentThinkingEffortLevelAtom)
   const setMaxBudget = useSetAtom(agentMaxBudgetUsdAtom)
   const setMaxTurns = useSetAtom(agentMaxTurnsAtom)
   const setAutomationGroupOrder = useSetAtom(automationGroupOrderAtom)
@@ -240,6 +242,7 @@ function AgentSettingsInitializer(): null {
       if (settings.agentThinking) {
         setThinking(settings.agentThinking)
       }
+      setThinkingEffortLevel(settings.agentThinkingEffortLevel)
       if (settings.agentMaxBudgetUsd != null) {
         setMaxBudget(settings.agentMaxBudgetUsd)
       }
@@ -253,12 +256,15 @@ function AgentSettingsInitializer(): null {
       // 加载工作区列表并恢复上次选中的工作区
       window.electronAPI.listAgentWorkspaces().then((workspaces) => {
         setAgentWorkspaces(workspaces)
+        const defaultWorkspaceId = workspaces.find((workspace) => workspace.slug === 'default')?.id
+          ?? workspaces[0]?.id
+          ?? null
         if (settings.agentWorkspaceId) {
           // 验证工作区仍然存在
           const exists = workspaces.some((w) => w.id === settings.agentWorkspaceId)
-          setCurrentWorkspaceId(exists ? settings.agentWorkspaceId! : workspaces[0]?.id ?? null)
-        } else if (workspaces.length > 0) {
-          setCurrentWorkspaceId(workspaces[0]!.id)
+          setCurrentWorkspaceId(exists ? settings.agentWorkspaceId : defaultWorkspaceId)
+        } else {
+          setCurrentWorkspaceId(defaultWorkspaceId)
         }
         setAgentSettingsReady(true)
       }).catch((err) => {
@@ -269,7 +275,7 @@ function AgentSettingsInitializer(): null {
       console.error(err)
       setAgentSettingsReady(true) // 即使出错也标记就绪，避免永远阻塞
     })
-  }, [setAgentChannelId, setAgentModelId, setAgentChannelIds, setAgentWorkspaces, setCurrentWorkspaceId, setThinking, setMaxBudget, setMaxTurns, setAutomationGroupOrder, setChannels, setChannelsLoaded, setAgentSettingsReady])
+  }, [setAgentChannelId, setAgentModelId, setAgentChannelIds, setAgentWorkspaces, setCurrentWorkspaceId, setThinking, setThinkingEffortLevel, setMaxBudget, setMaxTurns, setAutomationGroupOrder, setChannels, setChannelsLoaded, setAgentSettingsReady])
 
   // 工作区切换时重置能力缓存，预加载基线
   useEffect(() => {

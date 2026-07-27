@@ -43,6 +43,7 @@ import type {
   FileDialogResult,
   RecentMessagesResult,
   AgentSessionMeta,
+  AgentRuntimeModelCatalog,
   AgentSendInput,
   AgentWorkspace,
   AgentGenerateTitleInput,
@@ -190,6 +191,7 @@ import {
   searchAgentSessionReferences,
 } from './lib/agent-session-manager'
 import { runAgent, stopAgent, generateAgentTitle, saveFilesToAgentSession, saveFilesToWorkspaceFiles, isAgentSessionActive, queueAgentMessage, updateAgentPermissionMode, rewindAgentSession, forkAgentRuntimeSession } from './lib/agent-service'
+import { resolveAgentRuntimeModelCatalog } from './lib/ccb-runtime/model-catalog-service'
 import { permissionService } from './lib/agent-permission-service'
 import { askUserService } from './lib/agent-ask-user-service'
 import { exitPlanService } from './lib/agent-exit-plan-service'
@@ -1851,6 +1853,14 @@ export function registerIpcHandlers(): void {
         throw new Error('Agent 正在运行，完成后再切换模型')
       }
       return updateAgentSessionMeta(id, { channelId, modelId })
+    }
+  )
+
+  // 读取 CCB 内核解析后的模型能力目录
+  ipcMain.handle(
+    AGENT_IPC_CHANNELS.GET_RUNTIME_MODEL_CATALOG,
+    async (_, channelId: string, defaultModel?: string): Promise<AgentRuntimeModelCatalog> => {
+      return resolveAgentRuntimeModelCatalog(channelId, defaultModel)
     }
   )
 

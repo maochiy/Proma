@@ -1,7 +1,9 @@
+import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import type {
   AgentProviderAdapter,
   AgentQueryInput,
+  AgentRuntimeProviderConfiguration,
   AgentRuntimeSessionOperationInput,
   AgentRuntimeForkResult,
   AgentRuntimeRewindResult,
@@ -9,6 +11,8 @@ import type {
   SDKUserMessageInput,
   SendQueuedMessageOptions,
   PromaPermissionMode,
+  ThinkingConfig,
+  ThinkingEffortLevel,
 } from '@proma/shared'
 import type { CanUseToolOptions, PermissionResult } from '../agent-permission-service'
 import { updateAgentSessionMeta } from '../agent-session-manager'
@@ -16,17 +20,21 @@ import { getConfigDir } from '../config-paths'
 import { persistCodexOAuthCredentials } from '../channel-manager'
 import { ccbDesktopRuntimeClient } from './runtime-client'
 import { sanitizeCcbSessionEnvironment } from './runtime-security'
+import { assertCcbRuntimeModelCatalog } from './protocol-validation'
 import type {
   CcbInteractionResponse,
   CcbPermissionMode,
   CcbRuntimeEnvelope,
   CcbRuntimeEvent,
+  CcbRuntimeModelCatalog,
 } from './protocol'
 
 export interface CcbAgentQueryOptions extends AgentQueryInput {
   channelId?: string
   env?: Record<string, string | undefined>
-  thinkingConfig?: import('@proma/shared').ThinkingConfig
+  providerConfiguration?: AgentRuntimeProviderConfiguration
+  thinkingConfig?: ThinkingConfig
+  effortLevel?: ThinkingEffortLevel
   sdkPermissionMode?: PromaPermissionMode
   canUseTool?: (
     toolName: string,
@@ -58,6 +66,53 @@ interface ActiveTurn {
   reject: (error: Error) => void
   settled: boolean
   interactionControllers: Set<AbortController>
+}
+
+interface SessionRuntimeConfig {
+  model?: string
+  thinkingConfig?: ThinkingConfig
+  effortLevel?: ThinkingEffortLevel
+  providerFingerprint?: string
+}
+
+function sameThinkingConfig(
+  left: ThinkingConfig | undefined,
+  right: ThinkingConfig | undefined,
+): boolean {
+  if (left?.type !== right?.type) return false
+  if (left?.type === 'enabled' && right?.type === 'enabled') {
+    return left.budgetTokens === right.budgetTokens
+  }
+  return true
+}
+
+function sameRuntimeConfig(
+  left: SessionRuntimeConfig | undefined,
+  right: SessionRuntimeConfig,
+): boolean {
+  return Boolean(left)
+    && left?.model === right.model
+    && left?.effortLevel === right.effortLevel
+    && left?.providerFingerprint === right.providerFingerprint
+    && sameThinkingConfig(left?.thinkingConfig, right.thinkingConfig)
+}
+
+function createProviderFingerprint(
+  environment: Record<string, string>,
+  configuration: AgentRuntimeProviderConfiguration | undefined,
+): string | undefined {
+  if (!configuration) return undefined
+  const sortedEnvironment = Object.fromEntries(
+    Object.entries(environment).sort(([left], [right]) =>
+      left.localeCompare(right),
+    ),
+  )
+  return createHash('sha256')
+    .update(JSON.stringify({
+      environment: sortedEnvironment,
+      configuration,
+    }))
+    .digest('hex')
 }
 
 function createQueue(): AsyncMessageQueue {
@@ -107,6 +162,7 @@ function permissionMode(mode: PromaPermissionMode | undefined): CcbPermissionMod
 export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
   private readonly active = new Map<string, ActiveTurn>()
   private readonly openedSessions = new Map<string, string>()
+  private readonly sessionRuntimeConfigs = new Map<string, SessionRuntimeConfig>()
   private readonly lastSequences = new Map<string, number>()
 
   query(input: AgentQueryInput): AsyncIterable<SDKMessage> {
@@ -200,8 +256,30 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
   private async ensureOperationSession(
     input: AgentRuntimeSessionOperationInput,
   ): Promise<void> {
-    const current = this.openedSessions.get(input.sessionId)
-    if (current === input.runtimeSessionId) return
+    const environment = sanitizeCcbSessionEnvironment(input.env)
+    const nextRuntimeConfig: SessionRuntimeConfig = {
+      model: input.model,
+      thinkingConfig: input.thinkingConfig,
+      effortLevel: input.effortLevel,
+      providerFingerprint: createProviderFingerprint(
+        environment,
+        input.providerConfiguration,
+      ),
+    }
+    let current = this.openedSessions.get(input.sessionId)
+    const currentRuntimeConfig = this.sessionRuntimeConfigs.get(input.sessionId)
+    if (
+      current
+      && currentRuntimeConfig?.providerFingerprint
+        !== nextRuntimeConfig.providerFingerprint
+    ) {
+      await this.closeOpenedSession(input.sessionId)
+      current = undefined
+    }
+    if (current === input.runtimeSessionId) {
+      await this.syncSessionRuntimeConfig(input.sessionId, nextRuntimeConfig)
+      return
+    }
     const result = await ccbDesktopRuntimeClient.request<{ runtimeSessionId: string }>(
       {
         type: 'session.resume',
@@ -212,11 +290,13 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
           model: input.model,
           fallbackModel: input.fallbackModel,
           thinkingConfig: input.thinkingConfig,
+          effortLevel: input.effortLevel,
           permissionMode: permissionMode(input.permissionMode),
           environment: {
-            variables: sanitizeCcbSessionEnvironment(input.env),
+            variables: environment,
             configDir: join(getConfigDir(), 'runtime', 'ccb'),
           },
+          providerConfiguration: input.providerConfiguration,
           mcpServers: input.mcpServers,
           appendSystemPrompt: input.systemPrompt,
           includePartialMessages: true,
@@ -226,6 +306,7 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
       60_000,
     )
     this.openedSessions.set(input.sessionId, result.runtimeSessionId)
+    this.sessionRuntimeConfigs.set(input.sessionId, nextRuntimeConfig)
   }
 
   private async run(options: CcbAgentQueryOptions, queue: AsyncMessageQueue): Promise<void> {
@@ -275,7 +356,9 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
     options.abortSignal?.addEventListener('abort', onAbort, { once: true })
     try {
       await this.ensureSession(options)
-      if (options.model) options.onModelResolved?.(options.model)
+      if (!options.providerConfiguration && options.model) {
+        options.onModelResolved?.(options.model)
+      }
       try {
         await ccbDesktopRuntimeClient.request(
           options.compactRequest
@@ -287,6 +370,7 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
       } catch (error) {
         if (!String(error).includes('Session 尚未打开')) throw error
         this.openedSessions.delete(sessionId)
+        this.sessionRuntimeConfigs.delete(sessionId)
         await this.ensureSession(options, true)
         await ccbDesktopRuntimeClient.request(
           options.compactRequest
@@ -313,14 +397,62 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
     options: CcbAgentQueryOptions,
     force = false,
   ): Promise<void> {
-    const current = this.openedSessions.get(options.sessionId)
+    const environment = sanitizeCcbSessionEnvironment(options.env)
+    const nextRuntimeConfig: SessionRuntimeConfig = {
+      model: options.model,
+      thinkingConfig: options.thinkingConfig,
+      effortLevel: options.effortLevel,
+      providerFingerprint: createProviderFingerprint(
+        environment,
+        options.providerConfiguration,
+      ),
+    }
+    let current = this.openedSessions.get(options.sessionId)
+    const currentRuntimeConfig = this.sessionRuntimeConfigs.get(
+      options.sessionId,
+    )
+    if (
+      current
+      && currentRuntimeConfig?.providerFingerprint
+        !== nextRuntimeConfig.providerFingerprint
+    ) {
+      await this.closeOpenedSession(options.sessionId)
+      current = undefined
+    }
     if (
       !force &&
       current &&
       (!options.resumeSessionId || current === options.resumeSessionId)
     ) {
+      await this.syncSessionRuntimeConfig(
+        options.sessionId,
+        nextRuntimeConfig,
+      )
       return
     }
+
+    if (options.providerConfiguration) {
+      const catalog =
+        await ccbDesktopRuntimeClient.request<CcbRuntimeModelCatalog>(
+          {
+            type: 'session.resolveModelCatalog',
+            environment: {
+              variables: environment,
+              configDir: join(getConfigDir(), 'runtime', 'ccb'),
+            },
+            providerConfiguration: options.providerConfiguration,
+          },
+          options.sessionId,
+          30_000,
+        )
+      assertCcbRuntimeModelCatalog(catalog)
+      const selectedModel = this.resolveCatalogModel(catalog, options.model)
+      if (selectedModel) {
+        options.onModelResolved?.(selectedModel.value)
+        options.onContextWindow?.(selectedModel.contextWindow)
+      }
+    }
+
     const openResult = await ccbDesktopRuntimeClient.request<{
       runtimeSessionId: string
     }>(
@@ -333,11 +465,13 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
           model: options.model,
           fallbackModel: options.fallbackModel,
           thinkingConfig: options.thinkingConfig,
+          effortLevel: options.effortLevel,
           permissionMode: permissionMode(options.sdkPermissionMode),
           environment: {
-            variables: sanitizeCcbSessionEnvironment(options.env),
+            variables: environment,
             configDir: join(getConfigDir(), 'runtime', 'ccb'),
           },
+          providerConfiguration: options.providerConfiguration,
           mcpServers: options.mcpServers,
           systemPrompt:
             typeof options.systemPrompt === 'string'
@@ -356,6 +490,7 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
       60_000,
     )
     this.openedSessions.set(options.sessionId, openResult.runtimeSessionId)
+    this.sessionRuntimeConfigs.set(options.sessionId, nextRuntimeConfig)
     options.onSessionId?.(openResult.runtimeSessionId)
     const runtime = ccbDesktopRuntimeClient.getRuntimeInfo()
     updateAgentSessionMeta(options.sessionId, {
@@ -364,6 +499,54 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
       runtimeArtifactCommit: runtime?.gitCommit,
       runtimeProtocolVersion: runtime?.protocolVersion,
       runtimeWorkerState: 'ready',
+    })
+  }
+
+  private resolveCatalogModel(
+    catalog: CcbRuntimeModelCatalog,
+    requestedModel: string | undefined,
+  ): CcbRuntimeModelCatalog['models'][number] | undefined {
+    const normalizedRequested = requestedModel?.replace(/\[1m\]$/i, '')
+    return catalog.models.find(model =>
+      model.value === requestedModel || model.value === normalizedRequested,
+    ) ?? catalog.models.find(model => model.value === catalog.defaultModel)
+      ?? catalog.models[0]
+  }
+
+  private async closeOpenedSession(sessionId: string): Promise<void> {
+    try {
+      await ccbDesktopRuntimeClient.request(
+        { type: 'session.close' },
+        sessionId,
+        10_000,
+      )
+    } finally {
+      this.openedSessions.delete(sessionId)
+      this.sessionRuntimeConfigs.delete(sessionId)
+      this.lastSequences.delete(sessionId)
+    }
+  }
+
+  private async syncSessionRuntimeConfig(
+    sessionId: string,
+    config: SessionRuntimeConfig,
+  ): Promise<void> {
+    if (sameRuntimeConfig(this.sessionRuntimeConfigs.get(sessionId), config)) return
+    await ccbDesktopRuntimeClient.request(
+      {
+        type: 'session.updateConfig',
+        model: config.model,
+        thinkingConfig: config.thinkingConfig,
+        effortLevel: config.effortLevel,
+      },
+      sessionId,
+      5_000,
+    )
+    this.sessionRuntimeConfigs.set(sessionId, {
+      model: config.model,
+      thinkingConfig: config.thinkingConfig,
+      effortLevel: config.effortLevel,
+      providerFingerprint: config.providerFingerprint,
     })
   }
 
@@ -385,6 +568,7 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
         return
       case 'worker.crashed':
         this.openedSessions.delete(options.sessionId)
+        this.sessionRuntimeConfigs.delete(options.sessionId)
         this.lastSequences.delete(options.sessionId)
         this.settleTurn(
           options.sessionId,
@@ -409,6 +593,7 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
           event.state === 'closed'
         ) {
           this.openedSessions.delete(options.sessionId)
+          this.sessionRuntimeConfigs.delete(options.sessionId)
         }
         updateAgentSessionMeta(options.sessionId, {
           runtimeWorkerState: event.state === 'closed' ? 'cold' : event.state,

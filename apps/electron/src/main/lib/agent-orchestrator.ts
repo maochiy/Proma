@@ -18,7 +18,7 @@ import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import type { AgentSendInput, AgentMessage, AgentGenerateTitleInput, AgentProviderAdapter, AgentSessionMeta, AgentRuntimeSessionOperationInput, ForkSessionInput, TypedError, RetryAttempt, SDKMessage, SDKAssistantMessage, AgentStreamPayload, RewindSessionResult, ProviderType, CodexOAuthCredentials } from '@proma/shared'
+import type { AgentSendInput, AgentMessage, AgentGenerateTitleInput, AgentProviderAdapter, AgentSessionMeta, AgentRuntimeProviderConfiguration, AgentRuntimeSessionOperationInput, ForkSessionInput, TypedError, RetryAttempt, SDKMessage, SDKAssistantMessage, AgentStreamPayload, RewindSessionResult, ProviderType, CodexOAuthCredentials } from '@proma/shared'
 import {
   PROMA_DEFAULT_PERMISSION_MODE,
   PROMA_PERMISSION_MODE_CONFIG,
@@ -27,7 +27,6 @@ import {
   THINKING_SIGNATURE_ERROR_TITLE,
   isPersistableSDKSystemMessage,
   normalizeMcpTransportType,
-  inferAgentSdkContextWindow,
 } from '@proma/shared'
 import type { PromaPermissionMode, AskUserRequest, ExitPlanModeRequest, SDKSystemMessage } from '@proma/shared'
 import { isPromptTooLongError, isThinkingSignatureError, friendlyErrorMessage, mapSDKErrorToTypedError, extractErrorDetails, shouldKeepChannelOpen } from './agent-runtime-errors'
@@ -61,7 +60,10 @@ import { buildAgentRuntimeEnv, mergeRuntimeEnv, type AgentRuntimeEnv } from './a
 import { isVisibleRunMessage } from './agent-run-message-visibility'
 import { getAgentSdkMaxOutputTokens } from './agent-sdk-output-limits'
 import { createFallbackTitle, sanitizeGeneratedTitle, TITLE_PROMPT } from './title-generation'
-import { buildCcbProviderEnvironment } from './ccb-runtime/provider-environment'
+import {
+  buildCcbProviderConfiguration,
+  buildCcbProviderEnvironment,
+} from './ccb-runtime/provider-environment'
 
 // ===== 类型定义 =====
 
@@ -731,7 +733,7 @@ export class AgentOrchestrator {
    * 通过 EventBus 分发 AgentEvent，通过 callbacks 发送控制信号。
    */
   async sendMessage(input: AgentSendInput, callbacks: SessionCallbacks): Promise<void> {
-    const { sessionId, userMessage, channelId, modelId, workspaceId, additionalDirectories, customMcpServers, permissionModeOverride, mentionedSkills, mentionedMcpServers, mentionedSessionIds, automationContext, retryOfErrorUuid } = input
+    const { sessionId, userMessage, channelId, modelId, workspaceId, runtimeThinking, additionalDirectories, customMcpServers, permissionModeOverride, mentionedSkills, mentionedMcpServers, mentionedSessionIds, automationContext, retryOfErrorUuid } = input
     const stderrChunks: string[] = []
     const streamStartedAt = input.startedAt ?? Date.now()
     let userMessagePersisted = false
@@ -897,6 +899,26 @@ export class AgentOrchestrator {
       return
     }
 
+    let providerConfiguration: AgentRuntimeProviderConfiguration
+    try {
+      providerConfiguration = buildCcbProviderConfiguration(channel, modelId)
+    } catch (error) {
+      reportPreflightError({
+        code: 'agent_model_unavailable',
+        title: '渠道没有可用模型',
+        message: error instanceof Error
+          ? error.message
+          : '请在渠道设置中至少启用一个模型。',
+        actions: [
+          { key: 's', label: '打开渠道设置', action: 'open_channel_settings' },
+        ],
+        canRetry: false,
+      })
+      return
+    }
+    const selectedModelId =
+      providerConfiguration.defaultModel ?? modelId ?? DEFAULT_MODEL_ID
+
     // 2.1 立即抢占会话槽位（在所有同步检查通过后、第一个 await 之前）
     // 防止 buildSdkEnv 等 await 期间并发调用绕过上方的检查，导致多条重复消息写入 JSONL
     // finally 块会通过 generation 匹配来安全清理，不影响正常流程
@@ -944,7 +966,7 @@ export class AgentOrchestrator {
       apiKey,
       channel.baseUrl,
       channel.provider,
-      modelId || DEFAULT_MODEL_ID,
+      selectedModelId,
       proxyUrl,
       codexCredentials,
     )
@@ -956,7 +978,7 @@ export class AgentOrchestrator {
 
     // 5. 状态初始化
     const accumulatedMessages: SDKMessage[] = []
-    let resolvedModel = modelId || DEFAULT_MODEL_ID
+    let resolvedModel = selectedModelId
     let titleGenerationStarted = false
     /** 捕获到的 SDK session ID（用于 resume / recovery） */
     let capturedRuntimeSessionId = existingRuntimeSessionId
@@ -966,7 +988,7 @@ export class AgentOrchestrator {
 
     try {
       console.log(
-        `[Agent 编排] 启动 CCB Desktop Runtime — 模型: ${modelId || DEFAULT_MODEL_ID}, resume: ${existingRuntimeSessionId ?? '无'}`,
+        `[Agent 编排] 启动 CCB Desktop Runtime — 模型: ${selectedModelId}, resume: ${existingRuntimeSessionId ?? '无'}`,
       )
 
       // 确定 Agent 工作目录
@@ -1340,7 +1362,6 @@ export class AgentOrchestrator {
       const maxTurns = appSettings.agentMaxTurns && appSettings.agentMaxTurns > 0
         ? appSettings.agentMaxTurns
         : undefined
-      const selectedModelId = modelId || DEFAULT_MODEL_ID
       const allAdditionalDirectories = collectAttachedDirectories({
         extraDirs: additionalDirectories,
         sessionMeta,
@@ -1382,14 +1403,10 @@ export class AgentOrchestrator {
         this.eventBus.emit(sessionId, { kind: 'proma_event', event: { type: 'model_resolved', model: resolvedModel } })
       }
       const handleContextWindow = (cw: number): void => {
-        const inferredWindow = inferAgentSdkContextWindow(modelId, channel.provider)
-        const contextWindow = Math.max(cw, inferredWindow ?? 0) || cw
-        console.log(`[Agent 编排] 缓存 contextWindow: ${contextWindow}`)
-        // result 消息里的真实 contextWindow 透传到 renderer，
-        // 覆盖流式过程中按模型名推断的 fallback 值（智谱等端点会把 [1m] 等后缀剥掉，导致 fallback 不准）
+        console.log(`[Agent 编排] 缓存 CCB contextWindow: ${cw}`)
         this.eventBus.emit(sessionId, {
           kind: 'proma_event',
-          event: { type: 'context_window', contextWindow },
+          event: { type: 'context_window', contextWindow: cw },
         })
       }
       const queryOptions: CcbAgentQueryOptions = {
@@ -1397,7 +1414,11 @@ export class AgentOrchestrator {
         channelId,
         prompt: finalPrompt,
         model: selectedModelId,
-        thinkingConfig: appSettings.agentThinking,
+        providerConfiguration,
+        thinkingConfig: runtimeThinking?.thinkingConfig ?? appSettings.agentThinking,
+        effortLevel: runtimeThinking
+          ? runtimeThinking.effortLevel
+          : appSettings.agentThinkingEffortLevel,
         cwd: agentCwd,
         env: sdkEnv,
         ...(maxTurns != null && { maxTurns }),
@@ -2216,12 +2237,20 @@ export class AgentOrchestrator {
       ? await resolveCodexOAuthCredentials(channel.id)
       : undefined
     const apiKey = codexCredentials?.access ?? decryptApiKey(channel.id)
+    const providerConfiguration = buildCcbProviderConfiguration(
+      channel,
+      sessionMeta.modelId,
+    )
+    const selectedModelId =
+      providerConfiguration.defaultModel
+      ?? sessionMeta.modelId
+      ?? DEFAULT_MODEL_ID
     const proxyUrl = await getEffectiveProxyUrl()
     const runtimeEnv = this.buildCcbRuntimeEnv(
       apiKey,
       channel.baseUrl,
       channel.provider,
-      sessionMeta.modelId || DEFAULT_MODEL_ID,
+      selectedModelId,
       proxyUrl,
       codexCredentials,
     )
@@ -2239,8 +2268,10 @@ export class AgentOrchestrator {
       sessionId: sessionMeta.id,
       runtimeSessionId: sessionMeta.runtimeSessionId,
       cwd,
-      model: sessionMeta.modelId || DEFAULT_MODEL_ID,
+      model: selectedModelId,
+      providerConfiguration,
       thinkingConfig: getSettings().agentThinking,
+      effortLevel: getSettings().agentThinkingEffortLevel,
       env: runtimeEnv.env,
       permissionMode: sessionMeta.permissionMode ?? PROMA_DEFAULT_PERMISSION_MODE,
       mcpServers,

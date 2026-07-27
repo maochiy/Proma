@@ -17,11 +17,12 @@ import * as React from 'react'
 import { unstable_batchedUpdates } from 'react-dom'
 import { useAtom, useAtomValue, useSetAtom, useStore } from 'jotai'
 import { toast } from 'sonner'
-import { CornerDownLeft, Square, Settings, Paperclip, FolderPlus, X, Copy, Check, Brain, Sparkles } from 'lucide-react'
+import { CornerDownLeft, Square, Settings, Paperclip, FolderPlus, X, Copy, Check, Sparkles } from 'lucide-react'
 import { AgentMessages } from './AgentMessages'
 import { AgentHeader } from './AgentHeader'
 import { AgentMessageQueue } from './AgentMessageQueue'
 import { AgentProjectPicker } from './AgentProjectPicker'
+import { AgentThinkingEffortControl } from './AgentThinkingEffortControl'
 import { ContextUsageBadge } from './ContextUsageBadge'
 import { PermissionBanner } from './PermissionBanner'
 import { PermissionModeSelector } from './PermissionModeSelector'
@@ -37,7 +38,6 @@ import { InputToolbarOverflow, type ToolbarItem } from '@/components/ai-elements
 import {
   inputAreaContainerClass,
   inputCardClass,
-  inputToolbarActiveButtonClass,
   inputToolbarButtonClass,
   inputToolbarDangerButtonClass,
   inputToolbarDisabledButtonClass,
@@ -45,8 +45,6 @@ import {
 } from '@/components/ai-elements/input-toolbar-styles'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { Switch } from '@/components/ui/switch'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -69,6 +67,7 @@ import {
   agentChannelIdAtom,
   agentModelIdAtom,
   agentChannelIdsAtom,
+  agentRuntimeModelCatalogsAtom,
   agentSessionChannelMapAtom,
   agentSessionModelMapAtom,
   currentAgentWorkspaceIdAtom,
@@ -93,6 +92,8 @@ import {
   workspaceAttachedFilesMapAtom,
   liveMessagesMapAtom,
   agentThinkingAtom,
+  agentThinkingEffortLevelAtom,
+  agentSessionThinkingEffortMapAtom,
   stoppedByUserSessionsAtom,
   agentPlanModeSessionsAtom,
   agentPermissionModeMapAtom,
@@ -109,16 +110,23 @@ import { settingsOpenAtom } from '@/atoms/settings-tab'
 import { longTextPasteAsAttachmentEnabledAtom } from '@/atoms/ui-preferences'
 import { channelsAtom, thinkingExpandedAtom } from '@/atoms/chat-atoms'
 import { useOpenSession } from '@/hooks/useOpenSession'
+import { useCreateSession } from '@/hooks/useCreateSession'
 import { AgentSessionProvider } from '@/contexts/session-context'
 import { draftSessionIdsAtom } from '@/atoms/draft-session-atoms'
 import { sendWithCmdEnterAtom } from '@/atoms/shortcut-atoms'
 import { useOpenPreview } from '@/components/diff/preview-opener'
-import type { AgentSendInput, AgentPendingFile, FileDialogLargeFile, ModelOption, SDKMessage, SDKUserMessage, ProviderType } from '@proma/shared'
-import { inferAgentSdkContextWindow, inferContextWindow, MAX_ATTACHMENT_SIZE } from '@proma/shared'
+import type { AgentRuntimeModelInfo, AgentSendInput, AgentPendingFile, FileDialogLargeFile, ModelOption, SDKMessage, SDKUserMessage } from '@proma/shared'
+import { MAX_ATTACHMENT_SIZE } from '@proma/shared'
 import { fileToBase64, formatFileNames, getFileParentPath } from '@/lib/file-utils'
 import { buildQuotedSelectionBlock } from '@/lib/quoted-selection'
 import { createClipboardPendingFile, createClipboardTextDraft, makeUniqueAttachmentName } from '@/lib/clipboard-text-attachment'
 import { canSwitchAgentProject } from '@/lib/agent-project-switch'
+import {
+  findAgentRuntimeModel,
+  normalizeAgentThinkingEffortLevel,
+  resolveAgentRuntimeThinkingSelection,
+  resolveAgentThinkingEffortCapability,
+} from '@/lib/agent-thinking-effort'
 import {
   buildQueuedMessageSendPayload,
   createAgentQueuedMessage,
@@ -158,13 +166,10 @@ function createUserSDKMessage(text: string, uuid?: string, createdAt = Date.now(
 }
 
 function resolveRunContextWindow(
-  modelId: string | undefined,
-  provider: ProviderType | undefined,
+  modelInfo: AgentRuntimeModelInfo | undefined,
   previous: number | undefined,
 ): number | undefined {
-  return provider
-    ? inferAgentSdkContextWindow(modelId, provider) ?? previous
-    : inferContextWindow(modelId) ?? previous
+  return modelInfo?.contextWindow ?? previous
 }
 
 interface SDKMessageRecord {
@@ -218,82 +223,6 @@ function isStaleAgentQueueError(error: unknown): boolean {
     message.includes('无活跃消息通道可注入队列消息')
 }
 
-// ===== 思考模式 Hover Popover =====
-
-interface AgentThinkingPopoverProps {
-  agentThinking: import('@proma/shared').ThinkingConfig | undefined
-  onToggle: () => void
-}
-
-function AgentThinkingPopover({ agentThinking, onToggle }: AgentThinkingPopoverProps): React.ReactElement {
-  const [thinkingExpanded, setThinkingExpanded] = useAtom(thinkingExpandedAtom)
-  const [open, setOpen] = React.useState(false)
-  const hoverTimeout = React.useRef<ReturnType<typeof setTimeout> | null>(null)
-  const isEnabled = agentThinking?.type === 'adaptive'
-
-  const handleMouseEnter = React.useCallback(() => {
-    if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
-    setOpen(true)
-  }, [])
-
-  const handleMouseLeave = React.useCallback(() => {
-    hoverTimeout.current = setTimeout(() => setOpen(false), 150)
-  }, [])
-
-  React.useEffect(() => {
-    return () => {
-      if (hoverTimeout.current) clearTimeout(hoverTimeout.current)
-    }
-  }, [])
-
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className={cn(inputToolbarButtonClass, isEnabled && inputToolbarActiveButtonClass)}
-          onClick={onToggle}
-          onMouseEnter={handleMouseEnter}
-          onMouseLeave={handleMouseLeave}
-        >
-          <Brain className="size-5" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent
-        side="top"
-        align="center"
-        sideOffset={8}
-        className="w-64 p-3"
-        onMouseEnter={handleMouseEnter}
-        onMouseLeave={handleMouseLeave}
-        onOpenAutoFocus={(e) => e.preventDefault()}
-      >
-        <div className="flex flex-col gap-3">
-          <div className="flex items-center justify-between gap-4">
-            <span className="text-xs text-foreground/70">思考模式</span>
-            <Switch
-              checked={isEnabled}
-              onCheckedChange={onToggle}
-              className="h-4 w-7 [&>span]:size-3 [&>span]:data-[state=checked]:translate-x-3"
-            />
-          </div>
-          <div className="h-px bg-border" />
-          <div className="flex items-center justify-between gap-4">
-            <span className="text-xs text-foreground/70">展开思考</span>
-            <Switch
-              checked={thinkingExpanded}
-              onCheckedChange={setThinkingExpanded}
-              className="h-4 w-7 [&>span]:size-3 [&>span]:data-[state=checked]:translate-x-3"
-            />
-          </div>
-        </div>
-      </PopoverContent>
-    </Popover>
-  )
-}
-
 export function AgentView({ sessionId }: { sessionId: string }): React.ReactElement {
   const [persistedSDKMessages, setPersistedSDKMessages] = React.useState<SDKMessage[]>([])
   const persistedSDKMessagesRef = React.useRef<SDKMessage[]>([])
@@ -334,6 +263,9 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   const agentModelId = sessionMetaModelId ?? sessionModelMap.get(sessionId) ?? defaultModelId
   const agentChannelIds = useAtomValue(agentChannelIdsAtom)
   const [agentThinking, setAgentThinking] = useAtom(agentThinkingAtom)
+  const [agentThinkingEffortLevel, setAgentThinkingEffortLevel] = useAtom(agentThinkingEffortLevelAtom)
+  const [sessionThinkingEffortMap, setSessionThinkingEffortMap] = useAtom(agentSessionThinkingEffortMapAtom)
+  const [thinkingExpanded, setThinkingExpanded] = useAtom(thinkingExpandedAtom)
   const setSettingsOpen = useSetAtom(settingsOpenAtom)
   const setDraftSessionIds = useSetAtom(draftSessionIdsAtom)
   const globalWorkspaceId = useAtomValue(currentAgentWorkspaceIdAtom)
@@ -346,7 +278,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   const [pendingPrompt, setPendingPrompt] = useAtom(agentPendingPromptAtom)
   const [pendingFiles, setPendingFiles] = useAtom(agentPendingFilesAtomFamily(sessionId))
   const [queuedMessages, setQueuedMessages] = useAtom(agentMessageQueueAtomFamily(sessionId))
-  const workspaces = useAtomValue(agentWorkspacesAtom)
+  const [workspaces, setAgentWorkspaces] = useAtom(agentWorkspacesAtom)
   // 保持 channelId 稳定：初始化前使用上次有效值，避免工具栏抖动
   const stableChannelIdRef = React.useRef(agentChannelId)
   if (agentChannelId) stableChannelIdRef.current = agentChannelId
@@ -428,6 +360,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   const setPromptSuggestions = useSetAtom(agentPromptSuggestionsAtom)
   const setAgentSessions = useSetAtom(agentSessionsAtom)
   const openSession = useOpenSession()
+  const { createAgent } = useCreateSession()
   const setAttachedDirsMap = useSetAtom(agentAttachedDirectoriesMapAtom)
   const attachedDirsMap = useAtomValue(agentAttachedDirectoriesMapAtom)
   const attachedDirs = attachedDirsMap.get(sessionId) ?? []
@@ -484,6 +417,128 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
 
   // 渠道已选但模型未选时，自动选择第一个可用模型
   const globalChannels = useAtomValue(channelsAtom)
+  const [runtimeModelCatalogs, setRuntimeModelCatalogs] = useAtom(
+    agentRuntimeModelCatalogsAtom,
+  )
+  const [runtimeModelsLoading, setRuntimeModelsLoading] = React.useState(false)
+  const selectedAgentChannel = React.useMemo(
+    () => agentChannelId
+      ? globalChannels.find((channel) => channel.id === agentChannelId)
+      : undefined,
+    [agentChannelId, globalChannels],
+  )
+  const enabledAgentChannels = React.useMemo(
+    () => globalChannels.filter(
+      channel =>
+        channel.enabled
+        && agentChannelIds.includes(channel.id),
+    ),
+    [agentChannelIds, globalChannels],
+  )
+  const runtimeCatalogRequestSignature = React.useMemo(
+    () => enabledAgentChannels
+      .map(channel => `${channel.id}:${channel.updatedAt}`)
+      .join('|'),
+    [enabledAgentChannels],
+  )
+
+  React.useEffect(() => {
+    let cancelled = false
+
+    const loadCatalogs = async (): Promise<void> => {
+      if (enabledAgentChannels.length === 0) {
+        setRuntimeModelsLoading(false)
+        return
+      }
+      setRuntimeModelsLoading(true)
+      for (const channel of enabledAgentChannels) {
+        try {
+          const catalog =
+            await window.electronAPI.getAgentRuntimeModelCatalog(channel.id)
+          if (cancelled) return
+          setRuntimeModelCatalogs((previous) => {
+            const existing = previous.get(channel.id)
+            if (
+              existing
+              && existing.runtimeArtifactCommit === catalog.runtimeArtifactCommit
+              && existing?.runtimeVersion === catalog.runtimeVersion
+              && existing?.defaultModel === catalog.defaultModel
+              && JSON.stringify(existing.models) === JSON.stringify(catalog.models)
+            ) {
+              return previous
+            }
+            const next = new Map(previous)
+            next.set(channel.id, catalog)
+            return next
+          })
+        } catch (error) {
+          if (cancelled) return
+          console.error(
+            `[AgentView] CCB 模型目录加载失败: channel=${channel.id}`,
+            error,
+          )
+          setRuntimeModelCatalogs((previous) => {
+            if (!previous.has(channel.id)) return previous
+            const next = new Map(previous)
+            next.delete(channel.id)
+            return next
+          })
+        }
+      }
+      if (!cancelled) setRuntimeModelsLoading(false)
+    }
+
+    void loadCatalogs()
+    return () => {
+      cancelled = true
+    }
+  }, [
+    runtimeCatalogRequestSignature,
+    setRuntimeModelCatalogs,
+  ])
+
+  const runtimeModelOptions = React.useMemo<ModelOption[]>(
+    () => enabledAgentChannels.flatMap(channel => {
+      const catalog = runtimeModelCatalogs.get(channel.id)
+      if (!catalog) return []
+      return catalog.models.map(model => ({
+        channelId: channel.id,
+        channelName: channel.name,
+        modelId: model.value,
+        modelName: model.displayName,
+        provider: channel.provider,
+      }))
+    }),
+    [enabledAgentChannels, runtimeModelCatalogs],
+  )
+  const selectedRuntimeModel = React.useMemo(
+    () => {
+      if (!agentChannelId || !agentModelId) return undefined
+      return findAgentRuntimeModel(
+        runtimeModelCatalogs.get(agentChannelId)?.models ?? [],
+        agentModelId,
+      )
+    },
+    [agentChannelId, agentModelId, runtimeModelCatalogs],
+  )
+  const thinkingEffortCapability = React.useMemo(
+    () => resolveAgentThinkingEffortCapability(selectedRuntimeModel),
+    [selectedRuntimeModel],
+  )
+  const sessionThinkingEffortLevel = sessionThinkingEffortMap.get(sessionId)
+  const effectiveThinkingEffortLevel = normalizeAgentThinkingEffortLevel(
+    thinkingEffortCapability,
+    sessionThinkingEffortLevel ?? agentThinkingEffortLevel,
+  )
+  const runtimeThinking = React.useMemo<NonNullable<AgentSendInput['runtimeThinking']>>(
+    () => resolveAgentRuntimeThinkingSelection(
+      selectedRuntimeModel,
+      agentThinking,
+      effectiveThinkingEffortLevel,
+    ),
+    [agentThinking, effectiveThinkingEffortLevel, selectedRuntimeModel],
+  )
+
   const stableChannel = React.useMemo(
     () => stableChannelId ? globalChannels.find((channel) => channel.id === stableChannelId) : undefined,
     [globalChannels, stableChannelId],
@@ -492,47 +547,45 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     ? stableChannel.id
     : null
   const planQuotaChannelUpdatedAt = planQuotaChannelId ? stableChannel?.updatedAt : undefined
-  const agentChannelProvider = React.useMemo(
-    () => globalChannels.find((channel) => channel.id === agentChannelId)?.provider,
-    [globalChannels, agentChannelId],
-  )
-  // 检查 Agent 渠道列表中是否存在可用的模型（渠道 enabled + 模型 enabled）
-  const hasAvailableModel = React.useMemo(() => {
-    // Proma 官方渠道（商业版）：只要 enabled 且有可用模型，直接视为可用
-    const promaOfficial = globalChannels.find((c) => c.id === 'proma-official')
-    if (promaOfficial?.enabled && promaOfficial.models.some((m) => m.enabled)) return true
-    // Desktop Runtime 仅使用已启用的 Agent 渠道。
-    if (!agentChannelIds || agentChannelIds.length === 0) return false
-    return globalChannels.some(
-      (c) => c.enabled && agentChannelIds.includes(c.id) && c.models.some((m) => m.enabled),
-    )
-  }, [globalChannels, agentChannelIds])
+  const hasAvailableModel = runtimeModelOptions.length > 0
   React.useEffect(() => {
-    if (!agentChannelId || agentModelId) return
+    if (!agentChannelId) return
 
-    const channel = globalChannels.find((c) => c.id === agentChannelId && c.enabled)
-    if (!channel) return
+    const catalog = runtimeModelCatalogs.get(agentChannelId)
+    const normalizedCurrentModel = agentModelId?.replace(/\[1m\]$/i, '')
+    const currentModelAvailable = catalog?.models.some(model =>
+      model.value === agentModelId || model.value === normalizedCurrentModel,
+    )
+    if (currentModelAvailable) return
 
-    const firstModel = channel.models.find((m) => m.enabled)
-    if (!firstModel) return
+    const firstModelId = catalog?.defaultModel ?? catalog?.models[0]?.value
+    if (!firstModelId) return
 
     // 更新 per-session map（带幂等守卫，避免无意义写入导致 effect 自循环）
     setSessionModelMap((prev) => {
-      if (prev.get(sessionId) === firstModel.id) return prev
+      if (prev.get(sessionId) === firstModelId) return prev
       const map = new Map(prev)
-      map.set(sessionId, firstModel.id)
+      map.set(sessionId, firstModelId)
       return map
     })
     // 全局默认值 + 持久化 IPC 也加幂等：firstModel 与当前 defaultModelId 相同时跳过，
     // 避免每次 agentChannelId / globalChannels 变化都重复写盘和触发 agentModelIdAtom 更新。
-    if (defaultModelId !== firstModel.id) {
-      setDefaultModelId(firstModel.id)
+    if (defaultModelId !== firstModelId) {
+      setDefaultModelId(firstModelId)
       window.electronAPI.updateSettings({
         agentChannelId,
-        agentModelId: firstModel.id,
+        agentModelId: firstModelId,
       }).catch(console.error)
     }
-  }, [agentChannelId, agentModelId, globalChannels, sessionId, setSessionModelMap, setDefaultModelId])
+  }, [
+    agentChannelId,
+    agentModelId,
+    defaultModelId,
+    runtimeModelCatalogs,
+    sessionId,
+    setDefaultModelId,
+    setSessionModelMap,
+  ])
 
   // 获取当前 session 的工作路径（文件浏览器需要）
   React.useEffect(() => {
@@ -764,6 +817,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         channelId,
         modelId: agentModelId || undefined,
         workspaceId: currentWorkspaceId || undefined,
+        runtimeThinking,
         startedAt: streamStartedAt,
         permissionModeOverride: permissionMode,
         ...(additionalDirectoriesForRun.size > 0 && {
@@ -789,6 +843,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     createBaseAdditionalDirectories,
     currentWorkspaceId,
     permissionMode,
+    runtimeThinking,
     sessionId,
     setStreamingStates,
   ])
@@ -1009,7 +1064,10 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
           model: snapshot.modelId,
           startedAt: streamStartedAt,
           inputTokens: existing?.inputTokens,
-          contextWindow: resolveRunContextWindow(snapshot.modelId, agentChannelProvider, existing?.contextWindow),
+          contextWindow: resolveRunContextWindow(
+            selectedRuntimeModel,
+            existing?.contextWindow,
+          ),
         })
         return map
       })
@@ -1032,6 +1090,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         channelId: snapshot.channelId,
         modelId: snapshot.modelId,
         workspaceId: snapshot.workspaceId,
+        runtimeThinking,
         startedAt: streamStartedAt,
         permissionModeOverride: permissionMode,
         ...(snapshot.additionalDirectories && snapshot.additionalDirectories.length > 0 && {
@@ -1049,7 +1108,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         })
       })
     })
-  }, [messagesLoaded, pendingPrompt, sessionId, agentChannelId, agentModelId, agentChannelProvider, currentWorkspaceId, streaming, setPendingPrompt, setStreamingStates, permissionMode, attachedDirs, attachedFileDirectories])
+  }, [messagesLoaded, pendingPrompt, sessionId, agentChannelId, agentModelId, selectedRuntimeModel, currentWorkspaceId, streaming, setPendingPrompt, setStreamingStates, permissionMode, runtimeThinking, attachedDirs, attachedFileDirectories])
   // ===== 附件处理 =====
 
   /** 为文件生成唯一文件名（避免粘贴多张图片时文件名重复导致覆盖） */
@@ -1622,9 +1681,22 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         )))
       })
       .catch(console.error)
-  }, [sessionId, streaming, backgroundWaiting, setSessionChannelMap, setSessionModelMap, setDefaultChannelId, setDefaultModelId, setAgentSessions])
+  }, [
+    backgroundWaiting,
+    sessionId,
+    setAgentSessions,
+    setDefaultChannelId,
+    setDefaultModelId,
+    setSessionChannelMap,
+    setSessionModelMap,
+    streaming,
+  ])
 
-  /** 输入区项目选择：迁移当前会话，并把选择保存为后续新任务的默认项目。 */
+  /**
+   * 输入区项目选择：
+   * - 空白任务直接迁移，避免额外创建无意义会话。
+   * - 已有内容或正在运行的任务在目标项目中新建任务，保留当前上下文。
+   */
   const canSwitchProject = canSwitchAgentProject({
     messagesLoaded,
     persistedMessageCount: persistedSDKMessages.length,
@@ -1636,16 +1708,32 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
 
   const handleProjectSelect = React.useCallback(async (targetWorkspaceId: string): Promise<void> => {
     if (targetWorkspaceId === currentWorkspaceId || projectChanging) return
-    if (!canSwitchProject) {
-      toast.info('已有内容的任务不能直接切换项目', {
-        description: '请在侧栏会话菜单中使用“迁移到其他项目”',
-      })
+
+    const targetWorkspace = workspaces.find((workspace) => workspace.id === targetWorkspaceId)
+    if (!targetWorkspace) {
+      toast.error('项目不存在或已被删除')
       return
     }
 
-    const targetWorkspace = workspaces.find((workspace) => workspace.id === targetWorkspaceId)
     setProjectChanging(true)
     try {
+      if (!canSwitchProject) {
+        const createdSessionId = await createAgent({
+          workspaceId: targetWorkspaceId,
+          channelId: agentChannelId ?? undefined,
+          modelId: agentModelId ?? undefined,
+        })
+        if (!createdSessionId) {
+          throw new Error('新任务创建失败')
+        }
+        setGlobalWorkspaceId(targetWorkspaceId)
+        window.electronAPI.updateSettings({ agentWorkspaceId: targetWorkspaceId }).catch(console.error)
+        toast.success('已在项目中新建任务', {
+          description: targetWorkspace.name,
+        })
+        return
+      }
+
       const updated = await window.electronAPI.moveAgentSessionToWorkspace({
         sessionId,
         targetWorkspaceId,
@@ -1680,16 +1768,83 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       setProjectChanging(false)
     }
   }, [
-    backgroundWaiting,
+    agentChannelId,
+    agentModelId,
     canSwitchProject,
+    createAgent,
     currentWorkspaceId,
     projectChanging,
     sessionId,
     setAgentSessions,
     setGlobalWorkspaceId,
     setSessionPathMap,
-    streaming,
     workspaces,
+  ])
+
+  const handleProjectCreate = React.useCallback(async (name: string): Promise<boolean> => {
+    if (projectChanging) return false
+
+    try {
+      const workspace = await window.electronAPI.createAgentWorkspace(name)
+      setAgentWorkspaces((prev) => [workspace, ...prev])
+
+      if (!canSwitchProject) {
+        const createdSessionId = await createAgent({
+          workspaceId: workspace.id,
+          channelId: agentChannelId ?? undefined,
+          modelId: agentModelId ?? undefined,
+        })
+        if (!createdSessionId) {
+          throw new Error('新任务创建失败')
+        }
+        setGlobalWorkspaceId(workspace.id)
+        window.electronAPI.updateSettings({ agentWorkspaceId: workspace.id }).catch(console.error)
+        toast.success('项目已创建并新建任务', {
+          description: workspace.name,
+        })
+        return true
+      }
+
+      setProjectChanging(true)
+      const updated = await window.electronAPI.moveAgentSessionToWorkspace({
+        sessionId,
+        targetWorkspaceId: workspace.id,
+      })
+      setAgentSessions((prev) => prev.map((session) => (
+        session.id === updated.id ? updated : session
+      )))
+      setGlobalWorkspaceId(workspace.id)
+      window.electronAPI.updateSettings({ agentWorkspaceId: workspace.id }).catch(console.error)
+      setSessionPathMap((prev) => {
+        if (!prev.has(sessionId)) return prev
+        const map = new Map(prev)
+        map.delete(sessionId)
+        return map
+      })
+      toast.success('项目已创建', {
+        description: workspace.name,
+      })
+      return true
+    } catch (error) {
+      console.error('[AgentView] 创建项目失败:', error)
+      toast.error('创建项目失败', {
+        description: error instanceof Error ? error.message : '未知错误',
+      })
+      return false
+    } finally {
+      setProjectChanging(false)
+    }
+  }, [
+    agentChannelId,
+    agentModelId,
+    canSwitchProject,
+    createAgent,
+    projectChanging,
+    sessionId,
+    setAgentSessions,
+    setAgentWorkspaces,
+    setGlobalWorkspaceId,
+    setSessionPathMap,
   ])
 
   /** 构建 externalSelectedModel 给 ModelSelector */
@@ -1864,7 +2019,10 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         model: agentModelId || undefined,
         startedAt: streamStartedAt,
         inputTokens: existing?.inputTokens,
-        contextWindow: resolveRunContextWindow(agentModelId || undefined, agentChannelProvider, existing?.contextWindow),
+        contextWindow: resolveRunContextWindow(
+          selectedRuntimeModel,
+          existing?.contextWindow,
+        ),
       })
       return map
     })
@@ -1886,6 +2044,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       channelId: agentChannelId,
       modelId: agentModelId || undefined,
       workspaceId: currentWorkspaceId || undefined,
+      runtimeThinking,
       startedAt: streamStartedAt,
       permissionModeOverride: permissionMode,
       ...(additionalDirectoriesForRun.size > 0 && { additionalDirectories: Array.from(additionalDirectoriesForRun) }),
@@ -1912,7 +2071,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         return map
       })
     })
-  }, [inputContent, createBaseAdditionalDirectories, preparePendingFilesForSend, restoreQueuedAttachmentsToPending, sessionId, agentChannelId, agentModelId, agentChannelProvider, currentWorkspaceId, streaming, backgroundWaiting, suggestion, hasAvailableModel, store, consumeQuotedSelection, setStreamingStates, setAgentStreamErrors, setPromptSuggestions, setInputContent, setLiveMessagesMap, permissionMode, messagesLoaded, setQueuedMessages, setQuotedSelectionMap, sendPlainTextAgentMessage])
+  }, [inputContent, createBaseAdditionalDirectories, preparePendingFilesForSend, restoreQueuedAttachmentsToPending, sessionId, agentChannelId, agentModelId, selectedRuntimeModel, currentWorkspaceId, runtimeThinking, streaming, backgroundWaiting, suggestion, hasAvailableModel, store, consumeQuotedSelection, setStreamingStates, setAgentStreamErrors, setPromptSuggestions, setInputContent, setLiveMessagesMap, permissionMode, messagesLoaded, setQueuedMessages, setQuotedSelectionMap, sendPlainTextAgentMessage])
 
   /** 停止生成 */
   const handleStop = React.useCallback((): void => {
@@ -1989,6 +2148,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       channelId: agentChannelId,
       modelId: agentModelId || undefined,
       workspaceId: currentWorkspaceId || undefined,
+      runtimeThinking,
       startedAt: streamStartedAt,
       permissionModeOverride: permissionMode,
     }).catch((error) => {
@@ -2010,7 +2170,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         return map
       })
     })
-  }, [sessionId, agentChannelId, agentModelId, currentWorkspaceId, streaming, setStreamingStates, store, permissionMode])
+  }, [sessionId, agentChannelId, agentModelId, currentWorkspaceId, runtimeThinking, streaming, setStreamingStates, store, permissionMode])
 
   /** 复制错误信息到剪贴板 */
   const handleCopyError = React.useCallback(async (): Promise<void> => {
@@ -2065,7 +2225,10 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         model: agentModelId || undefined,
         startedAt: streamStartedAt,
         inputTokens: existing?.inputTokens,
-        contextWindow: resolveRunContextWindow(agentModelId || undefined, agentChannelProvider, existing?.contextWindow),
+        contextWindow: resolveRunContextWindow(
+          selectedRuntimeModel,
+          existing?.contextWindow,
+        ),
       })
       return map
     })
@@ -2076,11 +2239,12 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       channelId: agentChannelId,
       modelId: agentModelId || undefined,
       workspaceId: currentWorkspaceId || undefined,
+      runtimeThinking,
       startedAt: streamStartedAt,
       permissionModeOverride: permissionMode,
       ...(retryOfErrorUuid && { retryOfErrorUuid }),
     }).catch(console.error)
-  }, [persistedSDKMessages, sessionId, agentChannelId, agentModelId, agentChannelProvider, currentWorkspaceId, streaming, setAgentStreamErrors, setStreamingStates, setMessagesCache, permissionMode])
+  }, [persistedSDKMessages, sessionId, agentChannelId, agentModelId, selectedRuntimeModel, currentWorkspaceId, runtimeThinking, streaming, setAgentStreamErrors, setStreamingStates, setMessagesCache, permissionMode])
 
   /** 在新对话继续：创建新会话 + 切换 tab + 使用 &session 引用旧会话 */
   const handleRetryInNewSession = React.useCallback(async (): Promise<void> => {
@@ -2118,6 +2282,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         channelId: agentChannelId,
         modelId: agentModelId || undefined,
         workspaceId: currentWorkspaceId || undefined,
+        runtimeThinking,
         mentionedSessionIds: [sessionId],
         startedAt: streamStartedAt,
         permissionModeOverride: permissionMode,
@@ -2125,7 +2290,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     } catch (error) {
       console.error('[AgentView] 在新会话中重试失败:', error)
     }
-  }, [sessionId, agentChannelId, agentModelId, currentWorkspaceId, openSession, setAgentSessions, setStreamingStates, permissionMode])
+  }, [sessionId, agentChannelId, agentModelId, currentWorkspaceId, runtimeThinking, openSession, setAgentSessions, setStreamingStates, permissionMode])
 
   /** 分叉会话：从指定消息处创建新会话并自动切换 */
   const handleFork = React.useCallback(async (upToMessageUuid: string): Promise<void> => {
@@ -2360,23 +2525,41 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   const hasTextInput = inputContent.trim().length > 0
   const canSend = messagesLoaded && (streaming || !messagesRefreshing) && (hasTextInput || pendingFiles.length > 0 || !!suggestion) && agentChannelId !== null && hasAvailableModel && (!streaming || hasTextInput)
 
+  const handleThinkingEffortChange = React.useCallback((
+    level: import('@proma/shared').ThinkingEffortLevel,
+  ): void => {
+    const nextThinking = selectedRuntimeModel?.supportsAdaptiveThinking
+      ? { type: 'adaptive' as const }
+      : undefined
+    setSessionThinkingEffortMap((prev) => {
+      const next = new Map(prev)
+      next.set(sessionId, level)
+      return next
+    })
+    if (nextThinking) setAgentThinking(nextThinking)
+    if (level === 'max') {
+      if (nextThinking) {
+        window.electronAPI.updateSettings({
+          agentThinking: nextThinking,
+        }).catch(console.error)
+      }
+      return
+    }
+    setAgentThinkingEffortLevel(level)
+    window.electronAPI.updateSettings({
+      ...(nextThinking ? { agentThinking: nextThinking } : {}),
+      agentThinkingEffortLevel: level,
+    }).catch(console.error)
+  }, [
+    selectedRuntimeModel,
+    sessionId,
+    setAgentThinking,
+    setAgentThinkingEffortLevel,
+    setSessionThinkingEffortMap,
+  ])
+
   const inputToolbarItems = React.useMemo<ToolbarItem[]>(() => [
     { key: 'permission-mode', node: <PermissionModeSelector sessionId={sessionId} /> },
-    {
-      key: 'thinking',
-      node: (
-        <AgentThinkingPopover
-          agentThinking={agentThinking}
-          onToggle={() => {
-            const next = agentThinking?.type === 'adaptive'
-              ? { type: 'disabled' as const }
-              : { type: 'adaptive' as const }
-            setAgentThinking(next)
-            window.electronAPI.updateSettings({ agentThinking: next })
-          }}
-        />
-      ),
-    },
     { key: 'speech', node: <SpeechButton className={inputToolbarButtonClass} /> },
     {
       key: 'attach-file',
@@ -2445,8 +2628,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     planQuotaChannelUpdatedAt,
     agentModelId,
     sessionId,
-    agentThinking,
-    setAgentThinking,
     handleOpenFileDialog,
     handleAttachFolder,
     contextStatus.inputTokens,
@@ -2496,8 +2677,20 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         filterChannelIds={agentChannelIds}
         externalSelectedModel={externalSelectedModel}
         onModelSelect={handleModelSelect}
+        runtimeModelOptions={runtimeModelOptions}
+        runtimeModelsLoading={runtimeModelsLoading}
         useSharedOpenState
       />
+      {thinkingEffortCapability && effectiveThinkingEffortLevel && (
+        <AgentThinkingEffortControl
+          capability={thinkingEffortCapability}
+          value={effectiveThinkingEffortLevel}
+          expanded={thinkingExpanded}
+          disabled={streaming || backgroundWaiting}
+          onValueChange={handleThinkingEffortChange}
+          onExpandedChange={setThinkingExpanded}
+        />
+      )}
       {inputActionNode}
     </>
   )
@@ -2559,9 +2752,8 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
             workspaces={workspaces}
             workspaceId={currentWorkspaceId}
             changing={projectChanging}
-            disabled={!canSwitchProject}
-            disabledReason="已有内容的任务请通过侧栏菜单迁移项目"
             onSelect={handleProjectSelect}
+            onCreate={handleProjectCreate}
           />
           <div
             className={cn(

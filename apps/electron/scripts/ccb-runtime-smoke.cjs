@@ -2,6 +2,8 @@ const { app, MessageChannelMain, utilityProcess } = require('electron')
 const { join } = require('node:path')
 const { tmpdir } = require('node:os')
 
+const PROTOCOL_VERSION = 2
+const smokeConfigDir = join(tmpdir(), 'proma-ccb-runtime-smoke')
 const runtimeRoot = process.env.PROMA_CCB_RUNTIME_PATH
 if (!runtimeRoot) {
   throw new Error('请设置 PROMA_CCB_RUNTIME_PATH')
@@ -12,6 +14,7 @@ app.whenReady().then(async () => {
   let resultMessageCount = 0
   let turnCompleted = false
   let stateRequested = false
+  let modelCatalogValidated = false
 
   const child = utilityProcess.fork(join(runtimeRoot, 'entry.js'), [], {
     serviceName: 'Proma CCB Runtime Smoke Test',
@@ -44,7 +47,7 @@ app.whenReady().then(async () => {
     if (!turnCompleted || resultMessageCount < 2 || stateRequested) return
     stateRequested = true
     control.port1.postMessage({
-      protocolVersion: 1,
+      protocolVersion: PROTOCOL_VERSION,
       requestId: 'smoke-session-state',
       sessionId: 'smoke-session',
       timestamp: Date.now(),
@@ -57,7 +60,7 @@ app.whenReady().then(async () => {
     const payload = event.data?.payload
     if (payload?.type === 'host.ready') {
       control.port1.postMessage({
-        protocolVersion: 1,
+        protocolVersion: PROTOCOL_VERSION,
         requestId: 'smoke-capabilities',
         timestamp: Date.now(),
         payload: { type: 'host.getCapabilities' },
@@ -69,7 +72,49 @@ app.whenReady().then(async () => {
       payload.responseTo === 'smoke-capabilities'
     ) {
       control.port1.postMessage({
-        protocolVersion: 1,
+        protocolVersion: PROTOCOL_VERSION,
+        requestId: 'smoke-model-catalog',
+        sessionId: '__model-catalog__:smoke',
+        timestamp: Date.now(),
+        payload: {
+          type: 'session.resolveModelCatalog',
+          environment: {
+            variables: {
+              ANTHROPIC_API_KEY: 'smoke-local-key',
+              ANTHROPIC_MODEL: 'claude-sonnet-4-6[1m]',
+            },
+            configDir: smokeConfigDir,
+          },
+          providerConfiguration: {
+            modelType: 'anthropic',
+            defaultModel: 'claude-sonnet-4-6[1m]',
+            models: [
+              {
+                id: 'claude-sonnet-4-6[1m]',
+                name: 'Claude Sonnet 4.6 1M',
+              },
+            ],
+          },
+        },
+      })
+      return
+    }
+    if (
+      payload?.type === 'response.success' &&
+      payload.responseTo === 'smoke-model-catalog'
+    ) {
+      const model = payload.result?.models?.[0]
+      if (
+        payload.result?.defaultModel !== 'claude-sonnet-4-6'
+        || model?.value !== 'claude-sonnet-4-6'
+        || model?.contextWindow !== 1_000_000
+      ) {
+        fail(`模型目录解析异常: ${JSON.stringify(payload.result)}`)
+        return
+      }
+      modelCatalogValidated = true
+      control.port1.postMessage({
+        protocolVersion: PROTOCOL_VERSION,
         requestId: 'smoke-session-open',
         sessionId: 'smoke-session',
         timestamp: Date.now(),
@@ -84,7 +129,7 @@ app.whenReady().then(async () => {
                 HOME: process.env.HOME || '',
                 SHELL: process.env.SHELL || '',
               },
-              configDir: join(tmpdir(), 'proma-ccb-runtime-smoke'),
+              configDir: smokeConfigDir,
             },
             includePartialMessages: true,
           },
@@ -97,7 +142,7 @@ app.whenReady().then(async () => {
       payload.responseTo === 'smoke-session-open'
     ) {
       control.port1.postMessage({
-        protocolVersion: 1,
+        protocolVersion: PROTOCOL_VERSION,
         requestId: 'smoke-turn-start',
         sessionId: 'smoke-session',
         timestamp: Date.now(),
@@ -114,7 +159,7 @@ app.whenReady().then(async () => {
       payload.responseTo === 'smoke-turn-start'
     ) {
       control.port1.postMessage({
-        protocolVersion: 1,
+        protocolVersion: PROTOCOL_VERSION,
         requestId: 'smoke-turn-enqueue',
         sessionId: 'smoke-session',
         timestamp: Date.now(),
@@ -141,7 +186,7 @@ app.whenReady().then(async () => {
         return
       }
       control.port1.postMessage({
-        protocolVersion: 1,
+        protocolVersion: PROTOCOL_VERSION,
         requestId: 'smoke-host-shutdown',
         timestamp: Date.now(),
         payload: { type: 'host.shutdown' },
@@ -155,7 +200,7 @@ app.whenReady().then(async () => {
       clearTimeout(timeout)
       expectedExit = true
       console.log(
-        `CCB Runtime 完整 smoke test passed: ${resultMessageCount} 个本地命令结果，队列已清空`,
+        `CCB Runtime 完整 smoke test passed: 模型目录=${modelCatalogValidated ? '已校验' : '未校验'}，${resultMessageCount} 个本地命令结果，队列已清空`,
       )
       app.exit(0)
       return

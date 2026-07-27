@@ -1,5 +1,7 @@
 import {
   extractZhipuCodingTeamApiToken,
+  type AgentRuntimeProviderConfiguration,
+  type Channel,
   type CodexOAuthCredentials,
   type ProviderType,
 } from '@proma/shared'
@@ -29,6 +31,54 @@ const OPENAI_PROVIDERS: ReadonlySet<ProviderType> = new Set([
   'qwen',
   'custom',
 ])
+
+export function resolveCcbModelType(
+  provider: ProviderType,
+): AgentRuntimeProviderConfiguration['modelType'] {
+  if (provider === 'google') return 'gemini'
+  if (provider === 'openai-codex' || OPENAI_PROVIDERS.has(provider)) {
+    return 'openai'
+  }
+  if (ANTHROPIC_PROVIDERS.has(provider)) return 'anthropic'
+  throw new Error(`CCB Desktop Runtime 暂不支持 Provider: ${provider}`)
+}
+
+/**
+ * 将 Proma Channel 转换为 CCB 原生配置模型目录。
+ *
+ * Channel 只决定用户启用哪些模型以及可选的显式 effort 子集；
+ * context window、默认 effort、adaptive/fast/auto 等能力全部由 CCB 内核解析。
+ */
+export function buildCcbProviderConfiguration(
+  channel: Channel,
+  defaultModel?: string,
+): AgentRuntimeProviderConfiguration {
+  const models = channel.models
+    .filter(model => model.enabled)
+    .map(model => ({
+      id: model.id,
+      name: model.name,
+      ...(model.thinkingEffortLevels !== undefined
+        ? { effortLevels: [...model.thinkingEffortLevels] }
+        : {}),
+    }))
+
+  if (models.length === 0) {
+    throw new Error(`渠道「${channel.name}」没有启用的模型`)
+  }
+
+  const enabledModelIds = new Set(models.map(model => model.id))
+  const resolvedDefaultModel =
+    defaultModel && enabledModelIds.has(defaultModel)
+      ? defaultModel
+      : models[0]?.id
+
+  return {
+    modelType: resolveCcbModelType(channel.provider),
+    ...(resolvedDefaultModel ? { defaultModel: resolvedDefaultModel } : {}),
+    models,
+  }
+}
 
 const ANTHROPIC_BEARER_PROVIDERS: ReadonlySet<ProviderType> = new Set([
   'kimi-coding',

@@ -4,7 +4,13 @@
  * 主题模式、IPC 通道等设置相关定义。
  */
 
-import type { EnvironmentCheckResult, ThinkingConfig, FeishuSessionMirrorSettings, WindowsShellPreference } from '@proma/shared'
+import type {
+  EnvironmentCheckResult,
+  ThinkingConfig,
+  ThinkingEffortLevel,
+  FeishuSessionMirrorSettings,
+  WindowsShellPreference,
+} from '@proma/shared'
 
 /** 通知音场景类型 */
 export type NotificationSoundType = 'taskComplete' | 'permissionRequest' | 'exitPlanMode'
@@ -222,6 +228,8 @@ export interface AppSettings {
   tabState?: PersistedTabSettings
   /** Agent 思考模式 */
   agentThinking?: ThinkingConfig
+  /** Agent 思考强度；仅对当前模型声明支持的等级生效。 */
+  agentThinkingEffortLevel?: ThinkingEffortLevel
   /** Agent 最大预算（美元/次） */
   agentMaxBudgetUsd?: number
   /** Agent 最大轮次（0 或 undefined = SDK 默认） */

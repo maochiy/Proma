@@ -7,8 +7,10 @@ import {
   type CcbRuntimeEnvelope,
   type CcbRuntimeError,
   type CcbRuntimeEvent,
+  type CcbRuntimeModelCatalog,
   type CcbSessionOptions,
 } from './protocol'
+import type { AgentRuntimeProviderConfiguration } from '@proma/shared'
 
 const MAX_MESSAGE_BYTES = 8 * 1024 * 1024
 const PERMISSION_MODES = new Set<CcbPermissionMode>([
@@ -127,6 +129,58 @@ function assertThinkingConfig(value: unknown, path: string): void {
   }
 }
 
+function assertThinkingEffortLevel(value: unknown, path: string): void {
+  if (
+    value !== 'low'
+    && value !== 'medium'
+    && value !== 'high'
+    && value !== 'xhigh'
+    && value !== 'max'
+  ) {
+    throw new Error(`${path} 非法`)
+  }
+}
+
+function assertProviderConfiguration(
+  value: unknown,
+  path: string,
+): asserts value is AgentRuntimeProviderConfiguration {
+  assertRecord(value, path)
+  if (
+    value.modelType !== 'anthropic'
+    && value.modelType !== 'openai'
+    && value.modelType !== 'gemini'
+    && value.modelType !== 'grok'
+  ) {
+    throw new Error(`${path}.modelType 非法`)
+  }
+  assertOptionalString(value.defaultModel, `${path}.defaultModel`)
+  if (!Array.isArray(value.models)) {
+    throw new Error(`${path}.models 必须是数组`)
+  }
+  for (const [index, model] of value.models.entries()) {
+    const modelPath = `${path}.models.${index}`
+    assertRecord(model, modelPath)
+    assertString(model.id, `${modelPath}.id`)
+    assertOptionalString(model.name, `${modelPath}.name`)
+    assertOptionalString(model.description, `${modelPath}.description`)
+    if (model.contextWindow !== undefined) {
+      assertFiniteNumber(model.contextWindow, `${modelPath}.contextWindow`)
+      if (!Number.isInteger(model.contextWindow) || model.contextWindow <= 0) {
+        throw new Error(`${modelPath}.contextWindow 必须是正整数`)
+      }
+    }
+    if (model.effortLevels !== undefined) {
+      if (!Array.isArray(model.effortLevels)) {
+        throw new Error(`${modelPath}.effortLevels 必须是数组`)
+      }
+      for (const level of model.effortLevels) {
+        assertThinkingEffortLevel(level, `${modelPath}.effortLevels`)
+      }
+    }
+  }
+}
+
 function assertSessionOptions(
   value: unknown,
   path: string,
@@ -140,6 +194,9 @@ function assertSessionOptions(
   if (value.thinkingConfig !== undefined) {
     assertThinkingConfig(value.thinkingConfig, `${path}.thinkingConfig`)
   }
+  if (value.effortLevel !== undefined) {
+    assertThinkingEffortLevel(value.effortLevel, `${path}.effortLevel`)
+  }
   assertPermissionMode(value.permissionMode, `${path}.permissionMode`)
   assertRecord(value.environment, `${path}.environment`)
   assertStringRecord(
@@ -147,6 +204,12 @@ function assertSessionOptions(
     `${path}.environment.variables`,
   )
   assertString(value.environment.configDir, `${path}.environment.configDir`)
+  if (value.providerConfiguration !== undefined) {
+    assertProviderConfiguration(
+      value.providerConfiguration,
+      `${path}.providerConfiguration`,
+    )
+  }
   if (value.mcpServers !== undefined) {
     assertRecord(value.mcpServers, `${path}.mcpServers`)
   }
@@ -332,9 +395,47 @@ export function assertCcbCommandEnvelope(
     case 'turn.stop':
       assertSessionId(value)
       return
+    case 'session.resolveModelCatalog':
+      assertSessionId(value)
+      assertRecord(payload.environment, `${payload.type}.environment`)
+      assertStringRecord(
+        payload.environment.variables,
+        `${payload.type}.environment.variables`,
+      )
+      assertString(
+        payload.environment.configDir,
+        `${payload.type}.environment.configDir`,
+      )
+      assertProviderConfiguration(
+        payload.providerConfiguration,
+        `${payload.type}.providerConfiguration`,
+      )
+      return
     case 'session.setPermissionMode':
       assertSessionId(value)
       assertPermissionMode(payload.mode, `${payload.type}.mode`)
+      return
+    case 'session.updateConfig':
+      assertSessionId(value)
+      assertOptionalString(payload.model, `${payload.type}.model`)
+      if (payload.thinkingConfig !== undefined) {
+        assertThinkingConfig(
+          payload.thinkingConfig,
+          `${payload.type}.thinkingConfig`,
+        )
+      }
+      if (payload.effortLevel !== undefined) {
+        assertThinkingEffortLevel(
+          payload.effortLevel,
+          `${payload.type}.effortLevel`,
+        )
+      }
+      return
+    case 'session.setEffortLevel':
+      assertSessionId(value)
+      if (payload.level !== undefined) {
+        assertThinkingEffortLevel(payload.level, `${payload.type}.level`)
+      }
       return
     case 'session.compact':
       assertSessionId(value)
@@ -380,6 +481,49 @@ export function assertCcbCommandEnvelope(
       return
     default:
       throw new Error(`CCB Runtime command 不支持: ${payload.type}`)
+  }
+}
+
+export function assertCcbRuntimeModelCatalog(
+  value: unknown,
+): asserts value is CcbRuntimeModelCatalog {
+  assertRecord(value, 'CCB Runtime model catalog')
+  assertOptionalString(
+    value.defaultModel,
+    'CCB Runtime model catalog.defaultModel',
+  )
+  if (!Array.isArray(value.models)) {
+    throw new Error('CCB Runtime model catalog.models 必须是数组')
+  }
+  for (const [index, model] of value.models.entries()) {
+    const path = `CCB Runtime model catalog.models.${index}`
+    assertRecord(model, path)
+    assertString(model.value, `${path}.value`)
+    assertString(model.displayName, `${path}.displayName`)
+    assertString(model.description, `${path}.description`)
+    assertFiniteNumber(model.contextWindow, `${path}.contextWindow`)
+    if (!Number.isInteger(model.contextWindow) || model.contextWindow <= 0) {
+      throw new Error(`${path}.contextWindow 必须是正整数`)
+    }
+    assertBoolean(model.supportsEffort, `${path}.supportsEffort`)
+    if (!Array.isArray(model.supportedEffortLevels)) {
+      throw new Error(`${path}.supportedEffortLevels 必须是数组`)
+    }
+    for (const level of model.supportedEffortLevels) {
+      assertThinkingEffortLevel(level, `${path}.supportedEffortLevels`)
+    }
+    if (model.defaultEffortLevel !== undefined) {
+      assertThinkingEffortLevel(
+        model.defaultEffortLevel,
+        `${path}.defaultEffortLevel`,
+      )
+    }
+    assertBoolean(
+      model.supportsAdaptiveThinking,
+      `${path}.supportsAdaptiveThinking`,
+    )
+    assertBoolean(model.supportsFastMode, `${path}.supportsFastMode`)
+    assertBoolean(model.supportsAutoMode, `${path}.supportsAutoMode`)
   }
 }
 

@@ -35,6 +35,7 @@ import type {
   RecentMessagesResult,
   MessageSearchResult,
   AgentSessionMeta,
+  AgentRuntimeModelCatalog,
   SDKMessage,
   AgentSendInput,
   AgentStreamEvent,
@@ -438,6 +439,12 @@ export interface ElectronAPI {
 
   /** 更新 Agent 会话模型选择 */
   updateAgentSessionModel: (id: string, channelId?: string, modelId?: string) => Promise<AgentSessionMeta>
+
+  /** 读取指定渠道经 CCB Runtime 解析后的模型目录 */
+  getAgentRuntimeModelCatalog: (
+    channelId: string,
+    defaultModel?: string,
+  ) => Promise<AgentRuntimeModelCatalog>
 
   /** 删除 Agent 会话 */
   deleteAgentSession: (id: string) => Promise<void>
@@ -1468,6 +1475,14 @@ const electronAPI: ElectronAPI = {
 
   updateAgentSessionModel: (id: string, channelId?: string, modelId?: string) => {
     return ipcRenderer.invoke(AGENT_IPC_CHANNELS.UPDATE_SESSION_MODEL, id, channelId, modelId)
+  },
+
+  getAgentRuntimeModelCatalog: (channelId: string, defaultModel?: string) => {
+    return ipcRenderer.invoke(
+      AGENT_IPC_CHANNELS.GET_RUNTIME_MODEL_CATALOG,
+      channelId,
+      defaultModel,
+    )
   },
 
   deleteAgentSession: (id: string) => {

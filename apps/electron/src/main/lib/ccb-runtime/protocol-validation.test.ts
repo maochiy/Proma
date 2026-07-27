@@ -8,6 +8,7 @@ import {
 import {
   assertCcbCommandEnvelope,
   assertCcbEventEnvelope,
+  assertCcbRuntimeModelCatalog,
 } from './protocol-validation'
 
 function commandEnvelope(
@@ -73,6 +74,99 @@ describe('Proma CCB Runtime protocol validation', () => {
     }
     envelope.payload = { type: 'unknown.command' }
     expect(() => assertCcbCommandEnvelope(envelope)).toThrow('不支持')
+  })
+
+  test('校验 Session 思考等级命令', () => {
+    expect(() =>
+      assertCcbCommandEnvelope(
+        commandEnvelope(
+          { type: 'session.setEffortLevel', level: 'max' },
+          'session-1',
+        ),
+      ),
+    ).not.toThrow()
+
+    const envelope = commandEnvelope(
+      { type: 'session.setEffortLevel', level: 'high' },
+      'session-1',
+    ) as unknown as {
+      protocolVersion: number
+      requestId: string
+      sessionId: string
+      timestamp: number
+      payload: { type: 'session.setEffortLevel'; level: string }
+    }
+    envelope.payload.level = 'ultra'
+    expect(() => assertCcbCommandEnvelope(envelope)).toThrow('level 非法')
+  })
+
+  test('校验 Session Runtime 配置更新命令', () => {
+    expect(() =>
+      assertCcbCommandEnvelope(
+        commandEnvelope(
+          {
+            type: 'session.updateConfig',
+            model: 'claude-opus-4-6',
+            thinkingConfig: { type: 'adaptive' },
+            effortLevel: 'max',
+          },
+          'session-1',
+        ),
+      ),
+    ).not.toThrow()
+  })
+
+  test('校验 Provider-aware 模型目录命令', () => {
+    expect(() =>
+      assertCcbCommandEnvelope(
+        commandEnvelope(
+          {
+            type: 'session.resolveModelCatalog',
+            environment: {
+              variables: {
+                CLAUDE_CODE_USE_OPENAI: '1',
+                OPENAI_MODEL: 'reasoner-a',
+              },
+              configDir: '/tmp/ccb',
+            },
+            providerConfiguration: {
+              modelType: 'openai',
+              defaultModel: 'reasoner-a',
+              models: [
+                {
+                  id: 'reasoner-a',
+                  name: 'Reasoner A',
+                  effortLevels: ['low', 'high'],
+                },
+              ],
+            },
+          },
+          'catalog:channel-1',
+        ),
+      ),
+    ).not.toThrow()
+  })
+
+  test('校验 CCB Runtime 模型目录响应', () => {
+    expect(() =>
+      assertCcbRuntimeModelCatalog({
+        defaultModel: 'reasoner-a',
+        models: [
+          {
+            value: 'reasoner-a',
+            displayName: 'Reasoner A',
+            description: 'Runtime model',
+            contextWindow: 200_000,
+            supportsEffort: true,
+            supportedEffortLevels: ['low', 'high'],
+            defaultEffortLevel: 'high',
+            supportsAdaptiveThinking: false,
+            supportsFastMode: false,
+            supportsAutoMode: false,
+          },
+        ],
+      }),
+    ).not.toThrow()
   })
 
   test('接受合法的 Runtime event', () => {

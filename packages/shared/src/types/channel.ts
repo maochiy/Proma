@@ -261,6 +261,10 @@ export interface ChannelModel {
   enabled: boolean
   /** 来源标记：手动添加的模型在拉取供应商列表时保留，不会被覆盖清除 */
   source?: 'manual' | 'fetched'
+  /** 模型显式声明支持的思考等级；空数组表示不支持。 */
+  thinkingEffortLevels?: import('./agent').ThinkingEffortLevel[]
+  /** 模型推荐的默认思考等级。 */
+  defaultThinkingEffortLevel?: import('./agent').ThinkingEffortLevel
 }
 
 /**

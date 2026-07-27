@@ -319,6 +319,10 @@ export interface ModelOption {
   modelName: string
   /** AI 供应商类型 */
   provider: ProviderType
+  /** 模型显式声明支持的思考等级。 */
+  thinkingEffortLevels?: import('./agent').ThinkingEffortLevel[]
+  /** 模型推荐的默认思考等级。 */
+  defaultThinkingEffortLevel?: import('./agent').ThinkingEffortLevel
 }
 
 // ===== 分页加载相关 =====

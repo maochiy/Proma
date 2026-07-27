@@ -12,6 +12,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { resolveCcbRuntimeArtifact } from './artifact-resolver'
 import {
+  CCB_PROTOCOL_VERSION,
   EXPECTED_CCB_RUNTIME_COMMIT,
   EXPECTED_CCB_RUNTIME_VERSION,
 } from './protocol'
@@ -46,7 +47,7 @@ function createArtifact(overrides: Record<string, unknown> = {}): string {
       runtimeName: 'claude-code-best',
       runtimeVersion: EXPECTED_CCB_RUNTIME_VERSION,
       gitCommit: EXPECTED_CCB_RUNTIME_COMMIT,
-      protocolVersion: 1,
+      protocolVersion: CCB_PROTOCOL_VERSION,
       platform: process.platform,
       arch: process.arch,
       buildTime: new Date().toISOString(),

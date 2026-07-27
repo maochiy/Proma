@@ -7,7 +7,7 @@
 
 import { atom } from 'jotai'
 import { atomFamily, atomWithStorage } from 'jotai/utils'
-import type { AgentSessionMeta, AgentEvent, AgentWorkspace, AgentPendingFile, RetryAttempt, PromaPermissionMode, PermissionRequest, AskUserRequest, ExitPlanModeRequest, ThinkingConfig, SDKMessage, UnstagedChangesResult } from '@proma/shared'
+import type { AgentSessionMeta, AgentEvent, AgentWorkspace, AgentPendingFile, AgentRuntimeModelCatalog, RetryAttempt, PromaPermissionMode, PermissionRequest, AskUserRequest, ExitPlanModeRequest, ThinkingConfig, ThinkingEffortLevel, SDKMessage, UnstagedChangesResult } from '@proma/shared'
 import { PROMA_DEFAULT_PERMISSION_MODE } from '@proma/shared'
 import { calculateDockBadgeCount, countPendingRequests } from '@/lib/dock-badge-count'
 import type { AgentQueuedMessage } from '@/lib/agent-message-queue'
@@ -222,7 +222,8 @@ export const agentChannelIdAtom = atom<string | null>(null)
 export const agentModelIdAtom = atom<string | null>(null)
 /** Agent 启用的渠道 ID 列表（多选，设置页 Switch 开关控制） */
 export const agentChannelIdsAtom = atom<string[]>([])
-/** 新 Agent 会话默认 runtime */
+/** CCB Runtime 按 Channel 解析的模型目录；仅保存在内存中。 */
+export const agentRuntimeModelCatalogsAtom = atom<Map<string, AgentRuntimeModelCatalog>>(new Map())
 
 /** Per-session 渠道 ID Map — sessionId → channelId */
 export const agentSessionChannelMapAtom = atom<Map<string, string>>(new Map())
@@ -422,6 +423,12 @@ export const sessionExistsAtom = atomFamily((sessionId: string) =>
 
 /** Agent 思考模式：未加载持久化设置前也默认开启，避免输入栏按钮短暂显示为关闭。 */
 export const agentThinkingAtom = atom<ThinkingConfig | undefined>({ type: 'adaptive' })
+
+/** Agent 思考强度；会按当前模型能力自动归一化。 */
+export const agentThinkingEffortLevelAtom = atom<ThinkingEffortLevel | undefined>(undefined)
+
+/** 会话级思考强度覆盖；max 等临时档位不会污染全局持久化偏好。 */
+export const agentSessionThinkingEffortMapAtom = atom<Map<string, ThinkingEffortLevel>>(new Map())
 
 /** Agent 最大预算（美元/次） */
 export const agentMaxBudgetUsdAtom = atom<number | undefined>(undefined)

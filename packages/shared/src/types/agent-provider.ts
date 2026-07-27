@@ -5,7 +5,13 @@
  * 当前实现：Claude Code Best Desktop Runtime。
  */
 
-import type { PromaPermissionMode, SDKMessage, ThinkingConfig } from './agent'
+import type {
+  PromaPermissionMode,
+  AgentRuntimeProviderConfiguration,
+  SDKMessage,
+  ThinkingConfig,
+  ThinkingEffortLevel,
+} from './agent'
 
 /** SDK 用户消息（队列消息注入用，匹配 SDK SDKUserMessage 结构） */
 export interface SDKUserMessageInput {
@@ -54,8 +60,10 @@ export interface AgentRuntimeSessionOperationInput {
   model?: string
   fallbackModel?: string
   env?: Record<string, string | undefined>
+  providerConfiguration?: AgentRuntimeProviderConfiguration
   permissionMode?: PromaPermissionMode
   thinkingConfig?: ThinkingConfig
+  effortLevel?: ThinkingEffortLevel
   mcpServers?: Record<string, unknown>
   systemPrompt?: string
 }

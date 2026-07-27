@@ -35,6 +35,48 @@ export type ThinkingConfig =
   | { type: 'enabled'; budgetTokens: number }
   | { type: 'disabled' }
 
+/** CCB 支持的离散思考强度。 */
+export type ThinkingEffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+
+/** Proma 传给 CCB 的 Provider 模型配置。 */
+export interface AgentRuntimeConfiguredModel {
+  id: string
+  name?: string
+  description?: string
+  contextWindow?: number
+  effortLevels?: ThinkingEffortLevel[]
+}
+
+/** CCB Desktop Runtime 的 Provider 配置。 */
+export interface AgentRuntimeProviderConfiguration {
+  modelType: 'anthropic' | 'openai' | 'gemini' | 'grok'
+  defaultModel?: string
+  models: AgentRuntimeConfiguredModel[]
+}
+
+/** CCB 解析后的单模型能力。 */
+export interface AgentRuntimeModelInfo {
+  value: string
+  displayName: string
+  description: string
+  contextWindow: number
+  supportsEffort: boolean
+  supportedEffortLevels: ThinkingEffortLevel[]
+  defaultEffortLevel?: ThinkingEffortLevel
+  supportsAdaptiveThinking: boolean
+  supportsFastMode: boolean
+  supportsAutoMode: boolean
+}
+
+/** 指定 Proma Channel 在 CCB 中解析出的模型目录。 */
+export interface AgentRuntimeModelCatalog {
+  channelId: string
+  defaultModel?: string
+  models: AgentRuntimeModelInfo[]
+  runtimeVersion?: string
+  runtimeArtifactCommit?: string
+}
+
 /**
  * 自定义子代理定义
  *
@@ -924,6 +966,16 @@ export interface AgentSendInput {
   modelId?: string
   /** 工作区 ID（用于确定 cwd） */
   workspaceId?: string
+  /**
+   * 本轮 Runtime 思考配置。
+   *
+   * Renderer 发送时必须显式提供，避免通过异步 settings 文件传递实时状态；
+   * Headless/Automation 等入口省略时由 Main 使用应用设置兜底。
+   */
+  runtimeThinking?: {
+    thinkingConfig?: ThinkingConfig
+    effortLevel?: ThinkingEffortLevel
+  }
   /** 附加的外部目录（绝对路径，传递给 SDK additionalDirectories） */
   additionalDirectories?: string[]
   /** 动态注入的 MCP 服务器（仅在本次会话中生效，如飞书群聊工具） */
@@ -1387,6 +1439,8 @@ export const AGENT_IPC_CHANNELS = {
   UPDATE_TITLE: 'agent:update-title',
   /** 更新会话模型选择 */
   UPDATE_SESSION_MODEL: 'agent:update-session-model',
+  /** 读取指定 Channel 经 CCB Runtime 解析后的模型目录与能力 */
+  GET_RUNTIME_MODEL_CATALOG: 'agent:get-runtime-model-catalog',
   /** 删除会话 */
   DELETE_SESSION: 'agent:delete-session',
   /** 迁移 Chat 对话记录到 Agent 会话 */
