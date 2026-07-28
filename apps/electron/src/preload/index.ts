@@ -37,6 +37,8 @@ import type {
   AgentSessionMeta,
   AgentRuntimeModelCatalog,
   AgentRuntimeModelCatalogDraftInput,
+  CcbNativeModelConfiguration,
+  CcbNativeModelConfigurationUpdate,
   SDKMessage,
   AgentSendInput,
   AgentStreamEvent,
@@ -457,6 +459,17 @@ export interface ElectronAPI {
     defaultModel?: string,
     workspaceId?: string,
   ) => Promise<AgentRuntimeModelCatalog>
+
+  /** 读取 CCB CLI 与 Desktop 共用的原生模型配置 */
+  getCcbNativeModelConfiguration: () => Promise<CcbNativeModelConfiguration>
+
+  /** 用户进入编辑页时显式读取 CCB 原生模型密钥 */
+  getCcbNativeModelSecret: () => Promise<string>
+
+  /** 保存 CCB CLI 与 Desktop 共用的原生模型配置 */
+  updateCcbNativeModelConfiguration: (
+    input: CcbNativeModelConfigurationUpdate,
+  ) => Promise<CcbNativeModelConfiguration>
 
   /** 读取尚未保存的配置经 CCB Runtime 解析后的模型目录 */
   getAgentRuntimeModelCatalogDraft: (
@@ -1531,6 +1544,23 @@ const electronAPI: ElectronAPI = {
       channelId,
       defaultModel,
       workspaceId,
+    )
+  },
+
+  getCcbNativeModelConfiguration: () => {
+    return ipcRenderer.invoke(AGENT_IPC_CHANNELS.GET_NATIVE_MODEL_CONFIG)
+  },
+
+  getCcbNativeModelSecret: () => {
+    return ipcRenderer.invoke(AGENT_IPC_CHANNELS.GET_NATIVE_MODEL_SECRET)
+  },
+
+  updateCcbNativeModelConfiguration: (
+    input: CcbNativeModelConfigurationUpdate,
+  ) => {
+    return ipcRenderer.invoke(
+      AGENT_IPC_CHANNELS.UPDATE_NATIVE_MODEL_CONFIG,
+      input,
     )
   },
 

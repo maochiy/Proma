@@ -19,6 +19,7 @@ import {
 } from 'lucide-react'
 import { useAtomValue } from 'jotai'
 import { thinkingExpandedAtom } from '@/atoms/chat-atoms'
+import { agentRuntimeExecutionGraphsAtom } from '@/atoms/agent-atoms'
 import { cn } from '@/lib/utils'
 import { MessageResponse } from '@/components/ai-elements/message'
 import { getToolIcon, extractFilePath } from './tool-utils'
@@ -28,6 +29,7 @@ import { PreviewOpenButton } from './tool-result-renderers/preview-open-button'
 import { getTaskGetStatusLabel, parseTaskGetResult, type ParsedTaskGetResult } from './tool-result-renderers/task-get-result'
 import { parseTaskListResult, type ParsedTaskListItem } from './tool-result-renderers/task-list-result'
 import { formatDuration } from './AgentMessages'
+import { RuntimeSubagentDetails } from './RuntimeSubagentDetails'
 import type {
   SDKContentBlock,
   SDKMessage,
@@ -211,6 +213,8 @@ export interface ContentBlockProps {
   childBlocks?: SDKContentBlock[]
   /** 是否正在流式输出中（仅流式中的未完成工具调用才显示 spinner） */
   isStreaming?: boolean
+  /** Proma 会话 ID，用于读取 CCB 执行图和子 Agent Transcript。 */
+  sessionId?: string
 }
 
 // ===== 提示词折叠行 =====
@@ -332,10 +336,12 @@ interface ToolUseBlockProps {
   basePath?: string
   /** 是否正在流式输出中 */
   isStreaming?: boolean
+  sessionId?: string
 }
 
-function ToolUseBlock({ block, allMessages, animate = false, index = 0, dimmed = false, childBlocks, basePath, isStreaming }: ToolUseBlockProps): React.ReactElement {
+function ToolUseBlock({ block, allMessages, animate = false, index = 0, dimmed = false, childBlocks, basePath, isStreaming, sessionId }: ToolUseBlockProps): React.ReactElement {
   const [expanded, setExpanded] = React.useState(false)
+  const executionGraphs = useAtomValue(agentRuntimeExecutionGraphsAtom)
   const toolResult = useToolResult(block.id, allMessages)
   const resultText = toolResult?.result
   const isError = toolResult?.isError === true
@@ -351,6 +357,9 @@ function ToolUseBlock({ block, allMessages, animate = false, index = 0, dimmed =
   const isAgentTool = block.name === 'Agent' || block.name === 'Task'
   const hasChildren = isAgentTool && childBlocks && childBlocks.length > 0
   const subAgentMeta = useSubAgentMeta(block.id, allMessages)
+  const runtimeNode = sessionId
+    ? executionGraphs.get(sessionId)?.nodes.find(node => node.toolUseId === block.id)
+    : undefined
 
   // Agent/Task 子代理内容默认折叠
   const [childrenExpanded, setChildrenExpanded] = React.useState(false)
@@ -443,8 +452,17 @@ function ToolUseBlock({ block, allMessages, animate = false, index = 0, dimmed =
                 index={ci}
                 dimmed
                 isStreaming={isStreaming}
+                sessionId={sessionId}
               />
             ))}
+
+            {sessionId && runtimeNode && (
+              <RuntimeSubagentDetails
+                sessionId={sessionId}
+                node={runtimeNode}
+                className="rounded-lg bg-muted/30 p-2.5"
+              />
+            )}
 
             {/* SubAgent 完成信息 */}
             {isCompleted && (
@@ -646,7 +664,7 @@ function ThinkingBlock({ block, dimmed = false }: ThinkingBlockProps): React.Rea
 
 // ===== ContentBlock 主组件 =====
 
-export function ContentBlock({ block, allMessages, basePath, basePaths, animate = false, index = 0, dimmed = false, childBlocks, isStreaming }: ContentBlockProps): React.ReactElement | null {
+export function ContentBlock({ block, allMessages, basePath, basePaths, animate = false, index = 0, dimmed = false, childBlocks, isStreaming, sessionId }: ContentBlockProps): React.ReactElement | null {
   // text 块 — 主要内容，不受 dimmed 影响
   if (block.type === 'text') {
     const textBlock = block as SDKTextBlock
@@ -669,6 +687,7 @@ export function ContentBlock({ block, allMessages, basePath, basePaths, animate 
         childBlocks={childBlocks}
         basePath={basePath}
         isStreaming={isStreaming}
+        sessionId={sessionId}
       />
     )
   }

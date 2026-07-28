@@ -718,13 +718,13 @@ function startDelegation(
 function buildCollaborationSchemas(z: ZodModule['z']) {
   const nonBlankString = z.string().trim().min(1)
   const role = z.enum(['explore', 'research', 'implement', 'review', 'custom'])
-  const permissionMode = z.enum(['plan', 'bypassPermissions'])
+  const permissionMode = z.enum(['plan', 'default', 'bypassPermissions'])
   const delegateItem = z.object({
     title: z.string().optional().describe('子会话标题，简短说明子任务'),
     role: role.optional().describe('子任务角色：explore/research/implement/review/custom'),
     task: nonBlankString.describe('发送给子 Agent 的完整任务说明，必须自包含必要上下文'),
     expectedOutput: z.string().optional().describe('希望子 Agent 最终返回的格式或要点'),
-    permissionMode: permissionMode.optional().describe('子会话权限模式；不能高于父会话权限'),
+    permissionMode: permissionMode.optional().describe('子会话权限模式：plan/default/bypassPermissions；不能高于父会话权限'),
     modelId: nonBlankString.optional().describe('可选目标模型 ID；必须属于父会话当前渠道且已启用。不传则继承父会话当前模型'),
   })
   return {
@@ -734,7 +734,7 @@ function buildCollaborationSchemas(z: ZodModule['z']) {
       role: role.optional().describe('子任务角色：explore/research/implement/review/custom'),
       task: nonBlankString.describe('发送给子 Agent 的完整任务说明，必须自包含必要上下文'),
       expectedOutput: z.string().optional().describe('希望子 Agent 最终返回的格式或要点'),
-      permissionMode: permissionMode.optional().describe('子会话权限模式；不能高于父会话权限'),
+      permissionMode: permissionMode.optional().describe('子会话权限模式：plan/default/bypassPermissions；不能高于父会话权限'),
       modelId: nonBlankString.optional().describe('可选目标模型 ID；必须属于父会话当前渠道且已启用。不传则继承父会话当前模型'),
     },
     delegateBatch: {

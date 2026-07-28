@@ -46,8 +46,8 @@ export function resolveCcbModelType(
 /**
  * 将 Proma Channel 转换为 CCB 原生配置模型目录。
  *
- * Channel 只决定用户启用哪些模型以及可选的显式 effort 子集；
- * context window、默认 effort、adaptive/fast/auto 等能力全部由 CCB 内核解析。
+ * Channel 可显式覆盖名称、描述、Context Window 和 effort 子集；
+ * 未配置的能力以及 adaptive/fast/auto 等仍全部由 CCB 内核解析。
  */
 export function buildCcbProviderConfiguration(
   channel: Channel,
@@ -59,6 +59,12 @@ export function buildCcbProviderConfiguration(
     .map(model => ({
       id: model.id,
       name: model.name,
+      ...(model.description !== undefined
+        ? { description: model.description }
+        : {}),
+      ...(model.contextWindow !== undefined
+        ? { contextWindow: model.contextWindow }
+        : {}),
       ...(model.thinkingEffortLevels !== undefined
         ? { effortLevels: [...model.thinkingEffortLevels] }
         : {}),

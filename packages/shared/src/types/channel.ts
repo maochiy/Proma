@@ -257,6 +257,10 @@ export interface ChannelModel {
   id: string
   /** 模型显示名称 */
   name: string
+  /** 模型说明；传给 CCB 模型目录并用于选择器辅助展示。 */
+  description?: string
+  /** 上下文窗口 Token 数；未配置时由 CCB 内核判断。 */
+  contextWindow?: number
   /** 是否启用 */
   enabled: boolean
   /** 来源标记：手动添加的模型在拉取供应商列表时保留，不会被覆盖清除 */

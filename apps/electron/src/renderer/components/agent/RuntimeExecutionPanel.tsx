@@ -16,12 +16,11 @@ import {
 import type {
   AgentRuntimeExecutionGraph,
   AgentRuntimeExecutionNode,
-  AgentRuntimeSubagentTranscript,
-  SDKMessage,
 } from '@proma/shared'
 import { agentRuntimeExecutionGraphsAtom } from '@/atoms/agent-atoms'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
+import { RuntimeSubagentDetails } from './RuntimeSubagentDetails'
 
 interface RuntimeExecutionPanelProps {
   sessionId: string
@@ -55,23 +54,6 @@ function nodeIcon(kind: AgentRuntimeExecutionNode['kind']): React.ReactNode {
   }
 }
 
-function messageText(message: SDKMessage): string | undefined {
-  const record = message as Record<string, unknown>
-  const nested = record.message
-  if (!nested || typeof nested !== 'object') return undefined
-  const content = (nested as Record<string, unknown>).content
-  if (typeof content === 'string') return content
-  if (!Array.isArray(content)) return undefined
-  const texts = content.flatMap(block => {
-    if (!block || typeof block !== 'object') return []
-    const item = block as Record<string, unknown>
-    return item.type === 'text' && typeof item.text === 'string'
-      ? [item.text]
-      : []
-  })
-  return texts.length > 0 ? texts.join('\n') : undefined
-}
-
 export function RuntimeExecutionPanel({
   sessionId,
 }: RuntimeExecutionPanelProps): React.ReactElement {
@@ -80,17 +62,9 @@ export function RuntimeExecutionPanel({
   const graph = graphs.get(sessionId)
   const [refreshing, setRefreshing] = React.useState(false)
   const [expandedNodeId, setExpandedNodeId] = React.useState<string>()
-  const [transcripts, setTranscripts] = React.useState(
-    new Map<string, AgentRuntimeSubagentTranscript>(),
-  )
-  const [loadingNodeId, setLoadingNodeId] = React.useState<string>()
-  const [transcriptError, setTranscriptError] = React.useState<string>()
 
   React.useEffect(() => {
     setExpandedNodeId(undefined)
-    setTranscripts(new Map())
-    setLoadingNodeId(undefined)
-    setTranscriptError(undefined)
   }, [sessionId])
 
   const refresh = React.useCallback(async (): Promise<void> => {
@@ -113,36 +87,9 @@ export function RuntimeExecutionPanel({
     void refresh()
   }, [refresh])
 
-  const toggleNode = React.useCallback(async (
-    node: AgentRuntimeExecutionNode,
-  ): Promise<void> => {
-    if (expandedNodeId === node.id) {
-      setExpandedNodeId(undefined)
-      return
-    }
-    setExpandedNodeId(node.id)
-    setTranscriptError(undefined)
-    if (!node.transcriptAvailable || transcripts.has(node.id)) return
-    setLoadingNodeId(node.id)
-    try {
-      const transcript =
-        await window.electronAPI.getAgentRuntimeSubagentTranscript(
-          sessionId,
-          node.id,
-        )
-      setTranscripts(previous => {
-        const next = new Map(previous)
-        next.set(node.id, transcript)
-        return next
-      })
-    } catch (error) {
-      setTranscriptError(
-        error instanceof Error ? error.message : '读取 CCB 子代理 Transcript 失败',
-      )
-    } finally {
-      setLoadingNodeId(undefined)
-    }
-  }, [expandedNodeId, sessionId, transcripts])
+  const toggleNode = React.useCallback((nodeId: string): void => {
+    setExpandedNodeId(previous => previous === nodeId ? undefined : nodeId)
+  }, [])
 
   const effectiveGraph: AgentRuntimeExecutionGraph = graph ?? {
     nodes: [],
@@ -209,13 +156,12 @@ export function RuntimeExecutionPanel({
             </p>
           ) : effectiveGraph.nodes.map(node => {
             const expanded = expandedNodeId === node.id
-            const transcript = transcripts.get(node.id)
             return (
               <div key={node.id} className="overflow-hidden rounded-lg bg-background/75">
                 <button
                   type="button"
                   className="flex w-full items-start gap-2 px-2 py-2 text-left hover:bg-accent/45"
-                  onClick={() => void toggleNode(node)}
+                  onClick={() => toggleNode(node.id)}
                 >
                   <span className="mt-0.5 text-muted-foreground">{nodeIcon(node.kind)}</span>
                   <div className="min-w-0 flex-1">
@@ -231,42 +177,13 @@ export function RuntimeExecutionPanel({
                       </p>
                     )}
                   </div>
-                  {node.transcriptAvailable && (
-                    expanded
-                      ? <ChevronDown className="mt-0.5 size-3.5 text-muted-foreground" />
-                      : <ChevronRight className="mt-0.5 size-3.5 text-muted-foreground" />
-                  )}
+                  {expanded
+                    ? <ChevronDown className="mt-0.5 size-3.5 text-muted-foreground" />
+                    : <ChevronRight className="mt-0.5 size-3.5 text-muted-foreground" />}
                 </button>
-                {expanded && node.transcriptAvailable && (
+                {expanded && (
                   <div className="border-t border-border/45 bg-background/45 px-2 py-2">
-                    {loadingNodeId === node.id ? (
-                      <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-                        <Loader2 className="size-3 animate-spin" />
-                        正在读取 CCB Transcript
-                      </div>
-                    ) : transcriptError ? (
-                      <p className="text-[11px] leading-4 text-destructive">
-                        {transcriptError}
-                      </p>
-                    ) : (
-                      <div className="max-h-56 space-y-2 overflow-y-auto">
-                        {(transcript?.messages ?? []).map((message, index) => {
-                          const text = messageText(message)
-                          if (!text) return null
-                          return (
-                            <div key={`${node.id}-${index}`} className="text-[11px] leading-4">
-                              <span className="mr-1 font-medium text-muted-foreground">
-                                {message.type === 'user' ? '用户' : 'Agent'}:
-                              </span>
-                              <span className="whitespace-pre-wrap">{text}</span>
-                            </div>
-                          )
-                        })}
-                        {transcript && transcript.messages.length === 0 && (
-                          <p className="text-[11px] text-muted-foreground">暂无可展示内容</p>
-                        )}
-                      </div>
-                    )}
+                    <RuntimeSubagentDetails sessionId={sessionId} node={node} />
                   </div>
                 )}
               </div>

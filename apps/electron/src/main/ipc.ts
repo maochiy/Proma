@@ -10,7 +10,7 @@ import { join, resolve, sep, dirname } from 'node:path'
 import { existsSync, realpathSync, rmSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { IPC_CHANNELS, CHANNEL_IPC_CHANNELS, CHAT_IPC_CHANNELS, AGENT_IPC_CHANNELS, ENVIRONMENT_IPC_CHANNELS, INSTALLER_IPC_CHANNELS, PROXY_IPC_CHANNELS, GITHUB_RELEASE_IPC_CHANNELS, SYSTEM_PROMPT_IPC_CHANNELS, CHAT_TOOL_IPC_CHANNELS, FEISHU_IPC_CHANNELS, DINGTALK_IPC_CHANNELS, WECHAT_IPC_CHANNELS, AUTOMATION_IPC_CHANNELS, isPromaPermissionMode, normalizePathForCompare } from '@proma/shared'
+import { IPC_CHANNELS, CHANNEL_IPC_CHANNELS, CHAT_IPC_CHANNELS, AGENT_IPC_CHANNELS, ENVIRONMENT_IPC_CHANNELS, INSTALLER_IPC_CHANNELS, PROXY_IPC_CHANNELS, GITHUB_RELEASE_IPC_CHANNELS, SYSTEM_PROMPT_IPC_CHANNELS, CHAT_TOOL_IPC_CHANNELS, FEISHU_IPC_CHANNELS, DINGTALK_IPC_CHANNELS, WECHAT_IPC_CHANNELS, AUTOMATION_IPC_CHANNELS, CCB_NATIVE_CHANNEL_ID, isPromaPermissionMode, normalizePathForCompare } from '@proma/shared'
 import { USER_PROFILE_IPC_CHANNELS, SETTINGS_IPC_CHANNELS, SCRATCH_PAD_IPC_CHANNELS, QUICK_TASK_IPC_CHANNELS, VOICE_DICTATION_IPC_CHANNELS, APP_ICON_IPC_CHANNELS, DOCK_BADGE_IPC_CHANNELS, STORAGE_IPC_CHANNELS } from '../types'
 import type {
   QuickTaskSubmitInput,
@@ -46,6 +46,8 @@ import type {
   AgentSessionMeta,
   AgentRuntimeModelCatalog,
   AgentRuntimeModelCatalogDraftInput,
+  CcbNativeModelConfiguration,
+  CcbNativeModelConfigurationUpdate,
   RuntimeSkillCatalog,
   AgentSendInput,
   AgentWorkspace,
@@ -195,9 +197,15 @@ import {
 } from './lib/agent-session-manager'
 import { runAgent, stopAgent, closeAgentSessionRuntime, generateAgentTitle, saveFilesToAgentSession, saveFilesToWorkspaceFiles, isAgentSessionActive, queueAgentMessage, updateAgentPermissionMode, updateAgentRuntimeConfig, getAgentRuntimeExecutionGraph, getAgentRuntimeSubagentTranscript, rewindAgentSession, forkAgentRuntimeSession } from './lib/agent-service'
 import {
+  clearAgentRuntimeModelCatalogCache,
   resolveAgentRuntimeModelCatalog,
   resolveDraftAgentRuntimeModelCatalog,
 } from './lib/ccb-runtime/model-catalog-service'
+import {
+  getCcbNativeModelConfiguration,
+  getCcbNativeModelSecret,
+  updateCcbNativeModelConfiguration,
+} from './lib/ccb-runtime/native-model-config-service'
 import { resolveAgentRuntimeSkillCatalog } from './lib/ccb-runtime/skill-catalog-service'
 import {
   deleteCcbSessionTranscript,
@@ -1916,6 +1924,32 @@ export function registerIpcHandlers(): void {
     ): Promise<AgentRuntimeModelCatalog> => {
       return resolveAgentRuntimeModelCatalog(channelId, defaultModel, workspaceId)
     }
+  )
+
+  ipcMain.handle(
+    AGENT_IPC_CHANNELS.GET_NATIVE_MODEL_CONFIG,
+    async (): Promise<CcbNativeModelConfiguration> => {
+      return getCcbNativeModelConfiguration()
+    },
+  )
+
+  ipcMain.handle(
+    AGENT_IPC_CHANNELS.GET_NATIVE_MODEL_SECRET,
+    async (): Promise<string> => {
+      return getCcbNativeModelSecret()
+    },
+  )
+
+  ipcMain.handle(
+    AGENT_IPC_CHANNELS.UPDATE_NATIVE_MODEL_CONFIG,
+    async (
+      _,
+      input: CcbNativeModelConfigurationUpdate,
+    ): Promise<CcbNativeModelConfiguration> => {
+      const configuration = updateCcbNativeModelConfiguration(input)
+      clearAgentRuntimeModelCatalogCache(CCB_NATIVE_CHANNEL_ID)
+      return configuration
+    },
   )
 
   // 读取尚未保存的模型配置经 CCB 内核解析后的能力目录

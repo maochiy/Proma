@@ -70,6 +70,7 @@ import { dingtalkBotStatesAtom } from './atoms/dingtalk-atoms'
 import { currentConversationIdAtom, channelsAtom, channelsLoadedAtom, selectedModelAtom } from './atoms/chat-atoms'
 import { appModeAtom } from './atoms/app-mode'
 import type { FeishuBotBridgeState, FeishuBridgeState, DingTalkBotBridgeState, DingTalkBridgeState } from '@proma/shared'
+import { CCB_NATIVE_CHANNEL_ID } from '@proma/shared'
 import { Toaster } from './components/ui/sonner'
 import { toast } from 'sonner'
 import { diffCapabilities } from '@proma/shared'
@@ -208,14 +209,21 @@ function AgentSettingsInitializer(): null {
       }
 
       // 渠道的启用状态是唯一开关，启动时从实际渠道派生 Agent 渠道白名单。
-      const agentChannelIds = getEnabledAgentChannelIds(channels)
+      const enabledAgentChannelIds = getEnabledAgentChannelIds(channels)
+      const preferredPromaChannelId =
+        settings.agentChannelId
+        && enabledAgentChannelIds.includes(settings.agentChannelId)
+          ? settings.agentChannelId
+          : enabledAgentChannelIds[0]
+      const agentChannelIds = preferredPromaChannelId
+        ? [preferredPromaChannelId]
+        : []
       setAgentChannelIds(agentChannelIds)
 
-      const selectedChannel = settings.agentChannelId
-        ? channels.find((channel) => channel.id === settings.agentChannelId)
-        : undefined
-      const selectedChannelIsUsable = selectedChannel?.enabled
-        && agentChannelIds.includes(selectedChannel.id)
+      const selectedChannelId =
+        settings.agentChannelId === CCB_NATIVE_CHANNEL_ID
+          ? CCB_NATIVE_CHANNEL_ID
+          : preferredPromaChannelId ?? CCB_NATIVE_CHANNEL_ID
 
       const updates: Parameters<typeof window.electronAPI.updateSettings>[0] = {}
       const storedAgentChannelIds = settings.agentChannelIds ?? []
@@ -223,16 +231,19 @@ function AgentSettingsInitializer(): null {
         || agentChannelIds.some((id, index) => id !== storedAgentChannelIds[index])
       if (whitelistChanged) updates.agentChannelIds = agentChannelIds
 
-      // 验证并加载 Agent 默认渠道/模型，不能恢复到不兼容或已禁用渠道。
-      if (settings.agentChannelId && selectedChannelIsUsable) {
-        setAgentChannelId(settings.agentChannelId)
+      // CCB 原生配置也是合法的全局模型配置来源；Proma 配置最多启用一个。
+      setAgentChannelId(selectedChannelId)
+      if (
+        settings.agentModelId
+        && settings.agentChannelId === selectedChannelId
+      ) {
         if (settings.agentModelId) setAgentModelId(settings.agentModelId)
-      } else if (settings.agentChannelId) {
-        console.warn('[AgentSettings] agentChannelId 指向当前 Core 不可用的渠道，清除')
-        setAgentChannelId(null)
+      } else {
         setAgentModelId(null)
-        updates.agentChannelId = undefined
         updates.agentModelId = undefined
+      }
+      if (settings.agentChannelId !== selectedChannelId) {
+        updates.agentChannelId = selectedChannelId
       }
 
       if (Object.keys(updates).length > 0) {

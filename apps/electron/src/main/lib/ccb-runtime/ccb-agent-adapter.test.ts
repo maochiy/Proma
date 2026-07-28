@@ -3,6 +3,10 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { createAdditionalSkillDirectoriesFingerprint } from './skill-directory-fingerprint'
+import {
+  createSessionRuntimeConfigCommand,
+  resolveCcbPermissionMode,
+} from './runtime-config'
 
 const tempDirs: string[] = []
 
@@ -52,5 +56,41 @@ describe('CCB Session Skills 注册表指纹', () => {
 
     const after = createAdditionalSkillDirectoriesFingerprint([skillsDir])
     expect(after).not.toBe(before)
+  })
+})
+
+describe('CCB Session 思考等级桥接', () => {
+  test('Given 桌面端选择最大思考 When 构造热更新命令 Then 原样传给 CCB', () => {
+    expect(createSessionRuntimeConfigCommand({
+      model: 'claude-opus-4-6',
+      thinkingConfig: { type: 'adaptive' },
+      effortLevel: 'max',
+    })).toEqual({
+      type: 'session.updateConfig',
+      model: 'claude-opus-4-6',
+      thinkingConfig: { type: 'adaptive' },
+      effortLevel: 'max',
+    })
+  })
+
+  test('Given 桌面端选择深度思考 When 构造热更新命令 Then 保留 xhigh 等级', () => {
+    expect(createSessionRuntimeConfigCommand({
+      effortLevel: 'xhigh',
+    })).toEqual({
+      type: 'session.updateConfig',
+      model: undefined,
+      thinkingConfig: undefined,
+      effortLevel: 'xhigh',
+    })
+  })
+})
+
+describe('CCB Session 审批模式桥接', () => {
+  test('Given 选择请求批准 When 构造 CCB Session 配置 Then 原样传入 default 模式', () => {
+    expect(resolveCcbPermissionMode('default')).toBe('default')
+  })
+
+  test('Given 未指定审批模式 When 构造 CCB Session 配置 Then 保持完全自动默认值', () => {
+    expect(resolveCcbPermissionMode(undefined)).toBe('bypassPermissions')
   })
 })

@@ -99,6 +99,8 @@ export interface SDKMessageRendererProps {
   showHeader?: boolean
   /** 用户在前端选择的模型 ID（优先用于显示名称） */
   sessionModelId?: string
+  /** Proma 会话 ID，用于关联 CCB 执行节点。 */
+  sessionId?: string
 }
 
 // ===== system 消息：上下文压缩分割线 =====
@@ -373,9 +375,11 @@ export interface AssistantTurnRendererProps {
   stoppedByUser?: boolean
   /** 用户在前端选择的模型 ID（优先用于显示名称） */
   sessionModelId?: string
+  /** Proma 会话 ID，用于关联 CCB 执行节点。 */
+  sessionId?: string
 }
 
-export function AssistantTurnRenderer({ turn, allMessages, basePath, onFork, onRewind, onRetry, onRetryInNewSession, onCompact, isStreaming, stoppedByUser, sessionModelId }: AssistantTurnRendererProps): React.ReactElement | null {
+export function AssistantTurnRenderer({ turn, allMessages, basePath, onFork, onRewind, onRetry, onRetryInNewSession, onCompact, isStreaming, stoppedByUser, sessionModelId, sessionId }: AssistantTurnRendererProps): React.ReactElement | null {
   const channels = useAtomValue(channelsAtom)
   // 收集所有 assistant 消息的内容块，保留 parent_tool_use_id 关联
   interface EnrichedBlock {
@@ -500,6 +504,7 @@ export function AssistantTurnRenderer({ turn, allMessages, basePath, onFork, onR
         dimmed={hasTextContent && block.type !== 'text'}
         childBlocks={childBlocks}
         isStreaming={isStreaming}
+        sessionId={sessionId}
       />
     )
   }
@@ -602,6 +607,7 @@ export function SDKMessageRenderer({
   basePath,
   showHeader = true,
   sessionModelId,
+  sessionId,
 }: SDKMessageRendererProps): React.ReactElement | null {
   const channels = useAtomValue(channelsAtom)
   const msgType = message.type
@@ -665,6 +671,7 @@ export function SDKMessageRenderer({
                 basePath={basePath}
                 index={i}
                 dimmed={hasTextContent && block.type !== 'text'}
+                sessionId={sessionId}
               />
             ))}
           </div>
@@ -1294,6 +1301,8 @@ export interface MessageGroupRendererProps {
   stoppedByUser?: boolean
   /** 用户在前端选择的模型 ID（优先用于显示名称） */
   sessionModelId?: string
+  /** Proma 会话 ID，用于关联 CCB 执行节点。 */
+  sessionId?: string
 }
 
 /**
@@ -1342,7 +1351,7 @@ export function getGroupId(group: MessageGroup): string {
 
 // getGroupPreview 已迁移至 @proma/session-core（本文件从该包 import 并 re-export）
 
-export function MessageGroupRenderer({ group, allMessages, basePath, onFork, onRewind, onRetry, onRetryInNewSession, onCompact, isStreaming, stoppedByUser, sessionModelId }: MessageGroupRendererProps): React.ReactElement | null {
+export function MessageGroupRenderer({ group, allMessages, basePath, onFork, onRewind, onRetry, onRetryInNewSession, onCompact, isStreaming, stoppedByUser, sessionModelId, sessionId }: MessageGroupRendererProps): React.ReactElement | null {
   const groupId = getGroupId(group)
 
   if (group.type === 'user') {
@@ -1375,6 +1384,7 @@ export function MessageGroupRenderer({ group, allMessages, basePath, onFork, onR
         isStreaming={isStreaming}
         stoppedByUser={stoppedByUser}
         sessionModelId={sessionModelId}
+        sessionId={sessionId}
       />
     </div>
   )

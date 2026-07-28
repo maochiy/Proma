@@ -1,23 +1,22 @@
 /**
  * PermissionModeSelector — Agent 权限模式切换器
  *
- * 集成在 AgentHeader 中，紧凑的双模式切换按钮。
- * 支持循环切换和工作区级别的持久化。
+ * 集成在 Agent 输入区中，以文字触发器 + 选择面板切换模式。
  * 每个会话独立维护自己的权限模式。
  */
 
 import * as React from 'react'
 import { useAtom, useAtomValue, useSetAtom } from 'jotai'
-import { Zap, Map as MapIcon } from 'lucide-react'
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import { Button } from '@/components/ui/button'
+import { Check, ChevronDown, Map as MapIcon, Shield, ShieldCheck, Zap } from 'lucide-react'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { agentPermissionModeMapAtom, agentDefaultPermissionModeAtom, sessionPersistedPermissionModeAtom, sessionExistsAtom, agentPlanModeSessionsAtom } from '@/atoms/agent-atoms'
 import type { PromaPermissionMode } from '@proma/shared'
 import { PROMA_PERMISSION_MODE_CONFIG, PROMA_PERMISSION_MODE_ORDER } from '@proma/shared'
 import { getDisplayedPermissionMode, updatePlanModeSessionSet } from '@/lib/agent-plan-mode'
-import { inputToolbarButtonClass } from '@/components/ai-elements/input-toolbar-styles'
+import { cn } from '@/lib/utils'
 
 const MODE_ICONS: Record<PromaPermissionMode, React.ComponentType<{ className?: string }>> = {
+  default: Shield,
   bypassPermissions: Zap,
   plan: MapIcon,
 }
@@ -27,6 +26,7 @@ interface PermissionModeSelectorProps {
 }
 
 export function PermissionModeSelector({ sessionId }: PermissionModeSelectorProps): React.ReactElement | null {
+  const [open, setOpen] = React.useState(false)
   const [modeMap, setModeMap] = useAtom(agentPermissionModeMapAtom)
   const setPlanModeSessions = useSetAtom(agentPlanModeSessionsAtom)
   const planModeSessions = useAtomValue(agentPlanModeSessionsAtom)
@@ -52,11 +52,12 @@ export function PermissionModeSelector({ sessionId }: PermissionModeSelectorProp
     })
   }, [sessionId, persistedSessionMode, sessionExistsInList, defaultMode, setModeMap])
 
-  /** 循环切换模式 */
-  const cycleMode = React.useCallback(async () => {
-    const currentIndex = PROMA_PERMISSION_MODE_ORDER.indexOf(displayMode)
-    const nextIndex = (currentIndex + 1) % PROMA_PERMISSION_MODE_ORDER.length
-    const nextMode = PROMA_PERMISSION_MODE_ORDER[nextIndex]!
+  /** 切换当前会话的权限模式 */
+  const selectMode = React.useCallback(async (nextMode: PromaPermissionMode) => {
+    if (nextMode === displayMode) {
+      setOpen(false)
+      return
+    }
     const prevMode = mode
     const prevPlanModeActive = planModeActive
 
@@ -73,6 +74,7 @@ export function PermissionModeSelector({ sessionId }: PermissionModeSelectorProp
     // 热切换运行中的当前 session；失败时回滚 modeMap 保持 UI/后端一致
     try {
       await window.electronAPI.updateSessionPermissionMode(sessionId, nextMode)
+      setOpen(false)
     } catch (error) {
       console.error('[PermissionModeSelector] 运行中切换权限模式失败，回滚 UI:', error)
       setModeMap((prev: Map<string, PromaPermissionMode>) => {
@@ -87,29 +89,66 @@ export function PermissionModeSelector({ sessionId }: PermissionModeSelectorProp
   }, [displayMode, mode, planModeActive, sessionId, setModeMap, setPlanModeSessions])
 
   const config = PROMA_PERMISSION_MODE_CONFIG[displayMode]
-  const Icon = MODE_ICONS[displayMode]
 
   return (
-    <TooltipProvider delayDuration={300}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button
-            type="button"
-            variant="ghost"
-            size="icon"
-            aria-label={config.label}
-            onClick={() => { cycleMode(); requestAnimationFrame(() => document.querySelector<HTMLElement>('.ProseMirror')?.focus()) }}
-            className={inputToolbarButtonClass}
-          >
-            <Icon className="size-5" />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent side="bottom" className="max-w-[200px]">
-          <p className="font-medium">{config.label}</p>
-          <p className="text-xs text-muted-foreground mt-0.5">{config.description}</p>
-          <p className="text-xs text-muted-foreground mt-1">点击切换模式</p>
-        </TooltipContent>
-      </Tooltip>
-    </TooltipProvider>
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          aria-label={`审批模式：${config.label}`}
+          className={cn(
+            'flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-xs text-muted-foreground',
+            'transition-colors hover:bg-muted/55 hover:text-foreground',
+            'data-[state=open]:bg-muted/55 data-[state=open]:text-foreground',
+            'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
+          )}
+        >
+          <ShieldCheck className="size-3.5" />
+          <span>{config.label}</span>
+          <ChevronDown className="size-3" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent
+        side="top"
+        align="start"
+        sideOffset={8}
+        className="w-64 rounded-xl p-1.5"
+        onOpenAutoFocus={event => event.preventDefault()}
+      >
+        <div className="px-2.5 pb-1.5 pt-1 text-[11px] font-medium text-muted-foreground">
+          审批模式
+        </div>
+        {PROMA_PERMISSION_MODE_ORDER.map(nextMode => {
+          const nextConfig = PROMA_PERMISSION_MODE_CONFIG[nextMode]
+          const Icon = MODE_ICONS[nextMode]
+          const selected = nextMode === displayMode
+          return (
+            <button
+              key={nextMode}
+              type="button"
+              onClick={() => void selectMode(nextMode)}
+              className={cn(
+                'flex w-full items-center gap-3 rounded-lg px-2.5 py-2 text-left transition-colors',
+                'hover:bg-accent/75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
+                selected && 'bg-accent/55',
+              )}
+            >
+              <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted/70 text-foreground/70">
+                <Icon className="size-4" />
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="block text-sm font-medium text-foreground">
+                  {nextConfig.label}
+                </span>
+                <span className="block text-xs text-muted-foreground">
+                  {nextConfig.description}
+                </span>
+              </span>
+              {selected && <Check className="size-4 shrink-0 text-foreground/65" />}
+            </button>
+          )
+        })}
+      </PopoverContent>
+    </Popover>
   )
 }

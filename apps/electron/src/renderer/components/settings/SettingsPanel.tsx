@@ -310,23 +310,24 @@ export function SettingsPanel({
         </ScrollArea>
       </aside>
 
-      <section className="relative flex min-w-0 flex-1 flex-col bg-dialog">
-        {onClose && (
-          <button
-            type="button"
-            aria-label="关闭设置"
-            onClick={handleClose}
-            className="absolute right-4 top-3 z-10 flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-          >
-            <X size={17} />
-          </button>
-        )}
-
-        <ScrollArea className="min-h-0 flex-1">
+      <section className="flex min-w-0 flex-1 bg-dialog">
+        <ScrollArea className="min-h-0 min-w-0 flex-1">
           <div className="mx-auto w-full max-w-[760px] px-7 pb-7 pt-6">
             {renderTabContent(activeTab)}
           </div>
         </ScrollArea>
+        {onClose && (
+          <div className="flex w-12 flex-shrink-0 justify-center pt-3">
+            <button
+              type="button"
+              aria-label="关闭设置"
+              onClick={handleClose}
+              className="flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+            >
+              <X size={17} />
+            </button>
+          </div>
+        )}
       </section>
 
       {/* 退出拦截弹窗（侧边栏导航 / X 关闭 / Cmd+W） */}

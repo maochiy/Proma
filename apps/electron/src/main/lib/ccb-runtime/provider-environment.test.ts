@@ -87,6 +87,8 @@ describe('CCB Provider 环境映射', () => {
         {
           id: 'reasoner-a',
           name: 'Reasoner A',
+          description: '适合复杂编码任务',
+          contextWindow: 262144,
           enabled: true,
           thinkingEffortLevels: ['low', 'high'],
         },
@@ -105,6 +107,8 @@ describe('CCB Provider 环境映射', () => {
         {
           id: 'reasoner-a',
           name: 'Reasoner A',
+          description: '适合复杂编码任务',
+          contextWindow: 262144,
           effortLevels: ['low', 'high'],
         },
       ],

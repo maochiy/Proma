@@ -17,12 +17,14 @@ import * as React from 'react'
 import { unstable_batchedUpdates } from 'react-dom'
 import { useAtom, useAtomValue, useSetAtom, useStore } from 'jotai'
 import { toast } from 'sonner'
-import { CornerDownLeft, Square, Settings, Paperclip, FolderPlus, X, Copy, Check, Sparkles } from 'lucide-react'
+import { ArrowUp, Square, Settings, X, Copy, Check, Sparkles } from 'lucide-react'
 import { AgentMessages } from './AgentMessages'
 import { AgentHeader } from './AgentHeader'
 import { AgentMessageQueue } from './AgentMessageQueue'
 import { AgentProjectPicker } from './AgentProjectPicker'
 import { AgentThinkingEffortControl } from './AgentThinkingEffortControl'
+import { AgentInputAddMenu } from './AgentInputAddMenu'
+import { RuntimeTodoHoverProgress } from './RuntimeTodoHoverProgress'
 import { ContextUsageBadge } from './ContextUsageBadge'
 import { PermissionBanner } from './PermissionBanner'
 import { PermissionModeSelector } from './PermissionModeSelector'
@@ -2658,50 +2660,16 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   ])
 
   const inputToolbarItems = React.useMemo<ToolbarItem[]>(() => [
+    {
+      key: 'add',
+      node: (
+        <AgentInputAddMenu
+          onAttachFile={handleOpenFileDialog}
+          onAttachFolder={handleAttachFolder}
+        />
+      ),
+    },
     { key: 'permission-mode', node: <PermissionModeSelector sessionId={sessionId} /> },
-    { key: 'speech', node: <SpeechButton className={inputToolbarButtonClass} /> },
-    {
-      key: 'attach-file',
-      node: (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className={inputToolbarButtonClass}
-              onClick={handleOpenFileDialog}
-            >
-              <Paperclip className="size-5" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="top">
-            <p>添加附件</p>
-          </TooltipContent>
-        </Tooltip>
-      ),
-    },
-    {
-      key: 'attach-folder',
-      node: (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className={inputToolbarButtonClass}
-              onClick={handleAttachFolder}
-            >
-              <FolderPlus className="size-5" />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent side="top">
-            <p>附加文件夹</p>
-          </TooltipContent>
-        </Tooltip>
-      ),
-    },
     {
       key: 'context-usage',
       node: (
@@ -2766,8 +2734,9 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       )}
       onClick={() => handleSend()}
       disabled={!canSend}
+      aria-label="发送消息"
     >
-      <CornerDownLeft className="size-[22px]" />
+      <ArrowUp className="size-[17px]" strokeWidth={2.6} />
     </Button>
   )
   const inputTrailingNode = (
@@ -2779,6 +2748,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         runtimeModelOptions={runtimeModelOptions}
         runtimeModelsLoading={runtimeModelsLoading}
         useSharedOpenState
+        textOnlyTrigger
       />
       {thinkingEffortCapability && effectiveThinkingEffortLevel && (
         <AgentThinkingEffortControl
@@ -2789,6 +2759,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
           onExpandedChange={setThinkingExpanded}
         />
       )}
+      <SpeechButton className={inputToolbarButtonClass} />
       {inputActionNode}
     </>
   )
@@ -2853,6 +2824,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
             onSelect={handleProjectSelect}
             onAdd={handleProjectAdd}
           />
+          <RuntimeTodoHoverProgress sessionId={sessionId} />
           <div
             className={cn(
               inputCardClass,

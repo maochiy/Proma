@@ -12,8 +12,8 @@ import type {
 } from '@proma/shared'
 
 export const CCB_PROTOCOL_VERSION = 5
-export const EXPECTED_CCB_RUNTIME_VERSION = '2.8.14'
-export const EXPECTED_CCB_RUNTIME_COMMIT = '6b5c78e7fad3f0e9ec1739589c24cf6a8b326cd6'
+export const EXPECTED_CCB_RUNTIME_VERSION = '2.8.15'
+export const EXPECTED_CCB_RUNTIME_COMMIT = '45a8fba6248d6256d39b73b88e8b24dd16b37fbb'
 
 export type CcbPermissionMode =
   | 'default'

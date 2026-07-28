@@ -21,6 +21,11 @@ import { sanitizeCcbSessionEnvironment } from './runtime-security'
 import { assertCcbRuntimeModelCatalog } from './protocol-validation'
 import { createAdditionalSkillDirectoriesFingerprint } from './skill-directory-fingerprint'
 import { getCcbUserConfigDir } from './user-config'
+import {
+  createSessionRuntimeConfigCommand,
+  resolveCcbPermissionMode,
+  type RuntimeConfigUpdate,
+} from './runtime-config'
 import type {
   CcbInteractionResponse,
   CcbPermissionMode,
@@ -160,10 +165,6 @@ function createQueue(): AsyncMessageQueue {
   }
 }
 
-function permissionMode(mode: PromaPermissionMode | undefined): CcbPermissionMode {
-  return (mode ?? 'bypassPermissions') as CcbPermissionMode
-}
-
 export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
   private readonly active = new Map<string, ActiveTurn>()
   private readonly openedSessions = new Map<string, string>()
@@ -222,20 +223,14 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
 
   async updateRuntimeConfig(
     sessionId: string,
-    updates: {
-      model?: string
-      thinkingConfig?: import('@proma/shared').ThinkingConfig
-      effortLevel?: import('@proma/shared').ThinkingEffortLevel
-    },
+    updates: RuntimeConfigUpdate,
   ): Promise<boolean> {
     if (!this.openedSessions.has(sessionId)) return false
+    console.log(
+      `[CCB Runtime] 更新 Session 配置: session=${sessionId}, model=${updates.model ?? '保持不变'}, effort=${updates.effortLevel ?? '保持不变'}`,
+    )
     await ccbDesktopRuntimeClient.request(
-      {
-        type: 'session.updateConfig',
-        model: updates.model,
-        thinkingConfig: updates.thinkingConfig,
-        effortLevel: updates.effortLevel,
-      },
+      createSessionRuntimeConfigCommand(updates),
       sessionId,
       5_000,
     )
@@ -244,8 +239,8 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
       this.sessionRuntimeConfigs.set(sessionId, {
         ...current,
         model: updates.model ?? current.model,
-        thinkingConfig: updates.thinkingConfig,
-        effortLevel: updates.effortLevel,
+        thinkingConfig: updates.thinkingConfig ?? current.thinkingConfig,
+        effortLevel: updates.effortLevel ?? current.effortLevel,
       })
     }
     return true
@@ -377,7 +372,7 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
           fallbackModel: input.fallbackModel,
           thinkingConfig: input.thinkingConfig,
           effortLevel: input.effortLevel,
-          permissionMode: permissionMode(input.permissionMode),
+          permissionMode: resolveCcbPermissionMode(input.permissionMode),
           environment: {
             variables: environment,
             configDir: getCcbUserConfigDir(),
@@ -550,6 +545,9 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
       }
     }
 
+    console.log(
+      `[CCB Runtime] 打开 Session 配置: session=${options.sessionId}, model=${options.model ?? 'CCB 默认'}, effort=${options.effortLevel ?? 'CCB 默认'}`,
+    )
     const openResult = await ccbDesktopRuntimeClient.request<{
       runtimeSessionId: string
     }>(
@@ -564,7 +562,7 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
           fallbackModel: options.fallbackModel,
           thinkingConfig: options.thinkingConfig,
           effortLevel: options.effortLevel,
-          permissionMode: permissionMode(options.sdkPermissionMode),
+          permissionMode: resolveCcbPermissionMode(options.sdkPermissionMode),
           environment: {
             variables: environment,
             configDir: getCcbUserConfigDir(),
@@ -631,13 +629,11 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
     config: SessionRuntimeConfig,
   ): Promise<void> {
     if (sameRuntimeConfig(this.sessionRuntimeConfigs.get(sessionId), config)) return
+    console.log(
+      `[CCB Runtime] 同步 Session 配置: session=${sessionId}, model=${config.model ?? 'CCB 默认'}, effort=${config.effortLevel ?? 'CCB 默认'}`,
+    )
     await ccbDesktopRuntimeClient.request(
-      {
-        type: 'session.updateConfig',
-        model: config.model,
-        thinkingConfig: config.thinkingConfig,
-        effortLevel: config.effortLevel,
-      },
+      createSessionRuntimeConfigCommand(config),
       sessionId,
       5_000,
     )
@@ -756,7 +752,7 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
               ? {
                   outcome: 'approvePlan',
                   mode: planResult.targetMode
-                    ? permissionMode(planResult.targetMode)
+                    ? resolveCcbPermissionMode(planResult.targetMode)
                     : undefined,
                 }
               : { outcome: 'allow', updatedInput: result.updatedInput }

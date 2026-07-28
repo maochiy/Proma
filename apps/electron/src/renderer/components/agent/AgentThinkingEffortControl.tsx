@@ -1,6 +1,6 @@
 import * as React from 'react'
 import * as SliderPrimitive from '@radix-ui/react-slider'
-import { Gauge } from 'lucide-react'
+import { ChevronDown } from 'lucide-react'
 import type { ThinkingEffortLevel } from '@proma/shared'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Switch } from '@/components/ui/switch'
@@ -23,6 +23,14 @@ interface CodexEffortSliderProps {
   value: number
   onValueChange: (value: number) => void
   onValueCommit: (value: number) => void
+}
+
+const THINKING_EFFORT_SHORT_LABELS: Record<ThinkingEffortLevel, string> = {
+  low: '低',
+  medium: '中',
+  high: '高',
+  xhigh: '深',
+  max: '最高',
 }
 
 function CodexEffortSlider({
@@ -103,8 +111,8 @@ export function AgentThinkingEffortControl({
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45',
           )}
         >
-          <Gauge className="size-3.5" />
-          <span>{THINKING_EFFORT_LABELS[value]}</span>
+          <span>{THINKING_EFFORT_SHORT_LABELS[value]}</span>
+          <ChevronDown className="size-3" />
         </button>
       </PopoverTrigger>
       <PopoverContent

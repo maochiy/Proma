@@ -44,6 +44,36 @@ export type ThinkingConfig =
 /** CCB 支持的离散思考强度。 */
 export type ThinkingEffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
+/** CCB 原生全局模型配置支持的 Provider 类型。 */
+export type CcbNativeModelType = 'anthropic' | 'openai' | 'gemini' | 'grok'
+
+/** CCB `~/.claude/settings.json` 中的单个可配置模型。 */
+export interface CcbNativeConfiguredModel {
+  id: string
+  name?: string
+  description?: string
+  contextWindow?: number
+  effortLevels?: ThinkingEffortLevel[]
+}
+
+/** Renderer 可读取的 CCB 原生模型配置，不包含密钥明文。 */
+export interface CcbNativeModelConfiguration {
+  modelType: CcbNativeModelType
+  defaultModel?: string
+  baseUrl?: string
+  hasApiKey: boolean
+  models: CcbNativeConfiguredModel[]
+}
+
+/** 更新 CCB 原生模型配置。未传 apiKey 时保留原密钥，空字符串表示清除。 */
+export interface CcbNativeModelConfigurationUpdate {
+  modelType: CcbNativeModelType
+  defaultModel?: string
+  baseUrl?: string
+  apiKey?: string
+  models: CcbNativeConfiguredModel[]
+}
+
 /** Proma 传给 CCB 的 Provider 模型配置。 */
 export interface AgentRuntimeConfiguredModel {
   id: string
@@ -1489,8 +1519,8 @@ export interface ExitPlanModeResponse {
 
 // ===== 权限系统类型 =====
 
-/** 当前 Proma 支持的权限模式，值直接映射 SDK 原生 permissionMode */
-export const PROMA_PERMISSION_MODES = ['bypassPermissions', 'plan'] as const
+/** 当前 Proma 支持的权限模式，值直接映射 CCB Runtime 原生 permissionMode */
+export const PROMA_PERMISSION_MODES = ['default', 'bypassPermissions', 'plan'] as const
 
 export type PromaPermissionMode = typeof PROMA_PERMISSION_MODES[number]
 
@@ -1505,6 +1535,11 @@ export interface PromaPermissionModeConfig {
 
 /** Proma 权限模式的单一配置来源 */
 export const PROMA_PERMISSION_MODE_CONFIG = {
+  default: {
+    sdkMode: 'default',
+    label: '请求批准',
+    description: '执行可能产生更改的工具前请求你的批准',
+  },
   bypassPermissions: {
     sdkMode: 'bypassPermissions',
     label: '完全自动',
@@ -1592,6 +1627,12 @@ export const AGENT_IPC_CHANNELS = {
   UPDATE_RUNTIME_CONFIG: 'agent:update-runtime-config',
   /** 读取指定 Channel 经 CCB Runtime 解析后的模型目录与能力 */
   GET_RUNTIME_MODEL_CATALOG: 'agent:get-runtime-model-catalog',
+  /** 读取 CCB 原生全局模型配置（不返回密钥明文） */
+  GET_NATIVE_MODEL_CONFIG: 'agent:get-native-model-config',
+  /** 用户进入编辑页时显式读取 CCB 原生模型密钥 */
+  GET_NATIVE_MODEL_SECRET: 'agent:get-native-model-secret',
+  /** 更新 CCB 原生全局模型配置 */
+  UPDATE_NATIVE_MODEL_CONFIG: 'agent:update-native-model-config',
   /** 读取当前 CCB Session 的 Subagent/Teams/Workflow/Todo 执行图 */
   GET_RUNTIME_EXECUTION_GRAPH: 'agent:get-runtime-execution-graph',
   /** 读取 CCB 子代理节点 Transcript */

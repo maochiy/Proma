@@ -92,6 +92,8 @@ interface ModelSelectorProps {
   runtimeModelOptions?: ModelOption[]
   /** CCB Runtime 模型目录是否仍在加载 */
   runtimeModelsLoading?: boolean
+  /** 触发器仅显示文字和展开箭头，用于 Codex 风格输入区 */
+  textOnlyTrigger?: boolean
 }
 
 export function ModelSelector({
@@ -104,6 +106,7 @@ export function ModelSelector({
   useSharedOpenState = false,
   runtimeModelOptions,
   runtimeModelsLoading = false,
+  textOnlyTrigger = false,
 }: ModelSelectorProps = {}): React.ReactElement {
   const [conversationModel, setConversationModel] = useConversationModelOptional()
   const conversationId = useConversationIdOptional()
@@ -287,18 +290,20 @@ export function ModelSelector({
           aria-expanded={open}
           className="model-selector-trigger flex min-w-0 max-w-full items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45"
         >
-          {displayModelInfo ? (
-            runtimeModelOptions ? (
-              <Cpu className="size-3.5 text-muted-foreground/80" />
+          {!textOnlyTrigger && (
+            displayModelInfo ? (
+              runtimeModelOptions ? (
+                <Cpu className="size-3.5 text-muted-foreground/80" />
+              ) : (
+                <img
+                  src={getModelLogo(displayModelInfo.modelId, displayModelInfo.provider)}
+                  alt=""
+                  className="size-4 rounded object-cover"
+                />
+              )
             ) : (
-              <img
-                src={getModelLogo(displayModelInfo.modelId, displayModelInfo.provider)}
-                alt=""
-                className="size-4 rounded object-cover"
-              />
+              <Cpu className="size-3.5 text-muted-foreground/80" />
             )
-          ) : (
-            <Cpu className="size-3.5" />
           )}
           <span className="min-w-0 max-w-[160px] truncate">
             {displayModelInfo

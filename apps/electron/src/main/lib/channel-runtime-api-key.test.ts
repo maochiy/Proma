@@ -21,6 +21,12 @@ mock.module('electron', () => ({
     encryptString: (value: string) => Buffer.from(value),
     decryptString: (value: Buffer) => value.toString('utf-8'),
   },
+  clipboard: {
+    writeText: () => undefined,
+  },
+  dialog: {
+    showMessageBox: async () => ({ response: 0 }),
+  },
   shell: {
     openExternal: async () => undefined,
   },
@@ -107,5 +113,27 @@ describe('渠道运行时认证解析', () => {
 
     await expect(channelManager.resolveChannelRuntimeApiKey('api-key-channel'))
       .resolves.toBe('plain-api-key')
+  })
+})
+
+describe('渠道删除持久化', () => {
+  test('Given 仅剩一个 DeepSeek 配置 When 删除并重新读取 Then 不自动恢复预设配置', () => {
+    writeChannels([
+      {
+        id: 'deepseek-channel',
+        name: 'DeepSeek',
+        provider: 'deepseek',
+        baseUrl: 'https://api.deepseek.com/anthropic',
+        apiKey: 'plain-api-key',
+        models: [],
+        enabled: false,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    ])
+
+    channelManager.deleteChannel('deepseek-channel')
+
+    expect(channelManager.listChannels()).toEqual([])
   })
 })

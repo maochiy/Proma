@@ -234,32 +234,36 @@ export async function resolveAgentRuntimeModelCatalog(
 ): Promise<AgentRuntimeModelCatalog> {
   const workspace = workspaceId ? getAgentWorkspace(workspaceId) : undefined
   const cwd = workspace?.canonicalPath ?? workspace?.path ?? process.cwd()
-  const nativeContext = buildNativeModelCatalogRequestContext(cwd)
-  const nativeCacheKey = `native:${cwd}`
-  const nativeCached = catalogCache.get(nativeCacheKey)
-  const nativePromise =
-    nativeCached?.fingerprint === nativeContext.fingerprint
-      ? nativeCached.promise
-      : loadAgentRuntimeModelCatalog(
-          nativeContext,
-          cwd,
-          `__native-model-catalog__:${cwd}`,
-          CCB_NATIVE_CHANNEL_ID,
-        ).catch(error => {
-          const current = catalogCache.get(nativeCacheKey)
-          if (current?.promise === nativePromise) catalogCache.delete(nativeCacheKey)
-          throw error
-        })
-  if (nativeCached?.fingerprint !== nativeContext.fingerprint) {
-    catalogCache.set(nativeCacheKey, {
-      fingerprint: nativeContext.fingerprint,
-      promise: nativePromise,
-    })
+  if (channelId === CCB_NATIVE_CHANNEL_ID) {
+    const nativeContext = buildNativeModelCatalogRequestContext(cwd)
+    const nativeCacheKey = `native:${cwd}`
+    const nativeCached = catalogCache.get(nativeCacheKey)
+    const nativePromise =
+      nativeCached?.fingerprint === nativeContext.fingerprint
+        ? nativeCached.promise
+        : loadAgentRuntimeModelCatalog(
+            nativeContext,
+            cwd,
+            `__native-model-catalog__:${cwd}`,
+            CCB_NATIVE_CHANNEL_ID,
+          ).catch(error => {
+            const current = catalogCache.get(nativeCacheKey)
+            if (current?.promise === nativePromise) catalogCache.delete(nativeCacheKey)
+            throw error
+          })
+    if (nativeCached?.fingerprint !== nativeContext.fingerprint) {
+      catalogCache.set(nativeCacheKey, {
+        fingerprint: nativeContext.fingerprint,
+        promise: nativePromise,
+      })
+    }
+
+    const nativeCatalog = await nativePromise
+    if (nativeCatalog.models.length > 0) return nativeCatalog
   }
 
-  const nativeCatalog = await nativePromise
-  if (nativeCatalog.models.length > 0) return nativeCatalog
-
+  // Proma 可以保存多个 Provider 预设，但一次只允许启用一个。明确选择
+  // Proma Channel 时必须让该配置直接交给 CCB，不能再被原生配置抢占。
   const channel = channelId === CCB_NATIVE_CHANNEL_ID
     ? listChannels().find(candidate => candidate.enabled)
     : getChannelById(channelId)

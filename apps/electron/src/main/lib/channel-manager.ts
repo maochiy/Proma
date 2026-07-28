@@ -33,6 +33,7 @@ import {
   serializeCodexCredentials,
   isCodexCredentialExpired,
 } from '@proma/shared'
+import { applyExclusiveChannelSelection } from './channel-exclusive-selection'
 import { refreshCodexOAuth } from './codex-oauth-service'
 import { parseCodexPlanQuotaResponse } from './codex-plan-quota'
 import { getFetchFn } from './proxy-fetch'
@@ -293,35 +294,10 @@ function decryptKey(encryptedKey: string): string {
  * 获取所有渠道
  *
  * 返回的渠道中 apiKey 保持加密状态。
- * 首次调用时，如果没有任何 DeepSeek 渠道，自动创建预设渠道。
+ * 渠道列表严格以持久化配置为准，删除最后一个配置后不得自动恢复预设。
  */
 export function listChannels(): Channel[] {
-  const config = readConfig()
-
-  // 首次使用：如果没有 DeepSeek 渠道，自动创建预设
-  const hasDeepSeek = config.channels.some(
-    (c) => c.provider === 'deepseek' || c.baseUrl.includes('api.deepseek.com'),
-  )
-  if (!hasDeepSeek) {
-    const now = Date.now()
-    const presetChannel: Channel = {
-      id: randomUUID(),
-      name: 'DeepSeek',
-      provider: 'deepseek',
-      baseUrl: PROVIDER_DEFAULT_URLS.deepseek,
-      apiKey: encryptApiKey(''),
-      models: cloneModels(DEEPSEEK_PRESET_MODELS),
-      enabled: false,
-      createdAt: now,
-      updatedAt: now,
-    }
-    config.channels.push(presetChannel)
-    writeConfig(config)
-    console.log('[渠道管理] 已自动创建 DeepSeek 预设渠道')
-    return config.channels
-  }
-
-  return config.channels
+  return readConfig().channels
 }
 
 /**
@@ -343,6 +319,16 @@ export function getChannelById(id: string): Channel | undefined {
 export function createChannel(input: ChannelCreateInput): Channel {
   const config = readConfig()
   const now = Date.now()
+
+  // CCB 单个 Runtime Session 同一时间只接受一个 Provider 配置。
+  // Proma 仍允许保存多个配置预设，但启用新配置时必须关闭其余配置。
+  if (input.enabled) {
+    config.channels = applyExclusiveChannelSelection(
+      config.channels,
+      '__new-channel__',
+      now,
+    )
+  }
 
   const channel: Channel = {
     id: randomUUID(),
@@ -389,6 +375,14 @@ export function updateChannel(id: string, input: ChannelUpdateInput): Channel {
     models: input.models ?? existing.models,
     enabled: input.enabled ?? existing.enabled,
     updatedAt: Date.now(),
+  }
+
+  if (updated.enabled) {
+    config.channels = applyExclusiveChannelSelection(
+      config.channels,
+      id,
+      updated.updatedAt,
+    )
   }
 
   config.channels[index] = updated

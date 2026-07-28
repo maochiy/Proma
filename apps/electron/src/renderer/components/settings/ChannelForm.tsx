@@ -22,6 +22,7 @@ import {
   Zap,
   Download,
   Search,
+  Pencil,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useSetAtom } from 'jotai'
@@ -73,6 +74,10 @@ import {
 } from './primitives'
 import { RuntimeModelCapabilitySummary } from '@/components/agent/RuntimeModelCapabilitySummary'
 import { findAgentRuntimeModel } from '@/lib/agent-thinking-effort'
+import {
+  CcbConfiguredModelEditor,
+  type CcbConfiguredModelEditorValue,
+} from './CcbConfiguredModelEditor'
 
 interface ChannelFormProps {
   /** 编辑模式下传入已有渠道，创建模式传 null */
@@ -205,6 +210,46 @@ function isAgentEligibleChannel(channel: Pick<Channel, 'provider' | 'enabled'>):
   return channel.enabled && isAgentCompatibleProvider(channel.provider)
 }
 
+function createEmptyModelDraft(): CcbConfiguredModelEditorValue {
+  return {
+    id: '',
+    name: '',
+    description: '',
+  }
+}
+
+function getModelListValidationError(models: ChannelModel[]): string | undefined {
+  const ids = new Set<string>()
+  for (const model of models) {
+    const id = model.id.trim()
+    if (!id) return '模型 ID 不能为空'
+    if (ids.has(id)) return `模型 ID「${id}」重复`
+    ids.add(id)
+    if (
+      model.contextWindow !== undefined
+      && (
+        !Number.isInteger(model.contextWindow)
+        || model.contextWindow <= 0
+      )
+    ) {
+      return `模型「${id}」的 Context Window 必须是正整数`
+    }
+  }
+  return undefined
+}
+
+function toCcbConfiguredModelEditorValue(
+  model: ChannelModel,
+): CcbConfiguredModelEditorValue {
+  return {
+    id: model.id,
+    name: model.name,
+    description: model.description,
+    contextWindow: model.contextWindow,
+    effortLevels: model.thinkingEffortLevels,
+  }
+}
+
 export function ChannelForm({ channel, onSaved, onAgentEligibilityChange, onCancel }: ChannelFormProps): React.ReactElement {
   const isEdit = channel !== null
 
@@ -221,9 +266,11 @@ export function ChannelForm({ channel, onSaved, onAgentEligibilityChange, onCanc
   const [models, setModels] = React.useState<ChannelModel[]>(channel?.models ?? [])
   const [enabled, setEnabled] = React.useState(channel?.enabled ?? true)
 
-  // 新模型输入
-  const [newModelId, setNewModelId] = React.useState('')
-  const [newModelName, setNewModelName] = React.useState('')
+  // 模型新增和编辑
+  const [newModelDraft, setNewModelDraft] =
+    React.useState<CcbConfiguredModelEditorValue>(createEmptyModelDraft)
+  const [showNewModelEditor, setShowNewModelEditor] = React.useState(false)
+  const [editingModelId, setEditingModelId] = React.useState<string>()
 
   // 模型搜索过滤
   const [modelFilter, setModelFilter] = React.useState('')
@@ -279,11 +326,16 @@ export function ChannelForm({ channel, onSaved, onAgentEligibilityChange, onCanc
   const requiresBaseUrlRiskAcknowledgement = isThirdPartyBaseUrl(provider, baseUrl)
     && normalizeBaseUrl(baseUrl) !== acknowledgedBaseUrl
   const runtimeCatalogRequestIdRef = React.useRef(0)
+  const modelListValidationError = React.useMemo(
+    () => getModelListValidationError(models),
+    [models],
+  )
 
   React.useEffect(() => {
     const requestId = ++runtimeCatalogRequestIdRef.current
     const canResolve =
       models.length > 0
+      && !modelListValidationError
       && hasRequiredSecret
       && (isCodexProvider || Boolean(baseUrl.trim()))
       && (!isEdit || apiKeyLoaded)
@@ -328,6 +380,7 @@ export function ChannelForm({ channel, onSaved, onAgentEligibilityChange, onCanc
     isCodexProvider,
     isEdit,
     models,
+    modelListValidationError,
     provider,
   ])
 
@@ -406,6 +459,7 @@ export function ChannelForm({ channel, onSaved, onAgentEligibilityChange, onCanc
 
   // 监听字段变化触发 auto-save
   React.useEffect(() => {
+    if (modelListValidationError) return
     scheduleAutoSave(
       models,
       name,
@@ -416,7 +470,7 @@ export function ChannelForm({ channel, onSaved, onAgentEligibilityChange, onCanc
       requiresBaseUrlRiskAcknowledgement,
     )
     return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current) }
-  }, [models, name, provider, baseUrl, effectiveApiKey, enabled, requiresBaseUrlRiskAcknowledgement, scheduleAutoSave])
+  }, [models, name, provider, baseUrl, effectiveApiKey, enabled, requiresBaseUrlRiskAcknowledgement, modelListValidationError, scheduleAutoSave])
 
   // 切换供应商时自动更新 Base URL 与名称，Anthropic 兼容渠道自动添加预设模型
   const handleProviderChange = (newProvider: string): void => {
@@ -516,18 +570,71 @@ export function ChannelForm({ channel, onSaved, onAgentEligibilityChange, onCanc
 
   /** 添加模型 */
   const handleAddModel = (): void => {
-    if (!newModelId.trim()) return
+    const id = newModelDraft.id.trim()
+    if (!id) return
+    if (models.some(model => model.id.trim() === id)) {
+      toast.error(`模型 ID「${id}」已经存在`)
+      return
+    }
+    if (
+      newModelDraft.contextWindow !== undefined
+      && (
+        !Number.isInteger(newModelDraft.contextWindow)
+        || newModelDraft.contextWindow <= 0
+      )
+    ) {
+      toast.error('Context Window 必须是正整数')
+      return
+    }
 
     const model: ChannelModel = {
-      id: newModelId.trim(),
-      name: newModelName.trim() || newModelId.trim(),
+      id,
+      name: newModelDraft.name?.trim() || id,
+      ...(newModelDraft.description?.trim()
+        ? { description: newModelDraft.description.trim() }
+        : {}),
+      ...(newModelDraft.contextWindow !== undefined
+        ? { contextWindow: newModelDraft.contextWindow }
+        : {}),
+      ...(newModelDraft.effortLevels !== undefined
+        ? { thinkingEffortLevels: [...newModelDraft.effortLevels] }
+        : {}),
       enabled: true,
       source: 'manual',
     }
 
     setModels((prev) => [...prev, model])
-    setNewModelId('')
-    setNewModelName('')
+    setNewModelDraft(createEmptyModelDraft())
+    setShowNewModelEditor(false)
+  }
+
+  /** 更新模型的 CCB 配置字段。 */
+  const handleUpdateModel = (
+    target: ChannelModel,
+    patch: Partial<CcbConfiguredModelEditorValue>,
+  ): void => {
+    setModels(current => current.map(model => {
+      if (model !== target) return model
+      return {
+        ...model,
+        ...(patch.id !== undefined ? { id: patch.id } : {}),
+        ...(patch.name !== undefined ? { name: patch.name } : {}),
+        ...(patch.description !== undefined
+          ? { description: patch.description }
+          : {}),
+        ...(patch.contextWindow !== undefined
+          ? { contextWindow: patch.contextWindow }
+          : patch.contextWindow === undefined && 'contextWindow' in patch
+            ? { contextWindow: undefined }
+            : {}),
+        ...(patch.effortLevels !== undefined
+          ? { thinkingEffortLevels: [...patch.effortLevels] }
+          : 'effortLevels' in patch
+            ? { thinkingEffortLevels: undefined }
+            : {}),
+      }
+    }))
+    if (patch.id !== undefined) setEditingModelId(patch.id)
   }
 
   /** 删除模型 */
@@ -630,11 +737,22 @@ export function ChannelForm({ channel, onSaved, onAgentEligibilityChange, onCanc
         const manualKept = prev.filter((m) => m.source === 'manual' && !fetchedById.has(m.id))
         const merged = fetchedModels.map((m) => {
           const old = prev.find((p) => p.id === m.id)
+          const mergedModel: ChannelModel = old
+            ? {
+                ...m,
+                ...old,
+                id: m.id,
+                source: old.source ?? 'fetched',
+              }
+            : {
+                ...m,
+                source: 'fetched',
+              }
           // ChatGPT (Codex) 是 SDK 内置的少量精选模型，拉取即全部启用，
           // 与登录自动拉取路径（handleCodexLogin）保持一致，避免新模型（如 gpt-5.6 系列）
           // 默认未启用而沉到「可用模型」折叠区，被误认为"拉不到"。
-          if (isCodexProvider) return { ...m, enabled: true }
-          return old ? { ...m, enabled: old.enabled } : { ...m, enabled: false }
+          if (isCodexProvider) return { ...mergedModel, enabled: true }
+          return { ...mergedModel, enabled: old?.enabled ?? false }
         })
         return [...manualKept, ...merged]
       })
@@ -753,6 +871,10 @@ export function ChannelForm({ channel, onSaved, onAgentEligibilityChange, onCanc
 
   /** 创建渠道（仅新建模式） */
   const handleCreate = async (): Promise<void> => {
+    if (modelListValidationError) {
+      toast.error(modelListValidationError)
+      return
+    }
     if (models.length === 0) {
       toast.warning('尚未配置模型，建议先从供应商获取或手动添加', { id: 'no-models-warn' })
       return
@@ -834,6 +956,26 @@ export function ChannelForm({ channel, onSaved, onAgentEligibilityChange, onCanc
     ),
     [runtimeCatalog],
   )
+  const resolveModelIdError = React.useCallback(
+    (target: ChannelModel): string | undefined => {
+      const id = target.id.trim()
+      if (!id) return '模型 ID 不能为空，当前修改不会自动保存'
+      const duplicate = models.some(
+        model => model !== target && model.id.trim() === id,
+      )
+      return duplicate
+        ? `模型 ID「${id}」重复，当前修改不会自动保存`
+        : undefined
+    },
+    [models],
+  )
+  const newModelIdError = React.useMemo(() => {
+    const id = newModelDraft.id.trim()
+    if (!id) return undefined
+    return models.some(model => model.id.trim() === id)
+      ? `模型 ID「${id}」已经存在`
+      : undefined
+  }, [models, newModelDraft.id])
   const runtimeCatalogStatus = runtimeCatalogLoading
     ? 'CCB Runtime 正在解析模型能力…'
     : runtimeCatalog
@@ -1075,28 +1217,55 @@ export function ChannelForm({ channel, onSaved, onAgentEligibilityChange, onCanc
               {enabledModels.map((model) => (
                 <div
                   key={model.id}
-                  className="flex items-center gap-2 px-4 py-2.5 group"
+                  className="group"
                 >
-                  <CheckCircle2 size={14} className="text-emerald-500 flex-shrink-0" />
-                  <div className="min-w-0 flex-1">
-                    <div className="text-sm text-foreground">
-                      {model.name}
-                      {model.name !== model.id && (
-                        <span className="text-muted-foreground ml-1">({model.id})</span>
+                  <div className="flex items-center gap-2 px-4 py-2.5">
+                    <CheckCircle2 size={14} className="text-emerald-500 flex-shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm text-foreground">
+                        {model.name || model.id}
+                        {model.name && model.name !== model.id && (
+                          <span className="text-muted-foreground ml-1">({model.id})</span>
+                        )}
+                      </div>
+                      {model.description && (
+                        <p className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">
+                          {model.description}
+                        </p>
                       )}
+                      <RuntimeModelCapabilitySummary
+                        model={resolveRuntimeModelInfo(model.id)}
+                      />
                     </div>
-                    <RuntimeModelCapabilitySummary
-                      model={resolveRuntimeModelInfo(model.id)}
-                    />
+                    <button
+                      type="button"
+                      onClick={() => setEditingModelId(
+                        editingModelId === model.id ? undefined : model.id,
+                      )}
+                      className="p-1 text-muted-foreground hover:text-foreground transition-colors opacity-0 group-hover:opacity-100"
+                      title="编辑模型配置"
+                    >
+                      <Pencil size={13} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleToggleModel(model.id)}
+                      className="p-0.5 text-muted-foreground hover:text-destructive transition-colors opacity-0 group-hover:opacity-100"
+                      title="取消启用"
+                    >
+                      <X size={14} />
+                    </button>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => handleToggleModel(model.id)}
-                    className="p-0.5 text-muted-foreground hover:text-destructive transition-colors opacity-0 group-hover:opacity-100"
-                    title="取消启用"
-                  >
-                    <X size={14} />
-                  </button>
+                  {editingModelId === model.id && (
+                    <div className="border-t border-border/50 bg-muted/15 p-4">
+                      <CcbConfiguredModelEditor
+                        value={toCcbConfiguredModelEditorValue(model)}
+                        runtimeModel={resolveRuntimeModelInfo(model.id)}
+                        idError={resolveModelIdError(model)}
+                        onChange={patch => handleUpdateModel(model, patch)}
+                      />
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
@@ -1108,21 +1277,33 @@ export function ChannelForm({ channel, onSaved, onAgentEligibilityChange, onCanc
       <SettingsSection
         title="可用模型"
         action={
-          <Button
-            variant="outline"
-            size="sm"
-            type="button"
-            onClick={handleFetchModels}
-            disabled={fetchingModels || !hasRequiredSecret || (!isCodexProvider && !baseUrl.trim())}
-            className="h-7 text-xs"
-          >
-            {fetchingModels ? (
-              <Loader2 size={12} className="animate-spin" />
-            ) : (
-              <Download size={12} />
-            )}
-            <span>从供应商获取</span>
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              type="button"
+              onClick={() => setShowNewModelEditor(current => !current)}
+              className="h-7 text-xs"
+            >
+              <Plus size={12} />
+              <span>添加模型</span>
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              type="button"
+              onClick={handleFetchModels}
+              disabled={fetchingModels || !hasRequiredSecret || (!isCodexProvider && !baseUrl.trim())}
+              className="h-7 text-xs"
+            >
+              {fetchingModels ? (
+                <Loader2 size={12} className="animate-spin" />
+              ) : (
+                <Download size={12} />
+              )}
+              <span>从供应商获取</span>
+            </Button>
+          </div>
         }
       >
         {/* 拉取结果提示 */}
@@ -1166,29 +1347,61 @@ export function ChannelForm({ channel, onSaved, onAgentEligibilityChange, onCanc
               {availableModels.map((model) => (
                 <div
                   key={model.id}
-                  className="flex items-center gap-2 px-4 py-2.5 group cursor-pointer hover:bg-muted/30 transition-colors"
-                  onClick={() => handleToggleModel(model.id)}
+                  className="group"
                 >
-                  <Plus size={14} className="text-muted-foreground flex-shrink-0" />
-                  <div className="min-w-0 flex-1">
-                    <div className="text-sm text-foreground">
-                      {model.name}
-                      {model.name !== model.id && (
-                        <span className="text-muted-foreground ml-1">({model.id})</span>
-                      )}
-                    </div>
-                    <RuntimeModelCapabilitySummary
-                      model={resolveRuntimeModelInfo(model.id)}
-                    />
-                  </div>
-                  <button
-                    type="button"
-                    onClick={(e) => { e.stopPropagation(); handleRemoveModel(model.id) }}
-                    className="p-0.5 text-muted-foreground hover:text-destructive transition-colors opacity-0 group-hover:opacity-100"
-                    title="删除"
+                  <div
+                    className="flex items-center gap-2 px-4 py-2.5 cursor-pointer hover:bg-muted/30 transition-colors"
+                    onClick={() => handleToggleModel(model.id)}
                   >
-                    <X size={14} />
-                  </button>
+                    <Plus size={14} className="text-muted-foreground flex-shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <div className="text-sm text-foreground">
+                        {model.name || model.id}
+                        {model.name && model.name !== model.id && (
+                          <span className="text-muted-foreground ml-1">({model.id})</span>
+                        )}
+                      </div>
+                      {model.description && (
+                        <p className="mt-0.5 line-clamp-1 text-xs text-muted-foreground">
+                          {model.description}
+                        </p>
+                      )}
+                      <RuntimeModelCapabilitySummary
+                        model={resolveRuntimeModelInfo(model.id)}
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        setEditingModelId(
+                          editingModelId === model.id ? undefined : model.id,
+                        )
+                      }}
+                      className="p-1 text-muted-foreground hover:text-foreground transition-colors opacity-0 group-hover:opacity-100"
+                      title="编辑模型配置"
+                    >
+                      <Pencil size={13} />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(e) => { e.stopPropagation(); handleRemoveModel(model.id) }}
+                      className="p-0.5 text-muted-foreground hover:text-destructive transition-colors opacity-0 group-hover:opacity-100"
+                      title="删除"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                  {editingModelId === model.id && (
+                    <div className="border-t border-border/50 bg-muted/15 p-4">
+                      <CcbConfiguredModelEditor
+                        value={toCcbConfiguredModelEditorValue(model)}
+                        runtimeModel={resolveRuntimeModelInfo(model.id)}
+                        idError={resolveModelIdError(model)}
+                        onChange={patch => handleUpdateModel(model, patch)}
+                      />
+                    </div>
+                  )}
                 </div>
               ))}
 
@@ -1208,43 +1421,47 @@ export function ChannelForm({ channel, onSaved, onAgentEligibilityChange, onCanc
             </div>
           </ScrollArea>
 
-          {/* 手动添加模型 */}
-          <div className="flex items-center gap-2 px-4 py-2.5 border-t border-border/50">
-            <Input
-              value={newModelId}
-              onChange={(e) => setNewModelId(e.target.value)}
-              placeholder="模型 ID（如 claude-opus-4-6）"
-              className="flex-1 h-8 text-sm"
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault()
-                  handleAddModel()
-                }
-              }}
-            />
-            <Input
-              value={newModelName}
-              onChange={(e) => setNewModelName(e.target.value)}
-              placeholder="显示名称（可选）"
-              className="flex-1 h-8 text-sm"
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault()
-                  handleAddModel()
-                }
-              }}
-            />
-            <Button
-              variant="ghost"
-              size="icon"
-              type="button"
-              onClick={handleAddModel}
-              disabled={!newModelId.trim()}
-              className="h-8 w-8 flex-shrink-0"
-            >
-              <Plus size={18} />
-            </Button>
-          </div>
+          {/* 手动添加模型：字段与 CCB 原生模型配置保持一致。 */}
+          {showNewModelEditor && (
+            <div className="space-y-4 border-t border-border/50 bg-muted/15 p-4">
+              <div>
+                <p className="text-sm font-medium">添加自定义模型</p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  未填写的能力由 CCB 内核根据模型 ID 自动判断。
+                </p>
+              </div>
+              <CcbConfiguredModelEditor
+                value={newModelDraft}
+                idError={newModelIdError}
+                onChange={patch => setNewModelDraft(current => ({
+                  ...current,
+                  ...patch,
+                }))}
+              />
+              <div className="flex justify-end gap-2">
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  type="button"
+                  onClick={() => {
+                    setNewModelDraft(createEmptyModelDraft())
+                    setShowNewModelEditor(false)
+                  }}
+                >
+                  取消
+                </Button>
+                <Button
+                  size="sm"
+                  type="button"
+                  onClick={handleAddModel}
+                  disabled={!newModelDraft.id.trim() || Boolean(newModelIdError)}
+                >
+                  <Plus size={14} />
+                  添加并启用
+                </Button>
+              </div>
+            </div>
+          )}
         </SettingsCard>
       </SettingsSection>
 

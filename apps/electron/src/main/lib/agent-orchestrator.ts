@@ -29,7 +29,13 @@ import {
   isPersistableSDKSystemMessage,
   normalizeMcpTransportType,
 } from '@proma/shared'
-import type { PromaPermissionMode, AskUserRequest, ExitPlanModeRequest, SDKSystemMessage } from '@proma/shared'
+import type {
+  PromaPermissionMode,
+  PermissionRequest,
+  AskUserRequest,
+  ExitPlanModeRequest,
+  SDKSystemMessage,
+} from '@proma/shared'
 import { isPromptTooLongError, isThinkingSignatureError, friendlyErrorMessage, mapSDKErrorToTypedError, extractErrorDetails, shouldKeepChannelOpen } from './agent-runtime-errors'
 import type { CcbAgentQueryOptions } from './ccb-runtime/ccb-agent-adapter'
 import { isTransientNetworkError, isMalformedResponseError, isSessionNotFoundError } from './error-patterns'
@@ -1101,6 +1107,18 @@ export class AgentOrchestrator {
         )
       }
 
+      // 请求批准模式复用 Proma 现有权限队列和白名单，并由 CCB Desktop Bridge
+      // 将 interaction.permissionRequested 挂起到用户完成审批。
+      const requestToolApproval = permissionService.createCanUseTool(
+        sessionId,
+        (request: PermissionRequest) => {
+          this.eventBus.emit(sessionId, {
+            kind: 'proma_event',
+            event: { type: 'permission_request', request },
+          })
+        },
+      )
+
       /**
        * 判断 Bash 命令是否是只读的（计划模式下安全可执行）
        * 检测写操作特征：文件重定向、破坏性命令、包管理写操作、git 写操作等
@@ -1244,6 +1262,9 @@ export class AgentOrchestrator {
           case 'bypassPermissions':
             return { behavior: 'allow' as const, updatedInput: input }
 
+          case 'default':
+            return requestToolApproval(toolName, input, options)
+
           case 'plan': {
             // Plan 模式：只允许只读工具 + Write/Edit 任意 .md 文件（计划文档）
             if (PLAN_MODE_ALLOWED_TOOLS.has(toolName)) {
@@ -1281,8 +1302,6 @@ export class AgentOrchestrator {
             // 其余工具拒绝
             return { behavior: 'deny' as const, message: '计划模式下不允许执行写操作，请在计划审批通过后再执行' }
           }
-          default:
-            return { behavior: 'allow' as const, updatedInput: input }
         }
       }
 
