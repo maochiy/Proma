@@ -100,6 +100,7 @@ import {
   replaceAgentSessionInFreshnessOrder,
   sortAgentSessionsByUpdatedAtDesc,
 } from '@/lib/agent-session-list'
+import { countExternalRuntimeSkills } from '@/lib/runtime-skill-catalog'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -790,6 +791,7 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
 
   // 当前项目能力（MCP + Skill 计数）
   const [capabilities, setCapabilities] = React.useState<WorkspaceCapabilities | null>(null)
+  const [externalRuntimeSkillCount, setExternalRuntimeSkillCount] = React.useState(0)
   const capabilitiesVersion = useAtomValue(workspaceCapabilitiesVersionAtom)
 
   // Tab 状态
@@ -960,13 +962,44 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
   React.useEffect(() => {
     if (!currentWorkspaceSlug || mode !== 'agent') {
       setCapabilities(null)
+      setExternalRuntimeSkillCount(0)
       return
     }
-    window.electronAPI
-      .getWorkspaceCapabilities(currentWorkspaceSlug)
-      .then(setCapabilities)
-      .catch(console.error)
-  }, [currentWorkspaceSlug, mode, activeView, capabilitiesVersion])
+    let cancelled = false
+    Promise.all([
+      window.electronAPI.getWorkspaceCapabilities(currentWorkspaceSlug),
+      currentWorkspaceId
+        ? window.electronAPI.getAgentRuntimeSkillCatalog(currentWorkspaceId)
+        : Promise.resolve(null),
+    ])
+      .then(([nextCapabilities, runtimeCatalog]) => {
+        if (cancelled) return
+        setCapabilities(nextCapabilities)
+        setExternalRuntimeSkillCount(
+          countExternalRuntimeSkills(runtimeCatalog, nextCapabilities.skills),
+        )
+      })
+      .catch((error) => {
+        if (cancelled) return
+        console.error('[侧边栏] 加载 Agent Skills 数量失败:', error)
+        window.electronAPI
+          .getWorkspaceCapabilities(currentWorkspaceSlug)
+          .then((nextCapabilities) => {
+            if (!cancelled) setCapabilities(nextCapabilities)
+          })
+          .catch(console.error)
+        setExternalRuntimeSkillCount(0)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [
+    currentWorkspaceId,
+    currentWorkspaceSlug,
+    mode,
+    activeView,
+    capabilitiesVersion,
+  ])
 
   /** 置顶对话列表（仅活跃模式显示，排除 draft） */
   const pinnedConversations = React.useMemo(
@@ -2643,7 +2676,7 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
       {mode === 'agent' && (
         <div className="px-3 pb-0.5">
           <SkillsSidebarEntry
-            count={capabilities?.skills.length ?? 0}
+            count={(capabilities?.skills.length ?? 0) + externalRuntimeSkillCount}
             updateCount={capabilities?.skills.filter((s) => s.hasUpdate).length ?? 0}
             active={activeView === 'agent-skills'}
             onClick={handleOpenSkills}

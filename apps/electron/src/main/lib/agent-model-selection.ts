@@ -1,5 +1,5 @@
 import { getChannelById } from './channel-manager'
-import type { ProviderType } from '@proma/shared'
+import { CCB_NATIVE_CHANNEL_ID, type ProviderType } from '@proma/shared'
 
 export interface AvailableAgentModel {
   id: string
@@ -27,6 +27,9 @@ export function assertEnabledModelForChannel(input: {
   }
   if (!input.channelId) {
     throw new Error(`${input.purpose}需要可用的 channelId`)
+  }
+  if (input.channelId === CCB_NATIVE_CHANNEL_ID) {
+    return modelId
   }
 
   const channel = getChannelById(input.channelId)

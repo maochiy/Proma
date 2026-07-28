@@ -43,6 +43,10 @@ import { clearNanoBananaAgentHistory } from './chat-tools/nano-banana-mcp'
 import { assertEnabledModelForChannel } from './agent-model-selection'
 import { copyForkWorkspaceFiles } from './agent-fork-workspace-copy'
 import { promaBuiltinMcpHttpHost } from './builtin-mcp/http-host'
+import {
+  createRuntimeSessionProjectionTitle,
+  hasRuntimePromptContext,
+} from './title-generation'
 
 /**
  * 会话索引文件格式
@@ -234,18 +238,35 @@ export function syncRuntimeSessionCatalog(
   }
   let changed = false
   for (const runtimeSession of runtimeSessions) {
+    const runtimeTitle = createRuntimeSessionProjectionTitle(
+      runtimeSession.title || runtimeSession.summary,
+    ) ?? '新 Agent 会话'
     const existing = index.sessions.find(
       session => session.runtimeSessionId === runtimeSession.runtimeSessionId,
     )
     if (existing) {
-      const nextTitle = runtimeSession.title || runtimeSession.summary
+      // CCB 原生导入会话由 Transcript 标题持续驱动；Proma 创建、自动生成或
+      // 用户手动修改的标题由桌面端持有，避免 Catalog 同步覆盖用户选择。
+      const runtimeOwnsTitle =
+        existing.titleSource === 'runtime'
+        || (
+          existing.titleSource === undefined
+          && (
+            existing.id === existing.runtimeSessionId
+            || existing.title === '新 Agent 会话'
+            || hasRuntimePromptContext(existing.title)
+          )
+        )
+      const nextTitle = runtimeOwnsTitle ? runtimeTitle : existing.title
       if (
         existing.workspaceId !== workspaceId
         || existing.title !== nextTitle
+        || (runtimeOwnsTitle && existing.titleSource !== 'runtime')
         || existing.updatedAt !== runtimeSession.updatedAt
       ) {
         existing.workspaceId = workspaceId
         existing.title = nextTitle
+        if (runtimeOwnsTitle) existing.titleSource = 'runtime'
         existing.updatedAt = runtimeSession.updatedAt
         changed = true
       }
@@ -257,7 +278,8 @@ export function syncRuntimeSessionCatalog(
         ? randomUUID()
         : runtimeSession.runtimeSessionId,
       runtimeSessionId: runtimeSession.runtimeSessionId,
-      title: runtimeSession.title || runtimeSession.summary,
+      title: runtimeTitle,
+      titleSource: 'runtime',
       workspaceId,
       createdAt: now,
       updatedAt: runtimeSession.updatedAt,
@@ -299,6 +321,7 @@ export function createAgentSession(
   const meta: AgentSessionMeta = {
     id: randomUUID(),
     title: title || '新 Agent 会话',
+    titleSource: title ? 'user' : 'generated',
     channelId,
     modelId,
     workspaceId,
@@ -482,7 +505,7 @@ export function replaceAgentSessionSDKMessages(
  */
 export function updateAgentSessionMeta(
   id: string,
-  updates: Partial<Pick<AgentSessionMeta, 'title' | 'channelId' | 'modelId' | 'runtimeSessionId' | 'runtimeVersion' | 'runtimeArtifactCommit' | 'runtimeProtocolVersion' | 'runtimeLastSequence' | 'runtimeWorkerState' | 'workspaceId' | 'pinned' | 'starred' | 'archived' | 'attachedDirectories' | 'attachedFiles' | 'resumeAtMessageUuid' | 'stoppedByUser' | 'permissionMode' | 'completedButUnconfirmed' | 'sourceAutomationId' | 'automationGraduated' | 'parentSessionId' | 'rootSessionId' | 'sourceDelegationId' | 'delegationRole' | 'delegationStatus' | 'delegationDepth' | 'delegationGoal'>>,
+  updates: Partial<Pick<AgentSessionMeta, 'title' | 'titleSource' | 'channelId' | 'modelId' | 'runtimeSessionId' | 'runtimeVersion' | 'runtimeArtifactCommit' | 'runtimeProtocolVersion' | 'runtimeLastSequence' | 'runtimeWorkerState' | 'workspaceId' | 'pinned' | 'starred' | 'archived' | 'attachedDirectories' | 'attachedFiles' | 'resumeAtMessageUuid' | 'stoppedByUser' | 'permissionMode' | 'completedButUnconfirmed' | 'sourceAutomationId' | 'automationGraduated' | 'parentSessionId' | 'rootSessionId' | 'sourceDelegationId' | 'delegationRole' | 'delegationStatus' | 'delegationDepth' | 'delegationGoal'>>,
 ): AgentSessionMeta {
   const index = readIndex()
   const idx = index.sessions.findIndex((s) => s.id === id)

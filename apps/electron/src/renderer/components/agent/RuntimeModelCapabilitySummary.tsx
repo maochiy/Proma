@@ -51,6 +51,18 @@ export function RuntimeModelCapabilitySummary({
 }: RuntimeModelCapabilitySummaryProps): React.ReactElement | null {
   if (!model) return null
 
+  if (compact) {
+    const details = [`${formatRuntimeContextWindow(model.contextWindow)} 上下文`]
+    if (model.supportsEffort && model.supportedEffortLevels.length > 0) {
+      details.push(`${model.supportedEffortLevels.length} 档思考`)
+    }
+    return (
+      <p className={cn('mt-0.5 truncate text-[10px] text-muted-foreground/70', className)}>
+        {details.join(' · ')}
+      </p>
+    )
+  }
+
   return (
     <div className={cn('mt-1 flex min-w-0 flex-wrap items-center gap-1', className)}>
       {buildRuntimeCapabilityLabels(model).map(label => (
@@ -58,7 +70,7 @@ export function RuntimeModelCapabilitySummary({
           key={label}
           className={cn(
             'rounded-md bg-muted/70 px-1.5 py-0.5 text-muted-foreground',
-            compact ? 'text-[9px] leading-3.5' : 'text-[10px] leading-4',
+            'text-[10px] leading-4',
           )}
         >
           {label}

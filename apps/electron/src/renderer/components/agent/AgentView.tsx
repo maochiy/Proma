@@ -117,7 +117,7 @@ import { draftSessionIdsAtom } from '@/atoms/draft-session-atoms'
 import { sendWithCmdEnterAtom } from '@/atoms/shortcut-atoms'
 import { useOpenPreview } from '@/components/diff/preview-opener'
 import type { AgentRuntimeModelInfo, AgentSendInput, AgentPendingFile, FileDialogLargeFile, ModelOption, SDKMessage, SDKUserMessage } from '@proma/shared'
-import { MAX_ATTACHMENT_SIZE } from '@proma/shared'
+import { CCB_NATIVE_CHANNEL_ID, MAX_ATTACHMENT_SIZE } from '@proma/shared'
 import { fileToBase64, formatFileNames, getFileParentPath } from '@/lib/file-utils'
 import { buildQuotedSelectionBlock } from '@/lib/quoted-selection'
 import { createClipboardPendingFile, createClipboardTextDraft, makeUniqueAttachmentName } from '@/lib/clipboard-text-attachment'
@@ -260,7 +260,11 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   const sessionMetaChannelId = sessionMeta?.channelId
   const sessionMetaModelId = sessionMeta?.modelId
   const hasSessionMeta = Boolean(sessionMeta)
-  const agentChannelId = sessionMetaChannelId ?? sessionChannelMap.get(sessionId) ?? defaultChannelId
+  const agentChannelId =
+    sessionMetaChannelId
+    ?? sessionChannelMap.get(sessionId)
+    ?? defaultChannelId
+    ?? CCB_NATIVE_CHANNEL_ID
   const agentModelId = sessionMetaModelId ?? sessionModelMap.get(sessionId) ?? defaultModelId
   const agentChannelIds = useAtomValue(agentChannelIdsAtom)
   const [agentThinking, setAgentThinking] = useAtom(agentThinkingAtom)
@@ -428,87 +432,84 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     agentRuntimeModelCatalogsAtom,
   )
   const [runtimeModelsLoading, setRuntimeModelsLoading] = React.useState(false)
-  const selectedAgentChannel = React.useMemo(
-    () => agentChannelId
-      ? globalChannels.find((channel) => channel.id === agentChannelId)
-      : undefined,
+  const activeAgentChannel = React.useMemo(
+    () => globalChannels.find((channel) => channel.id === agentChannelId),
     [agentChannelId, globalChannels],
   )
-  const enabledAgentChannels = React.useMemo(
-    () => globalChannels.filter(
-      channel =>
-        channel.enabled
-        && agentChannelIds.includes(channel.id),
-    ),
-    [agentChannelIds, globalChannels],
-  )
   const runtimeCatalogRequestSignature = React.useMemo(
-    () => enabledAgentChannels
-      .map(channel => `${channel.id}:${channel.updatedAt}`)
-      .join('|'),
-    [enabledAgentChannels],
+    () => `${agentChannelId}:${activeAgentChannel?.updatedAt ?? 0}`,
+    [activeAgentChannel?.updatedAt, agentChannelId],
   )
   React.useEffect(() => {
     let cancelled = false
+    let requestInFlight = false
 
-    const loadCatalogs = async (): Promise<void> => {
-      if (enabledAgentChannels.length === 0) {
-        setRuntimeModelsLoading(false)
-        return
-      }
-      setRuntimeModelsLoading(true)
-      for (const channel of enabledAgentChannels) {
-        try {
-          const catalog =
-            await window.electronAPI.getAgentRuntimeModelCatalog(
-              channel.id,
-              undefined,
-              currentWorkspaceId ?? undefined,
-            )
-          if (cancelled) return
-          setRuntimeModelCatalogs((previous) => {
-            const catalogKey = getAgentRuntimeModelCatalogKey(
-              currentWorkspaceId,
-              channel.id,
-            )
-            const existing = previous.get(catalogKey)
-            if (
-              existing
-              && existing.runtimeArtifactCommit === catalog.runtimeArtifactCommit
-              && existing?.runtimeVersion === catalog.runtimeVersion
-              && existing?.defaultModel === catalog.defaultModel
-              && JSON.stringify(existing.models) === JSON.stringify(catalog.models)
-            ) {
-              return previous
-            }
-            const next = new Map(previous)
-            next.set(catalogKey, catalog)
-            return next
-          })
-        } catch (error) {
-          if (cancelled) return
-          console.error(
-            `[AgentView] CCB 模型目录加载失败: channel=${channel.id}`,
-            error,
+    const loadCatalogs = async (showLoading: boolean): Promise<void> => {
+      if (requestInFlight) return
+      requestInFlight = true
+      if (showLoading) setRuntimeModelsLoading(true)
+      try {
+        const catalog =
+          await window.electronAPI.getAgentRuntimeModelCatalog(
+            agentChannelId,
+            undefined,
+            currentWorkspaceId ?? undefined,
           )
-          setRuntimeModelCatalogs((previous) => {
-            const catalogKey = getAgentRuntimeModelCatalogKey(
-              currentWorkspaceId,
-              channel.id,
-            )
-            if (!previous.has(catalogKey)) return previous
-            const next = new Map(previous)
-            next.delete(catalogKey)
-            return next
-          })
-        }
+        if (cancelled) return
+        setRuntimeModelCatalogs((previous) => {
+          const catalogKey = getAgentRuntimeModelCatalogKey(
+            currentWorkspaceId,
+            agentChannelId,
+          )
+          const existing = previous.get(catalogKey)
+          if (
+            existing
+            && existing.runtimeArtifactCommit === catalog.runtimeArtifactCommit
+            && existing?.runtimeVersion === catalog.runtimeVersion
+            && existing?.defaultModel === catalog.defaultModel
+            && JSON.stringify(existing.models) === JSON.stringify(catalog.models)
+          ) {
+            return previous
+          }
+          const next = new Map(previous)
+          next.set(catalogKey, catalog)
+          next.set(
+            getAgentRuntimeModelCatalogKey(currentWorkspaceId, catalog.channelId),
+            catalog,
+          )
+          return next
+        })
+      } catch (error) {
+        if (cancelled) return
+        console.error(
+          `[AgentView] CCB 模型目录加载失败: channel=${agentChannelId}`,
+          error,
+        )
+        setRuntimeModelCatalogs((previous) => {
+          const catalogKey = getAgentRuntimeModelCatalogKey(
+            currentWorkspaceId,
+            agentChannelId,
+          )
+          if (!previous.has(catalogKey)) return previous
+          const next = new Map(previous)
+          next.delete(catalogKey)
+          return next
+        })
+      } finally {
+        requestInFlight = false
+        if (!cancelled && showLoading) setRuntimeModelsLoading(false)
       }
-      if (!cancelled) setRuntimeModelsLoading(false)
     }
 
-    void loadCatalogs()
+    void loadCatalogs(true)
+    // CCB CLI 可能在桌面端运行期间更新 ~/.claude 或项目 .claude 配置。
+    // Main 会按配置内容指纹命中缓存，因此轮询只产生轻量 IPC，不会重复解析 Runtime。
+    const refreshTimer = window.setInterval(() => {
+      void loadCatalogs(false)
+    }, 5_000)
     return () => {
       cancelled = true
+      window.clearInterval(refreshTimer)
     }
   }, [
     runtimeCatalogRequestSignature,
@@ -517,23 +518,26 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   ])
 
   const runtimeModelOptions = React.useMemo<ModelOption[]>(
-    () => enabledAgentChannels.flatMap(channel => {
+    () => {
       const catalog = runtimeModelCatalogs.get(
-        getAgentRuntimeModelCatalogKey(currentWorkspaceId, channel.id),
+        getAgentRuntimeModelCatalogKey(currentWorkspaceId, agentChannelId),
       )
       if (!catalog) return []
+      const resolvedChannel = globalChannels.find(
+        channel => channel.id === catalog.channelId,
+      )
       return catalog.models.map(model => ({
-        channelId: channel.id,
-        channelName: channel.name,
+        channelId: catalog.channelId,
+        channelName: 'Claude Code Best',
         modelId: model.value,
         modelName: model.displayName,
-        provider: channel.provider,
+        provider: resolvedChannel?.provider ?? 'anthropic',
         thinkingEffortLevels: model.supportedEffortLevels,
         defaultThinkingEffortLevel: model.defaultEffortLevel,
         runtimeModelInfo: model,
       }))
-    }),
-    [currentWorkspaceId, enabledAgentChannels, runtimeModelCatalogs],
+    },
+    [agentChannelId, currentWorkspaceId, globalChannels, runtimeModelCatalogs],
   )
   const selectedRuntimeModel = React.useMemo(
     () => {
@@ -580,39 +584,90 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     const catalog = runtimeModelCatalogs.get(
       getAgentRuntimeModelCatalogKey(currentWorkspaceId, agentChannelId),
     )
+    if (!catalog) return
+
+    const resolvedChannelId = catalog.channelId
     const normalizedCurrentModel = agentModelId?.replace(/\[1m\]$/i, '')
-    const currentModelAvailable = catalog?.models.some(model =>
+    const currentCatalogModel = catalog.models.find(model =>
       model.value === agentModelId || model.value === normalizedCurrentModel,
     )
-    if (currentModelAvailable) return
+    const resolvedModelId =
+      currentCatalogModel?.value
+      ?? catalog.defaultModel
+      ?? catalog.models[0]?.value
+    if (!resolvedModelId) return
 
-    const firstModelId = catalog?.defaultModel ?? catalog?.models[0]?.value
-    if (!firstModelId) return
+    if (resolvedChannelId !== agentChannelId) {
+      setSessionChannelMap((prev) => {
+        if (prev.get(sessionId) === resolvedChannelId) return prev
+        const map = new Map(prev)
+        map.set(sessionId, resolvedChannelId)
+        return map
+      })
+    }
+    if (resolvedModelId !== agentModelId) {
+      setSessionModelMap((prev) => {
+        if (prev.get(sessionId) === resolvedModelId) return prev
+        const map = new Map(prev)
+        map.set(sessionId, resolvedModelId)
+        return map
+      })
+    }
 
-    // 更新 per-session map（带幂等守卫，避免无意义写入导致 effect 自循环）
-    setSessionModelMap((prev) => {
-      if (prev.get(sessionId) === firstModelId) return prev
-      const map = new Map(prev)
-      map.set(sessionId, firstModelId)
-      return map
-    })
-    // 全局默认值 + 持久化 IPC 也加幂等：firstModel 与当前 defaultModelId 相同时跳过，
-    // 避免每次 agentChannelId / globalChannels 变化都重复写盘和触发 agentModelIdAtom 更新。
-    if (defaultModelId !== firstModelId) {
-      setDefaultModelId(firstModelId)
+    if (
+      defaultChannelId !== resolvedChannelId
+      || defaultModelId !== resolvedModelId
+    ) {
+      setDefaultChannelId(resolvedChannelId)
+      setDefaultModelId(resolvedModelId)
       window.electronAPI.updateSettings({
-        agentChannelId,
-        agentModelId: firstModelId,
+        agentChannelId: resolvedChannelId,
+        agentModelId: resolvedModelId,
       }).catch(console.error)
+    }
+
+    if (
+      sessionMeta
+      && (
+        sessionMeta.channelId !== resolvedChannelId
+        || sessionMeta.modelId !== resolvedModelId
+      )
+    ) {
+      setAgentSessions((previous) => previous.map((session) => (
+        session.id === sessionId
+          ? {
+              ...session,
+              channelId: resolvedChannelId,
+              modelId: resolvedModelId,
+            }
+          : session
+      )))
+      window.electronAPI
+        .updateAgentSessionModel(
+          sessionId,
+          resolvedChannelId,
+          resolvedModelId,
+        )
+        .then((updated) => {
+          setAgentSessions((previous) => previous.map((session) => (
+            session.id === updated.id ? updated : session
+          )))
+        })
+        .catch(console.error)
     }
   }, [
     agentChannelId,
     agentModelId,
+    defaultChannelId,
     defaultModelId,
     currentWorkspaceId,
     runtimeModelCatalogs,
     sessionId,
+    sessionMeta,
+    setAgentSessions,
     setDefaultModelId,
+    setDefaultChannelId,
+    setSessionChannelMap,
     setSessionModelMap,
   ])
 

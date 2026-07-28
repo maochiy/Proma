@@ -288,11 +288,15 @@ export function ModelSelector({
           className="model-selector-trigger flex min-w-0 max-w-full items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45"
         >
           {displayModelInfo ? (
-            <img
-              src={getModelLogo(displayModelInfo.modelId, displayModelInfo.provider)}
-              alt=""
-              className="size-4 rounded object-cover"
-            />
+            runtimeModelOptions ? (
+              <Cpu className="size-3.5 text-muted-foreground/80" />
+            ) : (
+              <img
+                src={getModelLogo(displayModelInfo.modelId, displayModelInfo.provider)}
+                alt=""
+                className="size-4 rounded object-cover"
+              />
+            )
           ) : (
             <Cpu className="size-3.5" />
           )}
@@ -309,7 +313,10 @@ export function ModelSelector({
         side="top"
         align="end"
         sideOffset={8}
-        className="w-[320px] overflow-hidden p-0"
+        className={cn(
+          'overflow-hidden p-0',
+          runtimeModelOptions ? 'w-[292px]' : 'w-[320px]',
+        )}
         onOpenAutoFocus={(event) => {
           event.preventDefault()
           requestAnimationFrame(() => searchInputRef.current?.focus())
@@ -343,16 +350,30 @@ export function ModelSelector({
 
                 return (
                   <div key={channelId} className="mb-1 last:mb-0">
-                    <div className="flex items-center gap-2 px-2 py-1.5">
-                      <img
-                        src={channel ? getChannelLogo(channel) : DefaultLogo}
-                        alt=""
-                        className="size-4 rounded object-cover"
-                      />
-                      <span className="min-w-0 truncate text-[11px] font-medium text-muted-foreground">
+                    <div className={cn(
+                      'flex items-center gap-2 px-2',
+                      runtimeModelOptions ? 'pb-1 pt-1.5' : 'py-1.5',
+                    )}>
+                      {runtimeModelOptions ? (
+                        null
+                      ) : (
+                        <img
+                          src={channel ? getChannelLogo(channel) : DefaultLogo}
+                          alt=""
+                          className="size-4 rounded object-cover"
+                        />
+                      )}
+                      <span className={cn(
+                        'min-w-0 truncate font-medium text-muted-foreground',
+                        runtimeModelOptions
+                          ? 'text-[10px] uppercase tracking-[0.08em]'
+                          : 'text-[11px]',
+                      )}>
                         {first.channelName}
                       </span>
-                      {channel ? <ChannelPlanQuotaBadge channel={channel} /> : null}
+                      {!runtimeModelOptions && channel
+                        ? <ChannelPlanQuotaBadge channel={channel} />
+                        : null}
                     </div>
 
                     {/* 该渠道下的模型列表 */}
@@ -380,11 +401,21 @@ export function ModelSelector({
                             isSelected && 'bg-accent/80'
                           )}
                         >
-                          <img
-                            src={getModelLogo(option.modelId, option.provider)}
-                            alt=""
-                            className="size-4 flex-shrink-0 rounded object-cover"
-                          />
+                          {runtimeModelOptions ? (
+                            <span
+                              aria-hidden
+                              className={cn(
+                                'size-1.5 shrink-0 rounded-full',
+                                isSelected ? 'bg-foreground/75' : 'bg-muted-foreground/35',
+                              )}
+                            />
+                          ) : (
+                            <img
+                              src={getModelLogo(option.modelId, option.provider)}
+                              alt=""
+                              className="size-4 flex-shrink-0 rounded object-cover"
+                            />
+                          )}
                           <div className="min-w-0 flex-1">
                             <div className={cn(
                               'truncate text-sm',

@@ -230,6 +230,10 @@ export function RichTextInput({
   const richTextEnabled = useAtomValue(richTextRenderingEnabledAtom)
   const richTextEnabledRef = useRef(richTextEnabled)
   richTextEnabledRef.current = richTextEnabled
+  // Placeholder 扩展只在编辑器初始化时创建一次，使用 ref 保证异步加载模型后
+  // “暂无可用模型”等占位文字可以立即更新，而无需销毁并重建编辑器。
+  const placeholderRef = useRef(placeholder)
+  placeholderRef.current = placeholder
   const isMac = useMemo(() => isMacPlatform(), [])
 
   const forwardSessionQuickSwitchKeyEvent = useCallback((event: React.KeyboardEvent<HTMLDivElement>, type: 'keydown' | 'keyup'): void => {
@@ -305,7 +309,7 @@ export function RichTextInput({
         }),
       ] : []),
       Placeholder.configure({
-        placeholder,
+        placeholder: () => placeholderRef.current,
         emptyEditorClass: 'is-editor-empty',
       }),
       // Mention 扩展：启用时注册，路径/slug 后续通过 ref 异步更新
@@ -655,14 +659,9 @@ export function RichTextInput({
   // 动态更新 placeholder 文本
   useEffect(() => {
     if (!editor) return
-    const placeholderExt = editor.extensionManager.extensions.find(
-      (ext) => ext.name === 'placeholder'
-    )
-    if (placeholderExt) {
-      placeholderExt.options.placeholder = placeholder
-      // 触发 TipTap 重新渲染 placeholder
-      editor.view.dispatch(editor.state.tr)
-    }
+    placeholderRef.current = placeholder
+    // Placeholder decoration 会在 transaction 后重新读取 placeholderRef。
+    editor.view.dispatch(editor.state.tr)
   }, [editor, placeholder])
 
   // 自动聚焦：组件挂载时 + autoFocusTrigger 变化时

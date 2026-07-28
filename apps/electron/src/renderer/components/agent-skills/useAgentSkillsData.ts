@@ -21,6 +21,10 @@ import type {
   WorkspaceCapabilities,
   WorkspaceMcpConfig,
 } from '@proma/shared'
+import {
+  getVisibleRuntimeSkills,
+  mergeRuntimeSkillCatalog,
+} from '@/lib/runtime-skill-catalog'
 
 export interface AgentSkillsData {
   /** 当前工作区（未选中时为 null） */
@@ -66,44 +70,6 @@ export function useAgentSkillsData(): AgentSkillsData {
   const [runtimeCatalog, setRuntimeCatalog] = React.useState<RuntimeSkillCatalog | null>(null)
   const [refreshingRuntimeSkills, setRefreshingRuntimeSkills] = React.useState(false)
 
-  const mergeRuntimeSkills = React.useCallback(
-    (promaSkills: SkillMeta[], catalog: RuntimeSkillCatalog | null): SkillMeta[] => {
-      if (!catalog) return promaSkills
-      const runtimePromaByName = new Map(
-        catalog.skills
-          .filter((skill) => skill.source === 'proma-project')
-          .map((skill) => [skill.name, skill]),
-      )
-      const mergedProma = promaSkills.map((skill) => {
-        const runtimeSkill = runtimePromaByName.get(skill.slug)
-          ?? runtimePromaByName.get(skill.name)
-        return {
-          ...skill,
-          registeredWithRuntime: Boolean(runtimeSkill),
-          runtimeSource: runtimeSkill?.source,
-          runtimePath: runtimeSkill?.path,
-          shadowedBy: runtimeSkill?.shadowedBy,
-        }
-      })
-      const ccbSkills = catalog.skills
-        .filter((skill) => skill.source !== 'proma-project')
-        .map((skill): SkillMeta => ({
-          slug: `__ccb__${skill.id}`,
-          name: skill.name,
-          description: skill.description,
-          enabled: skill.enabled,
-          runtimeSource: skill.source,
-          runtimePath: skill.path,
-          runtimeReadOnly: true,
-          registeredWithRuntime: true,
-          shadowedBy: skill.shadowedBy,
-          runtimePluginName: skill.pluginName,
-        }))
-      return [...mergedProma, ...ccbSkills]
-    },
-    [],
-  )
-
   const loadData = React.useCallback(async () => {
     if (!workspaceSlug) {
       setSkills([])
@@ -130,7 +96,7 @@ export function useAgentSkillsData(): AgentSkillsData {
       ])
       setMcpConfig(config)
       setRuntimeCatalog(catalog)
-      setSkills(mergeRuntimeSkills(skillList, catalog))
+      setSkills(mergeRuntimeSkillCatalog(skillList, catalog))
       setSkillsDir(dir)
       setDefaultSkillSlugs(new Set(defaultSlugs))
       setCapabilities(capabilities)
@@ -140,7 +106,7 @@ export function useAgentSkillsData(): AgentSkillsData {
     } finally {
       setLoading(false)
     }
-  }, [currentWorkspace, mergeRuntimeSkills, workspaceSlug])
+  }, [currentWorkspace, workspaceSlug])
 
   const refreshRuntimeSkills = React.useCallback(async (): Promise<void> => {
     if (!currentWorkspace || refreshingRuntimeSkills) return
@@ -151,8 +117,10 @@ export function useAgentSkillsData(): AgentSkillsData {
         window.electronAPI.getAgentRuntimeSkillCatalog(currentWorkspace.id),
       ])
       setRuntimeCatalog(catalog)
-      setSkills(mergeRuntimeSkills(promaSkills, catalog))
-      toast.success(`已刷新 CCB Skills，共发现 ${catalog.skills.length} 个`)
+      setSkills(mergeRuntimeSkillCatalog(promaSkills, catalog))
+      toast.success(
+        `已刷新 CCB Skills，共发现 ${getVisibleRuntimeSkills(catalog).length} 个有效能力`,
+      )
     } catch (error) {
       console.error('[Agent 技能] 刷新 CCB Skills 失败:', error)
       toast.error(error instanceof Error ? error.message : '刷新 CCB Skills 失败')
@@ -161,7 +129,6 @@ export function useAgentSkillsData(): AgentSkillsData {
     }
   }, [
     currentWorkspace,
-    mergeRuntimeSkills,
     refreshingRuntimeSkills,
     workspaceSlug,
   ])

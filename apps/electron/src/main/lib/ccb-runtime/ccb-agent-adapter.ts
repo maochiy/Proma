@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto'
-import { join } from 'node:path'
 import type {
   AgentProviderAdapter,
   AgentQueryInput,
@@ -16,12 +15,12 @@ import type {
 } from '@proma/shared'
 import type { CanUseToolOptions, PermissionResult } from '../agent-permission-service'
 import { updateAgentSessionMeta } from '../agent-session-manager'
-import { getConfigDir } from '../config-paths'
 import { persistCodexOAuthCredentials } from '../channel-manager'
 import { ccbDesktopRuntimeClient } from './runtime-client'
 import { sanitizeCcbSessionEnvironment } from './runtime-security'
 import { assertCcbRuntimeModelCatalog } from './protocol-validation'
 import { createAdditionalSkillDirectoriesFingerprint } from './skill-directory-fingerprint'
+import { getCcbUserConfigDir } from './user-config'
 import type {
   CcbInteractionResponse,
   CcbPermissionMode,
@@ -252,6 +251,41 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
     return true
   }
 
+  async getExecutionGraph(
+    sessionId: string,
+  ): Promise<import('@proma/shared').AgentRuntimeExecutionGraph> {
+    if (!this.openedSessions.has(sessionId)) {
+      return {
+        nodes: [],
+        todos: [],
+        updatedAt: 0,
+      }
+    }
+    return ccbDesktopRuntimeClient.request<
+      import('@proma/shared').AgentRuntimeExecutionGraph
+    >(
+      { type: 'session.getExecutionGraph' },
+      sessionId,
+      10_000,
+    )
+  }
+
+  async getSubagentTranscript(
+    sessionId: string,
+    executionNodeId: string,
+  ): Promise<import('@proma/shared').AgentRuntimeSubagentTranscript> {
+    if (!this.openedSessions.has(sessionId)) {
+      throw new Error('CCB Session 尚未打开，无法读取子代理 Transcript')
+    }
+    return ccbDesktopRuntimeClient.request<
+      import('@proma/shared').AgentRuntimeSubagentTranscript
+    >(
+      { type: 'session.getSubagentTranscript', executionNodeId },
+      sessionId,
+      10_000,
+    )
+  }
+
   async forkSession(
     input: AgentRuntimeSessionOperationInput,
     upToMessageUuid?: string,
@@ -346,7 +380,7 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
           permissionMode: permissionMode(input.permissionMode),
           environment: {
             variables: environment,
-            configDir: join(getConfigDir(), 'runtime', 'ccb'),
+            configDir: getCcbUserConfigDir(),
           },
           providerConfiguration: input.providerConfiguration,
           mcpServers: input.mcpServers,
@@ -501,7 +535,7 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
             cwd: options.cwd ?? process.cwd(),
             environment: {
               variables: environment,
-              configDir: join(getConfigDir(), 'runtime', 'ccb'),
+              configDir: getCcbUserConfigDir(),
             },
             providerConfiguration: options.providerConfiguration,
           },
@@ -533,7 +567,7 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
           permissionMode: permissionMode(options.sdkPermissionMode),
           environment: {
             variables: environment,
-            configDir: join(getConfigDir(), 'runtime', 'ccb'),
+            configDir: getCcbUserConfigDir(),
           },
           providerConfiguration: options.providerConfiguration,
           mcpServers: options.mcpServers,

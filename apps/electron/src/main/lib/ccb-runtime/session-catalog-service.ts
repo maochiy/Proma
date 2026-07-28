@@ -1,10 +1,8 @@
-import { join } from 'node:path'
 import type {
   AgentRuntimeSessionCatalog,
   AgentRuntimeSessionTranscript,
   AgentSessionMeta,
 } from '@proma/shared'
-import { getConfigDir } from '../config-paths'
 import {
   getAgentSessionMeta,
   listAgentSessions,
@@ -16,6 +14,7 @@ import {
   listAgentWorkspaces,
 } from '../agent-workspace-manager'
 import { ccbDesktopRuntimeClient } from './runtime-client'
+import { getCcbUserConfigDir } from './user-config'
 
 function runtimeEnvironment(): {
   variables: Record<string, string>
@@ -23,7 +22,7 @@ function runtimeEnvironment(): {
 } {
   return {
     variables: {},
-    configDir: join(getConfigDir(), 'runtime', 'ccb'),
+    configDir: getCcbUserConfigDir(),
   }
 }
 

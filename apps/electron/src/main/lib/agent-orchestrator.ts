@@ -22,6 +22,7 @@ import type { AgentSendInput, AgentMessage, AgentGenerateTitleInput, AgentProvid
 import {
   PROMA_DEFAULT_PERMISSION_MODE,
   PROMA_PERMISSION_MODE_CONFIG,
+  CCB_NATIVE_CHANNEL_ID,
   THINKING_SIGNATURE_ERROR_CODE,
   THINKING_SIGNATURE_ERROR_MESSAGE,
   THINKING_SIGNATURE_ERROR_TITLE,
@@ -33,10 +34,9 @@ import { isPromptTooLongError, isThinkingSignatureError, friendlyErrorMessage, m
 import type { CcbAgentQueryOptions } from './ccb-runtime/ccb-agent-adapter'
 import { isTransientNetworkError, isMalformedResponseError, isSessionNotFoundError } from './error-patterns'
 import { AgentEventBus } from './agent-event-bus'
-import { decryptApiKey, getChannelById, listChannels, resolveChannelRuntimeApiKey, resolveCodexOAuthCredentials } from './channel-manager'
-import { getAdapter, fetchTitle, normalizeAnthropicBaseUrlForSdk, getPromaUserAgent } from '@proma/core'
+import { decryptApiKey, getChannelById, listChannels, resolveCodexOAuthCredentials } from './channel-manager'
+import { normalizeAnthropicBaseUrlForSdk, getPromaUserAgent } from '@proma/core'
 import pkg from '../../../package.json' with { type: 'json' }
-import { getFetchFn } from './proxy-fetch'
 import { getEffectiveProxyUrl } from './proxy-settings-service'
 import { appendSDKMessages, updateAgentSessionMeta, getAgentSessionMeta, getAgentSessionMessages, truncateSDKMessages, removeSDKErrorMessage, createForkedAgentSessionProjection } from './agent-session-manager'
 import { getAgentWorkspace, getWorkspaceMcpConfig, ensurePluginManifest, getWorkspaceAttachedDirectories, getWorkspaceAttachedFiles } from './agent-workspace-manager'
@@ -57,9 +57,10 @@ import { isBuiltinMcpUserEnabled } from './builtin-mcp/settings'
 import { buildAgentRuntimeEnv, mergeRuntimeEnv, type AgentRuntimeEnv } from './agent-runtime-env'
 import { isVisibleRunMessage } from './agent-run-message-visibility'
 import { getAgentSdkMaxOutputTokens } from './agent-sdk-output-limits'
-import { createFallbackTitle, sanitizeGeneratedTitle, TITLE_PROMPT } from './title-generation'
+import { createFallbackTitle } from './title-generation'
 import {
   buildCcbProviderConfiguration,
+  buildCcbNativeProviderConfiguration,
   buildCcbProviderEnvironment,
 } from './ccb-runtime/provider-environment'
 
@@ -330,9 +331,9 @@ export class AgentOrchestrator {
    * 对 Kimi Coding Plan / MiniMax Coding Plan：使用 Bearer 认证（ANTHROPIC_AUTH_TOKEN）。
    */
   private buildCcbRuntimeEnv(
-    apiKey: string,
+    apiKey: string | undefined,
     baseUrl: string | undefined,
-    provider: ProviderType,
+    provider: ProviderType | undefined,
     modelId: string | undefined,
     proxyUrl: string | undefined,
     codexCredentials?: CodexOAuthCredentials,
@@ -362,20 +363,22 @@ export class AgentOrchestrator {
     }
 
     const maxOutputTokens = getAgentSdkMaxOutputTokens(modelId)
-    const normalizedBaseUrl = baseUrl && provider !== 'google'
+    const normalizedBaseUrl = baseUrl && provider && provider !== 'google'
       && !['openai', 'openai-responses', 'opencode-go-openai', 'zhipu', 'doubao', 'qwen', 'custom', 'openai-codex'].includes(provider)
       ? baseUrl === DEFAULT_ANTHROPIC_URL
         ? undefined
         : normalizeAnthropicBaseUrlForSdk(baseUrl)
       : baseUrl
-    const providerEnvironment = buildCcbProviderEnvironment({
-      provider,
-      apiKey,
-      baseUrl: normalizedBaseUrl,
-      modelId,
-      userAgent: getPromaUserAgent(pkg.version),
-      codexCredentials,
-    })
+    const providerEnvironment = provider && apiKey !== undefined
+      ? buildCcbProviderEnvironment({
+          provider,
+          apiKey,
+          baseUrl: normalizedBaseUrl,
+          modelId,
+          userAgent: getPromaUserAgent(pkg.version),
+          codexCredentials,
+        })
+      : {}
 
     const ccbEnv: Record<string, string | undefined> = {
       ...cleanEnv,
@@ -485,47 +488,13 @@ export class AgentOrchestrator {
    */
   async generateTitle(input: AgentGenerateTitleInput): Promise<string | null> {
     const { userMessage, channelId, modelId } = input
-    console.log('[Agent 标题生成] 开始生成标题:', { channelId, modelId, userMessage: userMessage.slice(0, 50) })
-
-    try {
-      const channels = listChannels()
-      const channel = channels.find((c) => c.id === channelId)
-      if (!channel) {
-        console.warn('[Agent 标题生成] 渠道不存在:', channelId)
-        return null
-      }
-
-      if (channel.provider === 'openai-codex') {
-        // ChatGPT Device OAuth 不再通过额外 Agent Runtime 发起旁路请求。
-        // 首轮完成前采用确定性的本地标题，避免额外持有第二套 Agent Runtime。
-        return createFallbackTitle(userMessage)
-      }
-
-      const apiKey = await resolveChannelRuntimeApiKey(channelId)
-      const providerAdapter = getAdapter(channel.provider)
-      const request = providerAdapter.buildTitleRequest({
-        baseUrl: channel.baseUrl,
-        apiKey,
-        modelId,
-        prompt: TITLE_PROMPT + userMessage,
-      })
-
-      const proxyUrl = await getEffectiveProxyUrl()
-      const fetchFn = getFetchFn(proxyUrl)
-      const title = await fetchTitle(request, providerAdapter, fetchFn)
-      const result = title ? sanitizeGeneratedTitle(title) : null
-      if (!result) {
-        console.warn('[Agent 标题生成] API 未返回可用标题')
-        // OpenCode Go 的服务端偶发返回空标题时，仍要完成重命名，避免会话长期停在默认标题。
-        return channel.provider === 'opencode-go-openai' ? createFallbackTitle(userMessage) : null
-      }
-
-      console.log(`[Agent 标题生成] 生成标题成功: "${result}"`)
-      return result
-    } catch (error) {
-      console.warn('[Agent 标题生成] 生成失败:', error)
-      return null
-    }
+    const title = createFallbackTitle(userMessage)
+    console.log('[Agent 标题生成] 使用本地标题投影:', {
+      channelId,
+      modelId,
+      title,
+    })
+    return title
   }
 
   /**
@@ -547,7 +516,7 @@ export class AgentOrchestrator {
       const title = await this.generateTitle({ userMessage, channelId, modelId })
       if (!title) return
 
-      updateAgentSessionMeta(sessionId, { title })
+      updateAgentSessionMeta(sessionId, { title, titleSource: 'generated' })
       callbacks.onTitleUpdated(title)
       console.log(`[Agent 编排] 自动标题生成完成: "${title}"`)
     } catch (error) {
@@ -832,8 +801,9 @@ export class AgentOrchestrator {
     }
 
     // 2. 获取渠道信息并解密 API Key
-    const channel = getChannelById(channelId)
-    if (!channel) {
+    const useNativeCcbConfiguration = channelId === CCB_NATIVE_CHANNEL_ID
+    const channel = useNativeCcbConfiguration ? undefined : getChannelById(channelId)
+    if (!useNativeCcbConfiguration && !channel) {
       reportPreflightError({
         code: 'channel_not_found',
         title: '渠道不存在',
@@ -846,17 +816,17 @@ export class AgentOrchestrator {
       return
     }
 
-    let apiKey: string
+    let apiKey: string | undefined
     let codexCredentials: CodexOAuthCredentials | undefined
     try {
-      if (channel.provider === 'openai-codex') {
+      if (channel?.provider === 'openai-codex') {
         codexCredentials = await resolveCodexOAuthCredentials(channelId)
         apiKey = codexCredentials.access
-      } else {
+      } else if (channel) {
         apiKey = decryptApiKey(channelId)
       }
     } catch (err) {
-      if (channel.provider === 'openai-codex') {
+      if (channel?.provider === 'openai-codex') {
         reportPreflightError({
           code: 'expired_oauth_token',
           title: 'ChatGPT 登录已失效',
@@ -884,7 +854,7 @@ export class AgentOrchestrator {
     let sessionMeta = getAgentSessionMeta(sessionId)
     console.log('[Agent 编排] Agent runtime: claude-code-best desktop')
 
-    if (!channel.enabled) {
+    if (channel && !channel.enabled) {
       reportPreflightError({
         code: 'channel_disabled',
         title: '渠道已禁用',
@@ -899,7 +869,9 @@ export class AgentOrchestrator {
 
     let providerConfiguration: AgentRuntimeProviderConfiguration
     try {
-      providerConfiguration = buildCcbProviderConfiguration(channel, modelId)
+      providerConfiguration = channel
+        ? buildCcbProviderConfiguration(channel, modelId)
+        : buildCcbNativeProviderConfiguration()
     } catch (error) {
       reportPreflightError({
         code: 'agent_model_unavailable',
@@ -915,7 +887,7 @@ export class AgentOrchestrator {
       return
     }
     const selectedModelId =
-      providerConfiguration.defaultModel ?? modelId ?? DEFAULT_MODEL_ID
+      modelId ?? providerConfiguration.defaultModel ?? DEFAULT_MODEL_ID
 
     // 2.1 立即抢占会话槽位（在所有同步检查通过后、第一个 await 之前）
     // 防止 buildSdkEnv 等 await 期间并发调用绕过上方的检查，导致多条重复消息写入 JSONL
@@ -962,8 +934,8 @@ export class AgentOrchestrator {
     const proxyUrl = await getEffectiveProxyUrl()
     const runtimeEnv = this.buildCcbRuntimeEnv(
       apiKey,
-      channel.baseUrl,
-      channel.provider,
+      channel?.baseUrl,
+      channel?.provider,
       selectedModelId,
       proxyUrl,
       codexCredentials,
@@ -1676,7 +1648,7 @@ export class AgentOrchestrator {
                   parent_tool_use_id: null,
                   uuid: randomUUID(),
                   _channelModelId: modelId,
-                  _channelProvider: channel.provider,
+                  _channelProvider: channel?.provider ?? 'custom',
                   error: { message: typedError.message, errorType: typedError.code },
                   _createdAt: Date.now(),
                   _errorCode: typedError.code,
@@ -1724,14 +1696,14 @@ export class AgentOrchestrator {
                     if (modelId) {
                       (msg as Record<string, unknown>)._channelModelId = modelId
                     }
-                    ;(msg as Record<string, unknown>)._channelProvider = channel.provider
+                    ;(msg as Record<string, unknown>)._channelProvider = channel?.provider ?? 'custom'
                   }
                   // 为 assistant 消息注入渠道信息，确保持久化后能正确匹配模型显示名与 Agent SDK 窗口
                   if (msg.type === 'assistant') {
                     if (modelId) {
                       (msg as Record<string, unknown>)._channelModelId = modelId
                     }
-                    ;(msg as Record<string, unknown>)._channelProvider = channel.provider
+                    ;(msg as Record<string, unknown>)._channelProvider = channel?.provider ?? 'custom'
                   }
                   accumulatedMessages.push(msg)
                 }
@@ -2194,21 +2166,24 @@ export class AgentOrchestrator {
     if (!sessionMeta.runtimeSessionId) {
       throw new Error('会话没有 CCB Runtime Session ID')
     }
-    if (!sessionMeta.channelId) {
-      throw new Error('会话没有可用渠道')
-    }
-    const channel = getChannelById(sessionMeta.channelId)
-    if (!channel || !channel.enabled) {
+    const sessionChannelId = sessionMeta.channelId
+    const useNativeCcbConfiguration =
+      !sessionChannelId || sessionChannelId === CCB_NATIVE_CHANNEL_ID
+    const channel = useNativeCcbConfiguration
+      ? undefined
+      : getChannelById(sessionChannelId)
+    if (!useNativeCcbConfiguration && (!channel || !channel.enabled)) {
       throw new Error('会话渠道不存在或已禁用')
     }
-    const codexCredentials = channel.provider === 'openai-codex'
+    const codexCredentials = channel?.provider === 'openai-codex'
       ? await resolveCodexOAuthCredentials(channel.id)
       : undefined
-    const apiKey = codexCredentials?.access ?? decryptApiKey(channel.id)
-    const providerConfiguration = buildCcbProviderConfiguration(
-      channel,
-      sessionMeta.modelId,
-    )
+    const apiKey = channel
+      ? codexCredentials?.access ?? decryptApiKey(channel.id)
+      : undefined
+    const providerConfiguration = channel
+      ? buildCcbProviderConfiguration(channel, sessionMeta.modelId)
+      : buildCcbNativeProviderConfiguration()
     const selectedModelId =
       providerConfiguration.defaultModel
       ?? sessionMeta.modelId
@@ -2216,8 +2191,8 @@ export class AgentOrchestrator {
     const proxyUrl = await getEffectiveProxyUrl()
     const runtimeEnv = this.buildCcbRuntimeEnv(
       apiKey,
-      channel.baseUrl,
-      channel.provider,
+      channel?.baseUrl,
+      channel?.provider,
       selectedModelId,
       proxyUrl,
       codexCredentials,

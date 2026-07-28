@@ -57,6 +57,7 @@ function writeAgentSessionsIndex(sessions: Array<{
   createdAt: number
   updatedAt: number
   runtimeSessionId?: string
+  titleSource?: 'runtime' | 'generated' | 'user'
   channelId?: string
   modelId?: string
   pinned?: boolean
@@ -155,7 +156,7 @@ describe('Agent 会话元数据', () => {
       {
         id: 'proma-session',
         runtimeSessionId: 'ccb-session',
-        title: '旧标题',
+        title: 'Proma 本地标题',
         workspaceId: 'workspace-old',
         channelId: 'channel-1',
         modelId: 'model-1',
@@ -164,6 +165,14 @@ describe('Agent 会话元数据', () => {
         starred: true,
         createdAt: 10,
         updatedAt: 20,
+      },
+      {
+        id: 'ccb-imported-session',
+        runtimeSessionId: 'ccb-imported-session',
+        title: 'CCB 旧标题',
+        workspaceId: 'workspace-old',
+        createdAt: 5,
+        updatedAt: 15,
       },
     ])
 
@@ -177,6 +186,14 @@ describe('Agent 会话元数据', () => {
         updatedAt: 100,
       },
       {
+        runtimeSessionId: 'ccb-imported-session',
+        title: 'CCB 更新标题',
+        summary: 'CCB 更新摘要',
+        cwd: '/tmp/project',
+        createdAt: 5,
+        updatedAt: 80,
+      },
+      {
         runtimeSessionId: 'ccb-new-session',
         title: 'CCB 新会话',
         summary: '新会话摘要',
@@ -188,7 +205,7 @@ describe('Agent 会话元数据', () => {
 
     expect(manager.getAgentSessionMeta('proma-session')).toMatchObject({
       runtimeSessionId: 'ccb-session',
-      title: 'CCB 新标题',
+      title: 'Proma 本地标题',
       workspaceId: 'workspace-new',
       channelId: 'channel-1',
       modelId: 'model-1',
@@ -198,6 +215,12 @@ describe('Agent 会话元数据', () => {
       createdAt: 10,
       updatedAt: 100,
     })
+    expect(manager.getAgentSessionMeta('ccb-imported-session')).toMatchObject({
+      title: 'CCB 更新标题',
+      titleSource: 'runtime',
+      workspaceId: 'workspace-new',
+      updatedAt: 80,
+    })
     expect(manager.listAgentSessions()).toContainEqual(
       expect.objectContaining({
         id: 'ccb-new-session',
@@ -206,6 +229,35 @@ describe('Agent 会话元数据', () => {
         runtimeWorkerState: 'cold',
       }),
     )
+  })
+
+  test('Given CCB 导入会话已手动改名 When 再次同步目录 Then 保留用户标题', () => {
+    writeAgentSessionsIndex([
+      {
+        id: 'ccb-session',
+        runtimeSessionId: 'ccb-session',
+        title: '用户自定义标题',
+        titleSource: 'user',
+        workspaceId: 'workspace-a',
+        createdAt: 10,
+        updatedAt: 20,
+      },
+    ])
+
+    manager.syncRuntimeSessionCatalog('workspace-a', [{
+      runtimeSessionId: 'ccb-session',
+      title: 'CCB Transcript 标题',
+      summary: 'CCB Transcript 标题',
+      cwd: '/tmp/project',
+      createdAt: 10,
+      updatedAt: 30,
+    }])
+
+    expect(manager.getAgentSessionMeta('ccb-session')).toMatchObject({
+      title: '用户自定义标题',
+      titleSource: 'user',
+      updatedAt: 30,
+    })
   })
 })
 

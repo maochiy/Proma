@@ -723,6 +723,8 @@ export interface AgentSessionMeta {
   runtimeWorkerState?: 'cold' | 'starting' | 'ready' | 'busy' | 'suspended' | 'crashed'
   /** 会话标题 */
   title: string
+  /** 标题来源；Runtime 目录同步只更新 runtime 来源标题。 */
+  titleSource?: 'runtime' | 'generated' | 'user'
   /** 使用的渠道 ID */
   channelId?: string
   /** 使用的模型 ID（自动任务子会话恢复输入框模型选择时使用） */
@@ -1096,6 +1098,9 @@ export interface WorkspaceCapabilities {
 
 // ===== Agent 发送输入 =====
 
+/** CCB 原生 settings 提供模型和凭证时使用的虚拟渠道 ID。 */
+export const CCB_NATIVE_CHANNEL_ID = '__ccb-native__'
+
 /**
  * Agent 发送消息的输入参数
  */
@@ -1104,7 +1109,7 @@ export interface AgentSendInput {
   sessionId: string
   /** 用户消息内容 */
   userMessage: string
-  /** 渠道 ID（用于获取 API Key） */
+  /** 渠道 ID；CCB_NATIVE_CHANNEL_ID 表示完全使用 CCB 原生配置。 */
   channelId: string
   /** 模型 ID */
   modelId?: string

@@ -108,12 +108,13 @@ export class CcbDesktopRuntimeClient {
   }
 
   async shutdown(): Promise<void> {
-    if (!this.process) return
+    const child = this.process
+    if (!child) return
     this.shuttingDown = true
     try {
       await this.request({ type: 'host.shutdown' }, undefined, 5_000)
     } catch {
-      this.process.kill()
+      child.kill()
     }
     this.cleanup(new Error('CCB Runtime 已关闭'))
     this.shuttingDown = false

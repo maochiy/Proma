@@ -391,22 +391,14 @@ export async function updateAgentRuntimeConfig(
 export async function getAgentRuntimeExecutionGraph(
   sessionId: string,
 ): Promise<AgentRuntimeExecutionGraph> {
-  return ccbDesktopRuntimeClient.request<AgentRuntimeExecutionGraph>(
-    { type: 'session.getExecutionGraph' },
-    sessionId,
-    10_000,
-  )
+  return adapter.getExecutionGraph(sessionId)
 }
 
 export async function getAgentRuntimeSubagentTranscript(
   sessionId: string,
   executionNodeId: string,
 ): Promise<AgentRuntimeSubagentTranscript> {
-  return ccbDesktopRuntimeClient.request<AgentRuntimeSubagentTranscript>(
-    { type: 'session.getSubagentTranscript', executionNodeId },
-    sessionId,
-    10_000,
-  )
+  return adapter.getSubagentTranscript(sessionId, executionNodeId)
 }
 
 // ===== 流式追加消息 =====

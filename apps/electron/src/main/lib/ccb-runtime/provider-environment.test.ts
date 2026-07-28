@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test'
 import {
+  buildCcbNativeProviderConfiguration,
   buildCcbProviderConfiguration,
   buildCcbProviderEnvironment,
   resolveCcbModelType,
@@ -107,6 +108,51 @@ describe('CCB Provider 环境映射', () => {
           effortLevels: ['low', 'high'],
         },
       ],
+    })
+  })
+
+  test('Given CCB 原生模型不在 Proma Channel When 构建 fallback Then 保留 CCB 当前模型', () => {
+    const configuration = buildCcbProviderConfiguration({
+      id: 'channel-1',
+      name: 'DeepSeek Fallback',
+      provider: 'deepseek',
+      baseUrl: 'https://api.deepseek.com/anthropic',
+      apiKey: '',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 2,
+      models: [
+        {
+          id: 'deepseek-v4-flash',
+          name: 'DeepSeek V4 Flash',
+          enabled: true,
+        },
+      ],
+    }, 'gpt-5.6-sol')
+
+    expect(configuration.defaultModel).toBe('gpt-5.6-sol')
+    expect(configuration.models.map(model => model.id)).toEqual([
+      'gpt-5.6-sol',
+      'deepseek-v4-flash',
+    ])
+  })
+
+  test('Given CCB 原生凭证已配置 When 构建 Proma fallback 环境 Then 不屏蔽 CCB settings provider 变量', () => {
+    const environment = buildCcbProviderEnvironment({
+      provider: 'deepseek',
+      apiKey: '',
+      baseUrl: 'https://api.deepseek.com/anthropic',
+      modelId: 'gpt-5.6-sol',
+      userAgent: 'Proma/test',
+    })
+
+    expect(environment.CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST).toBeUndefined()
+  })
+
+  test('Given CCB 原生配置 When 构建 Provider 配置 Then 不注入 Proma 模型或默认值', () => {
+    expect(buildCcbNativeProviderConfiguration()).toEqual({
+      modelType: 'anthropic',
+      models: [],
     })
   })
 

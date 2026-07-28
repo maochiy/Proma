@@ -54,7 +54,7 @@ export function buildCcbProviderConfiguration(
   defaultModel?: string,
   options: { includeDisabledModels?: boolean } = {},
 ): AgentRuntimeProviderConfiguration {
-  const models = channel.models
+  const models: AgentRuntimeProviderConfiguration['models'] = channel.models
     .filter(model => options.includeDisabledModels || model.enabled)
     .map(model => ({
       id: model.id,
@@ -64,20 +64,33 @@ export function buildCcbProviderConfiguration(
         : {}),
     }))
 
+  // Desktop 的真实模型目录来自 CCB。Proma Channel 仅作为没有 CCB 原生
+  // 配置时的 Provider fallback，因此允许当前选择的 CCB 模型不在 Channel 列表中。
+  if (defaultModel && !models.some(model => model.id === defaultModel)) {
+    models.unshift({
+      id: defaultModel,
+      name: defaultModel,
+    })
+  }
+
   if (models.length === 0) {
     throw new Error(`渠道「${channel.name}」没有启用的模型`)
   }
 
-  const enabledModelIds = new Set(models.map(model => model.id))
-  const resolvedDefaultModel =
-    defaultModel && enabledModelIds.has(defaultModel)
-      ? defaultModel
-      : models[0]?.id
+  const resolvedDefaultModel = defaultModel ?? models[0]?.id
 
   return {
     modelType: resolveCcbModelType(channel.provider),
     ...(resolvedDefaultModel ? { defaultModel: resolvedDefaultModel } : {}),
     models,
+  }
+}
+
+/** 仅使用 CCB settings 中的 Provider、模型和凭证，不注入 Proma fallback。 */
+export function buildCcbNativeProviderConfiguration(): AgentRuntimeProviderConfiguration {
+  return {
+    modelType: 'anthropic',
+    models: [],
   }
 }
 
@@ -119,9 +132,10 @@ function normalizeGeminiBaseUrl(value: string): string {
 export function buildCcbProviderEnvironment(
   input: BuildCcbProviderEnvironmentInput,
 ): Record<string, string> {
-  const environment: Record<string, string> = {
-    CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST: '1',
-  }
+  // CCB 用户 settings 是 Desktop 的首选 Provider/凭证来源。这里不设置
+  // CLAUDE_CODE_PROVIDER_MANAGED_BY_HOST，避免 CCB 主动过滤 ~/.claude/settings.json
+  // 中的 OPENAI_API_KEY、OPENAI_BASE_URL 等原生配置。
+  const environment: Record<string, string> = {}
 
   if (input.provider === 'openai-codex') {
     const credentials = input.codexCredentials

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type {
   AgentRuntimeModelCatalog,
@@ -7,25 +8,27 @@ import type {
   Channel,
   CodexOAuthCredentials,
 } from '@proma/shared'
-import { parseCodexCredentials } from '@proma/shared'
+import { CCB_NATIVE_CHANNEL_ID, parseCodexCredentials } from '@proma/shared'
 import { getPromaUserAgent, normalizeAnthropicBaseUrlForSdk } from '@proma/core'
 import pkg from '../../../../package.json' with { type: 'json' }
 import {
   decryptApiKey,
   getChannelById,
+  listChannels,
   resolveCodexOAuthCredentials,
 } from '../channel-manager'
-import { getConfigDir } from '../config-paths'
 import { getAgentWorkspace } from '../agent-workspace-manager'
 import { getEffectiveProxyUrl } from '../proxy-settings-service'
 import { ccbDesktopRuntimeClient } from './runtime-client'
 import {
   buildCcbProviderConfiguration,
+  buildCcbNativeProviderConfiguration,
   buildCcbProviderEnvironment,
 } from './provider-environment'
 import { assertCcbRuntimeModelCatalog } from './protocol-validation'
 import type { CcbRuntimeModelCatalog } from './protocol'
 import { sanitizeCcbSessionEnvironment } from './runtime-security'
+import { getCcbUserConfigDir } from './user-config'
 
 interface CachedModelCatalog {
   fingerprint: string
@@ -83,6 +86,48 @@ function hashCatalogConfiguration(
       cwd,
     }))
     .digest('hex')
+}
+
+function hashCcbModelConfiguration(cwd: string): string {
+  const configDir = getCcbUserConfigDir()
+  const candidates = [
+    join(configDir, 'settings.json'),
+    join(configDir, 'settings.local.json'),
+    join(cwd, '.claude', 'settings.json'),
+    join(cwd, '.claude', 'settings.local.json'),
+  ]
+  const hash = createHash('sha256')
+  for (const filePath of candidates) {
+    hash.update(filePath)
+    try {
+      hash.update(readFileSync(filePath))
+    } catch {
+      hash.update('<missing>')
+    }
+  }
+  return hash.digest('hex')
+}
+
+function buildNativeModelCatalogRequestContext(
+  cwd: string,
+): ModelCatalogRequestContext {
+  const channel: Channel = {
+    id: CCB_NATIVE_CHANNEL_ID,
+    name: 'Claude Code Best',
+    provider: 'anthropic',
+    baseUrl: DEFAULT_ANTHROPIC_URL,
+    apiKey: '',
+    models: [],
+    enabled: true,
+    createdAt: 0,
+    updatedAt: 0,
+  }
+  return {
+    channel,
+    environment: {},
+    providerConfiguration: buildCcbNativeProviderConfiguration(),
+    fingerprint: hashCcbModelConfiguration(cwd),
+  }
 }
 
 async function resolveCredentials(
@@ -159,7 +204,7 @@ async function loadAgentRuntimeModelCatalog(
       cwd,
       environment: {
         variables: context.environment,
-        configDir: join(getConfigDir(), 'runtime', 'ccb'),
+        configDir: getCcbUserConfigDir(),
       },
       providerConfiguration: context.providerConfiguration,
     },
@@ -187,19 +232,46 @@ export async function resolveAgentRuntimeModelCatalog(
   defaultModel?: string,
   workspaceId?: string,
 ): Promise<AgentRuntimeModelCatalog> {
-  const channel = getChannelById(channelId)
-  if (!channel || !channel.enabled) {
-    throw new Error('Agent 渠道不存在或已禁用')
-  }
-
   const workspace = workspaceId ? getAgentWorkspace(workspaceId) : undefined
   const cwd = workspace?.canonicalPath ?? workspace?.path ?? process.cwd()
+  const nativeContext = buildNativeModelCatalogRequestContext(cwd)
+  const nativeCacheKey = `native:${cwd}`
+  const nativeCached = catalogCache.get(nativeCacheKey)
+  const nativePromise =
+    nativeCached?.fingerprint === nativeContext.fingerprint
+      ? nativeCached.promise
+      : loadAgentRuntimeModelCatalog(
+          nativeContext,
+          cwd,
+          `__native-model-catalog__:${cwd}`,
+          CCB_NATIVE_CHANNEL_ID,
+        ).catch(error => {
+          const current = catalogCache.get(nativeCacheKey)
+          if (current?.promise === nativePromise) catalogCache.delete(nativeCacheKey)
+          throw error
+        })
+  if (nativeCached?.fingerprint !== nativeContext.fingerprint) {
+    catalogCache.set(nativeCacheKey, {
+      fingerprint: nativeContext.fingerprint,
+      promise: nativePromise,
+    })
+  }
+
+  const nativeCatalog = await nativePromise
+  if (nativeCatalog.models.length > 0) return nativeCatalog
+
+  const channel = channelId === CCB_NATIVE_CHANNEL_ID
+    ? listChannels().find(candidate => candidate.enabled)
+    : getChannelById(channelId)
+  if (!channel || !channel.enabled) {
+    throw new Error('CCB 未配置原生模型，且 Proma Agent 渠道不存在或已禁用')
+  }
   const context = await buildModelCatalogRequestContext(
     channel,
     cwd,
     defaultModel,
   )
-  const cacheKey = `${channelId}:${cwd}`
+  const cacheKey = `fallback:${channelId}:${cwd}`
   const cached = catalogCache.get(cacheKey)
   if (cached?.fingerprint === context.fingerprint) return cached.promise
 
@@ -289,7 +361,12 @@ export async function resolveDraftAgentRuntimeModelCatalog(
 export function clearAgentRuntimeModelCatalogCache(channelId?: string): void {
   if (channelId) {
     for (const key of catalogCache.keys()) {
-      if (key.startsWith(`${channelId}:`)) catalogCache.delete(key)
+      if (
+        key.startsWith(`fallback:${channelId}:`)
+        || channelId === CCB_NATIVE_CHANNEL_ID
+      ) {
+        catalogCache.delete(key)
+      }
     }
     return
   }
