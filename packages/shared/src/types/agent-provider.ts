@@ -90,8 +90,12 @@ export interface AgentRuntimeRewindResult {
 export interface AgentProviderAdapter {
   /** 发起查询，返回 SDKMessage 异步迭代流 */
   query(input: AgentQueryInput): AsyncIterable<SDKMessage>
-  /** 中止指定会话的执行 */
-  abort(sessionId: string): void
+  /**
+   * 中止指定会话的执行。
+   *
+   * Promise 完成表示 Runtime 已真正退出当前 Turn，而不是仅收到停止命令。
+   */
+  abort(sessionId: string): Promise<void>
   /** 关闭并释放指定会话的长期 Runtime Worker。 */
   closeSession?(sessionId: string): Promise<void>
   /**

@@ -592,6 +592,14 @@ export function useGlobalAgentListeners(): void {
       }
     }).catch(console.error)
 
+    const cleanupCatalogSynced = window.electronAPI.onAgentSessionCatalogSynced(
+      ({ sessions }) => {
+        store.set(agentSessionsAtom, (prev) =>
+          mergeFetchedAgentSessions(prev, sessions),
+        )
+      },
+    )
+
     // ===== 1. 流式事件 =====
     // [FLASH-DEBUG] 事件频率计数器
     let eventCount = 0
@@ -1283,6 +1291,7 @@ export function useGlobalAgentListeners(): void {
       cleanupComplete()
       cleanupError()
       cleanupTitleUpdated()
+      cleanupCatalogSynced()
       clearInterval(pruneTimer)
       window.removeEventListener('focus', onWindowFocus)
     }

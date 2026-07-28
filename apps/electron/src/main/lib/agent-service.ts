@@ -320,8 +320,8 @@ export async function generateAgentTitle(input: AgentGenerateTitleInput): Promis
 /**
  * 中止指定会话的 Agent 执行
  */
-export function stopAgent(sessionId: string): void {
-  orchestrator.stop(sessionId)
+export async function stopAgent(sessionId: string): Promise<void> {
+  await orchestrator.stop(sessionId)
 }
 
 export async function closeAgentSessionRuntime(sessionId: string): Promise<void> {

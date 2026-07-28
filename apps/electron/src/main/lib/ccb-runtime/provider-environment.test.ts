@@ -141,6 +141,26 @@ describe('CCB Provider 环境映射', () => {
     ])
   })
 
+  test('Given Proma Channel 配置了默认模型 When 未传会话模型 Then 使用渠道默认模型', () => {
+    const configuration = buildCcbProviderConfiguration({
+      id: 'channel-default',
+      name: 'Anthropic',
+      provider: 'anthropic',
+      baseUrl: 'https://api.anthropic.com',
+      apiKey: '',
+      enabled: true,
+      defaultModelId: 'model-deep',
+      createdAt: 1,
+      updatedAt: 2,
+      models: [
+        { id: 'model-fast', name: 'Fast', enabled: true },
+        { id: 'model-deep', name: 'Deep', enabled: true },
+      ],
+    })
+
+    expect(configuration.defaultModel).toBe('model-deep')
+  })
+
   test('Given CCB 原生凭证已配置 When 构建 Proma fallback 环境 Then 不屏蔽 CCB settings provider 变量', () => {
     const environment = buildCcbProviderEnvironment({
       provider: 'deepseek',

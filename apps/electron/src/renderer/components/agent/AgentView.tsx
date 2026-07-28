@@ -107,7 +107,6 @@ import {
   allPendingAskUserRequestsAtom,
   allPendingPermissionRequestsAtom,
   allPendingExitPlanRequestsAtom,
-  finalizeStreamingActivities,
 } from '@/atoms/agent-atoms'
 import type { AgentContextStatus } from '@/atoms/agent-atoms'
 import { settingsOpenAtom } from '@/atoms/settings-tab'
@@ -1003,6 +1002,21 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   const [messagesRefreshing, setMessagesRefreshing] = React.useState(false)
   const messagesRefreshingRef = React.useRef(false)
   const loadingSessionIdRef = React.useRef<string | null>(null)
+
+  // Proma 本地 JSONL 首屏加载完成后，CCB Transcript 会在主进程后台增量同步。
+  // 只有当前会话空闲时才静默替换投影；运行中继续保留 liveMessages，避免重复气泡。
+  React.useEffect(() => {
+    return window.electronAPI.onAgentSessionTranscriptSynced((payload) => {
+      if (payload.sessionId !== sessionId) return
+      if (store.get(agentStreamingStatesAtom).get(sessionId)?.running) return
+      persistedSDKMessagesRef.current = payload.messages
+      setPersistedSDKMessages(payload.messages)
+      setMessagesLoaded(true)
+      setMessagesCache((prev) =>
+        setSessionMessagesCache(prev, sessionId, payload.messages),
+      )
+    })
+  }, [sessionId, setMessagesCache, store])
 
   // 加载当前会话消息
   React.useEffect(() => {
@@ -2190,20 +2204,10 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       return next
     })
 
-    setStreamingStates((prev) => {
-      const current = prev.get(sessionId)
-      if (!current || !current.running) return prev
-      const map = new Map(prev)
-      map.set(sessionId, {
-        ...current,
-        running: false,
-        ...finalizeStreamingActivities(current.toolActivities),
-      })
-      return map
-    })
-
+    // 不再提前把 UI 标记为空闲。stopAgent 只有在 CCB QueryEngine 真正退出、
+    // Worker 回到 ready 后才完成，随后由全局 STREAM_COMPLETE 统一结束运行态。
     window.electronAPI.stopAgent(sessionId).catch(console.error)
-  }, [sessionId, setStreamingStates, store])
+  }, [sessionId, store])
 
   /** 手动发送 /compact 命令 */
   const handleCompact = React.useCallback((): void => {

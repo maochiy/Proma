@@ -191,7 +191,7 @@ describe('Agent 会话元数据', () => {
     ])
   })
 
-  test('Given CCB 会话目录 When 同步 UI 投影 Then 更新 Runtime 字段并保留桌面字段', () => {
+  test('Given CCB 会话目录 When 同步 UI 投影 Then 导入 Runtime 会话并保留 Proma 桌面字段与排序时间', () => {
     writeAgentSessionsIndex([
       {
         id: 'proma-session',
@@ -253,7 +253,7 @@ describe('Agent 会话元数据', () => {
       archived: true,
       starred: true,
       createdAt: 10,
-      updatedAt: 100,
+      updatedAt: 20,
     })
     expect(manager.getAgentSessionMeta('ccb-imported-session')).toMatchObject({
       title: 'CCB 更新标题',
@@ -298,6 +298,221 @@ describe('Agent 会话元数据', () => {
       titleSource: 'user',
       updatedAt: 30,
     })
+  })
+
+  test('Given Proma 创建的会话已绑定 CCB Runtime When 后台同步 Catalog Then 保持本地侧栏时间顺序', () => {
+    writeAgentSessionsIndex([
+      {
+        id: 'proma-session',
+        runtimeSessionId: 'ccb-runtime-session',
+        title: 'Proma 本地会话',
+        titleSource: 'generated',
+        workspaceId: 'workspace-a',
+        createdAt: 10,
+        updatedAt: 200,
+      },
+    ])
+
+    manager.syncRuntimeSessionCatalog('workspace-a', [{
+      runtimeSessionId: 'ccb-runtime-session',
+      title: 'CCB Transcript 标题',
+      summary: 'CCB Transcript 标题',
+      cwd: '/tmp/project',
+      createdAt: 10,
+      updatedAt: 50,
+    }])
+
+    expect(manager.getAgentSessionMeta('proma-session')).toMatchObject({
+      title: 'Proma 本地会话',
+      titleSource: 'generated',
+      updatedAt: 200,
+    })
+  })
+
+  test('Given CCB Catalog 暂时为空 When 同步会话目录 Then 不得删除 Proma 本地会话', () => {
+    writeAgentSessionsIndex([
+      {
+        id: 'proma-session',
+        runtimeSessionId: 'ccb-session',
+        title: '不能消失的会话',
+        workspaceId: 'workspace-a',
+        createdAt: 10,
+        updatedAt: 20,
+      },
+    ])
+    writeAgentSessionJsonl('proma-session', [
+      JSON.stringify({
+        type: 'user',
+        uuid: 'local-user',
+        message: { content: [{ type: 'text', text: '本地消息' }] },
+        parent_tool_use_id: null,
+      }),
+    ])
+
+    manager.syncRuntimeSessionCatalog('workspace-a', [])
+
+    expect(manager.getAgentSessionMeta('proma-session')).toBeDefined()
+    expect(manager.getAgentSessionSDKMessages('proma-session')).toHaveLength(1)
+  })
+})
+
+describe('Agent Transcript 增量合并', () => {
+  test('Given CCB Transcript 尚未落盘 When 返回空 Transcript Then 保留本地用户消息', () => {
+    writeAgentSessionJsonl('lagging-transcript', [
+      JSON.stringify({
+        type: 'user',
+        uuid: 'local-user',
+        message: { content: [{ type: 'text', text: '刚发送的消息' }] },
+        parent_tool_use_id: null,
+        _createdAt: 100,
+      }),
+    ])
+
+    const merged = manager.mergeAgentSessionSDKMessages(
+      'lagging-transcript',
+      [],
+    )
+
+    expect(
+      merged.map(message =>
+        (message as unknown as { uuid?: string }).uuid,
+      ),
+    ).toEqual(['local-user'])
+    expect(manager.getAgentSessionSDKMessages('lagging-transcript'))
+      .toHaveLength(1)
+  })
+
+  test('Given Runtime Transcript 比本地投影滞后 When 合并 Then 补齐 Runtime 消息且不覆盖本地尾部消息', () => {
+    writeAgentSessionJsonl('merge-transcript', [
+      JSON.stringify({
+        type: 'assistant',
+        uuid: 'assistant-1',
+        message: { content: [{ type: 'text', text: '本地旧内容' }] },
+        parent_tool_use_id: null,
+        _channelModelId: 'model-a',
+      }),
+      JSON.stringify({
+        type: 'user',
+        uuid: 'local-user-2',
+        message: { content: [{ type: 'text', text: '尚未落盘的新消息' }] },
+        parent_tool_use_id: null,
+      }),
+    ])
+
+    const merged = manager.mergeAgentSessionSDKMessages(
+      'merge-transcript',
+      [
+        {
+          type: 'assistant',
+          uuid: 'assistant-1',
+          message: { content: [{ type: 'text', text: 'Runtime 完整内容' }] },
+          parent_tool_use_id: null,
+        } as never,
+      ],
+    )
+
+    expect(
+      merged.map(message =>
+        (message as unknown as { uuid?: string }).uuid,
+      ),
+    ).toEqual(['assistant-1', 'local-user-2'])
+    expect(
+      (merged[0] as unknown as { _channelModelId?: string })._channelModelId,
+    ).toBe('model-a')
+    expect(
+      (merged[0] as unknown as {
+        message: { content: Array<{ text?: string }> }
+      }).message.content[0]?.text,
+    ).toBe('Runtime 完整内容')
+  })
+
+  test('Given Runtime 与 Proma 都保存了同一条用户消息 When 合并 Then 只保留 Proma 本地投影', () => {
+    writeAgentSessionJsonl('dedupe-user-transcript', [
+      JSON.stringify({
+        type: 'user',
+        message: { role: 'user', content: '同一条消息' },
+        uuid: 'runtime-user',
+      }),
+      JSON.stringify({
+        type: 'user',
+        message: { content: [{ type: 'text', text: '同一条消息' }] },
+        uuid: 'proma-user',
+        _createdAt: 100,
+      }),
+    ])
+
+    const merged = manager.mergeAgentSessionSDKMessages(
+      'dedupe-user-transcript',
+      [
+        {
+          type: 'user',
+          message: { role: 'user', content: '同一条消息' },
+          uuid: 'runtime-user',
+        } as never,
+      ],
+    )
+
+    expect(merged).toHaveLength(1)
+    expect(
+      (merged[0] as unknown as { uuid?: string }).uuid,
+    ).toBe('proma-user')
+  })
+
+  test('Given Runtime Assistant 与桌面拆分消息使用同一 message id When 合并 Then 只保留桌面拆分消息', () => {
+    writeAgentSessionJsonl('dedupe-assistant-transcript', [
+      JSON.stringify({
+        type: 'assistant',
+        uuid: 'runtime-assistant',
+        message: {
+          id: 'message-1',
+          content: [
+            { type: 'thinking', thinking: '思考' },
+            { type: 'text', text: '回答' },
+          ],
+        },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        uuid: 'desktop-thinking',
+        message: {
+          id: 'message-1',
+          content: [{ type: 'thinking', thinking: '思考' }],
+        },
+        _createdAt: 100,
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        uuid: 'desktop-text',
+        message: {
+          id: 'message-1',
+          content: [{ type: 'text', text: '回答' }],
+        },
+        _createdAt: 100,
+      }),
+    ])
+
+    const merged = manager.mergeAgentSessionSDKMessages(
+      'dedupe-assistant-transcript',
+      [
+        {
+          type: 'assistant',
+          uuid: 'runtime-assistant',
+          message: {
+            id: 'message-1',
+            content: [
+              { type: 'thinking', thinking: '思考' },
+              { type: 'text', text: '回答' },
+            ],
+          },
+        } as never,
+      ],
+    )
+
+    expect(
+      merged.map(message =>
+        (message as unknown as { uuid?: string }).uuid,
+      ),
+    ).toEqual(['desktop-thinking', 'desktop-text'])
   })
 })
 

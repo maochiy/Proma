@@ -83,7 +83,15 @@ export function buildCcbProviderConfiguration(
     throw new Error(`渠道「${channel.name}」没有启用的模型`)
   }
 
-  const resolvedDefaultModel = defaultModel ?? models[0]?.id
+  const resolvedDefaultModel =
+    defaultModel
+    ?? (
+      channel.defaultModelId
+      && models.some(model => model.id === channel.defaultModelId)
+        ? channel.defaultModelId
+        : undefined
+    )
+    ?? models[0]?.id
 
   return {
     modelType: resolveCcbModelType(channel.provider),

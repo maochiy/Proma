@@ -26,7 +26,11 @@ import {
   resolveCcbPermissionMode,
   type RuntimeConfigUpdate,
 } from './runtime-config'
-import { releaseTurnBeforeNotify } from './turn-lifecycle'
+import {
+  deferTurnResultMessage,
+  releaseTurnBeforeNotify,
+  resolveCompletedTurnResult,
+} from './turn-lifecycle'
 import type {
   CcbInteractionResponse,
   CcbPermissionMode,
@@ -71,6 +75,7 @@ interface ActiveTurn {
   resolve: () => void
   reject: (error: Error) => void
   settled: boolean
+  pendingResult?: SDKMessage
   interactionControllers: Set<AbortController>
 }
 
@@ -182,8 +187,14 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
     return queue.iterable
   }
 
-  abort(sessionId: string): void {
-    void ccbDesktopRuntimeClient.request({ type: 'turn.stop' }, sessionId, 5_000)
+  async abort(sessionId: string): Promise<void> {
+    // CCB Worker 只会在 QueryEngine 已退出且 Session 回到 ready 后响应。
+    // 因此该 Promise 是 Proma 与 Runtime 的停止同步边界。
+    await ccbDesktopRuntimeClient.request(
+      { type: 'turn.stop' },
+      sessionId,
+      15_000,
+    )
   }
 
   async closeSession(sessionId: string): Promise<void> {
@@ -461,9 +472,13 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
     })
     const onAbort = (): void => {
       void ccbDesktopRuntimeClient
-        .request({ type: 'turn.stop' }, sessionId, 5_000)
-        .catch(() => undefined)
-      this.settleTurn(sessionId, new Error('Agent 请求已中止'))
+        .request({ type: 'turn.stop' }, sessionId, 15_000)
+        .catch(error => {
+          this.settleTurn(
+            sessionId,
+            error instanceof Error ? error : new Error(String(error)),
+          )
+        })
     }
     options.abortSignal?.addEventListener('abort', onAbort, { once: true })
     try {
@@ -690,6 +705,16 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
     const event = envelope.payload
     switch (event.type) {
       case 'runtime.message':
+        // CCB 会先发送 result SDKMessage，再发送 turn.completed。若此时立即
+        // 把 result 推给上层，UI 会提前解除“运行中”并允许下一轮发送，而
+        // Adapter 的 active Turn 尚未释放，最终触发“已有运行中的 CCB Turn”。
+        // 因此 result 必须延迟到 turn.completed，与 active 释放保持同一时序。
+        if (
+          deferTurnResultMessage(
+            this.active.get(options.sessionId),
+            event.message,
+          )
+        ) return
         queue.push(event.message)
         return
       case 'runtime.executionGraphChanged':
@@ -701,6 +726,10 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
         } as SDKMessage)
         return
       case 'turn.completed':
+        {
+          const active = this.active.get(options.sessionId)
+          if (active && event.result) active.pendingResult = event.result
+        }
         this.settleTurn(options.sessionId)
         return
       case 'turn.failed':
@@ -843,6 +872,8 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
         active.reject(error)
         return
       }
+      const result = resolveCompletedTurnResult(active)
+      if (result) active.queue.push(result)
       active.queue.finish()
       active.resolve()
     })

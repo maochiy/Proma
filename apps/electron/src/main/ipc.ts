@@ -44,6 +44,8 @@ import type {
   FileDialogResult,
   RecentMessagesResult,
   AgentSessionMeta,
+  AgentSessionCatalogSyncedPayload,
+  AgentSessionTranscriptSyncedPayload,
   AgentRuntimeModelCatalog,
   AgentRuntimeModelCatalogDraftInput,
   CcbNativeModelConfiguration,
@@ -205,6 +207,7 @@ import {
   getCcbNativeModelConfiguration,
   getCcbNativeModelSecret,
   updateCcbNativeModelConfiguration,
+  updateCcbNativeModelConfigurationFromChannel,
 } from './lib/ccb-runtime/native-model-config-service'
 import { resolveAgentRuntimeSkillCatalog } from './lib/ccb-runtime/skill-catalog-service'
 import {
@@ -868,8 +871,118 @@ export function resolveAppIconPath(variantId: string): string | null {
   return join(resourcesDir, 'proma-logos', `proma-${variantId}.png`)
 }
 
+/**
+ * 启用或编辑当前模型配置时，立即把 Provider、凭证与启用模型同步给 CCB。
+ *
+ * 未启用配置只保存在 Proma；不会修改 CCB 当前配置。
+ */
+function synchronizeEnabledChannelWithCcb(channel: Channel): void {
+  if (!channel.enabled) return
+  const settings = getSettings()
+  updateCcbNativeModelConfigurationFromChannel(
+    channel,
+    decryptApiKey(channel.id),
+    channel.defaultModelId
+      ?? (
+        settings.agentChannelId === channel.id
+          ? settings.agentModelId
+          : undefined
+      ),
+  )
+  clearAgentRuntimeModelCatalogCache()
+}
+
+let agentCatalogBackgroundSync: Promise<void> | undefined
+const agentTranscriptBackgroundSyncs = new Map<string, Promise<void>>()
+
+function broadcastAgentSessionCatalogSynced(
+  payload: AgentSessionCatalogSyncedPayload,
+): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send(
+        AGENT_IPC_CHANNELS.SESSION_CATALOG_SYNCED,
+        payload,
+      )
+    }
+  }
+}
+
+function broadcastAgentSessionTranscriptSynced(
+  payload: AgentSessionTranscriptSyncedPayload,
+): void {
+  for (const win of BrowserWindow.getAllWindows()) {
+    if (!win.isDestroyed()) {
+      win.webContents.send(
+        AGENT_IPC_CHANNELS.SESSION_TRANSCRIPT_SYNCED,
+        payload,
+      )
+    }
+  }
+}
+
+/**
+ * 会话列表 IPC 必须立即返回 Proma 本地索引；CCB Catalog 只在后台增量同步。
+ * 同一时刻只允许一个后台任务，具体的短 TTL 由 session-catalog-service 管理。
+ */
+function scheduleAgentCatalogBackgroundSync(): void {
+  if (agentCatalogBackgroundSync) return
+  const task = syncCcbSessionCatalogs()
+    .then(result => {
+      if (result.synchronized && result.changed) {
+        broadcastAgentSessionCatalogSynced({ sessions: result.sessions })
+      }
+    })
+    .catch(error => {
+      console.warn('[CCB Session Catalog] 后台同步失败，继续使用本地 UI 投影:', error)
+    })
+    .finally(() => {
+      if (agentCatalogBackgroundSync === task) {
+        agentCatalogBackgroundSync = undefined
+      }
+    })
+  agentCatalogBackgroundSync = task
+}
+
+/**
+ * 打开历史会话时先读本地 JSONL，再后台补齐 CCB Transcript。
+ * 相同会话的并发打开共享一个任务，避免重复启动无状态 Worker。
+ */
+function scheduleAgentTranscriptBackgroundSync(sessionId: string): void {
+  if (agentTranscriptBackgroundSyncs.has(sessionId)) return
+  const task = syncCcbSessionTranscript(sessionId)
+    .then(result => {
+      if (result.synchronized && result.changed) {
+        broadcastAgentSessionTranscriptSynced({
+          sessionId,
+          messages: result.messages,
+        })
+      }
+    })
+    .catch(error => {
+      console.warn(
+        `[CCB Transcript] 后台同步失败，继续使用本地 UI 投影: session=${sessionId}`,
+        error,
+      )
+    })
+    .finally(() => {
+      if (agentTranscriptBackgroundSyncs.get(sessionId) === task) {
+        agentTranscriptBackgroundSyncs.delete(sessionId)
+      }
+    })
+  agentTranscriptBackgroundSyncs.set(sessionId, task)
+}
+
 export function registerIpcHandlers(): void {
   console.log('[IPC] 正在注册 IPC 处理器...')
+  const enabledChannel = listChannels().find(channel => channel.enabled)
+  if (enabledChannel) {
+    try {
+      synchronizeEnabledChannelWithCcb(enabledChannel)
+    } catch (error) {
+      console.error('[模型配置] 启动时同步当前配置到 CCB 失败:', error)
+    }
+  }
 
   // ===== 运行时相关 =====
 
@@ -1147,6 +1260,8 @@ export function registerIpcHandlers(): void {
       const created = createChannel(input)
       const affectedChannelIds = new Set<string>([created.id])
       if (created.enabled) {
+        synchronizeEnabledChannelWithCcb(created)
+        affectedChannelIds.add(CCB_NATIVE_CHANNEL_ID)
         for (const channelId of previouslyEnabledIds) {
           affectedChannelIds.add(channelId)
         }
@@ -1172,10 +1287,13 @@ export function registerIpcHandlers(): void {
         || input.baseUrl !== undefined
         || Boolean(input.apiKey)
         || input.models !== undefined
+        || input.defaultModelId !== undefined
         || input.enabled !== undefined
       if (runtimeConfigurationChanged) {
         const affectedChannelIds = new Set<string>([id])
         if (updated.enabled) {
+          synchronizeEnabledChannelWithCcb(updated)
+          affectedChannelIds.add(CCB_NATIVE_CHANNEL_ID)
           for (const channelId of previouslyEnabledIds) {
             affectedChannelIds.add(channelId)
           }
@@ -1877,11 +1995,9 @@ export function registerIpcHandlers(): void {
   // 获取 Agent 会话列表
   ipcMain.handle(
     AGENT_IPC_CHANNELS.LIST_SESSIONS,
-    async (): Promise<AgentSessionMeta[]> => {
-      const sessions = await syncCcbSessionCatalogs().catch(error => {
-        console.warn('[CCB Session Catalog] 同步失败，暂用本地 UI 投影:', error)
-        return listAgentSessions()
-      })
+    (): AgentSessionMeta[] => {
+      const sessions = listAgentSessions()
+      scheduleAgentCatalogBackgroundSync()
       // 启动所有已有附加目录的文件监听
       for (const session of sessions) {
         if (session.attachedDirectories) {
@@ -1909,11 +2025,10 @@ export function registerIpcHandlers(): void {
   // 获取 Agent 会话 SDKMessage（Phase 4 新格式）
   ipcMain.handle(
     AGENT_IPC_CHANNELS.GET_SDK_MESSAGES,
-    async (_, id: string): Promise<SDKMessage[]> => {
-      await syncCcbSessionTranscript(id).catch(error => {
-        console.warn(`[CCB Transcript] 同步失败，暂用本地 UI 投影: session=${id}`, error)
-      })
-      return getAgentSessionSDKMessages(id)
+    (_, id: string): SDKMessage[] => {
+      const messages = getAgentSessionSDKMessages(id)
+      scheduleAgentTranscriptBackgroundSync(id)
+      return messages
     }
   )
 
@@ -2479,7 +2594,7 @@ export function registerIpcHandlers(): void {
     AGENT_IPC_CHANNELS.STOP_AGENT,
     async (_, sessionId: string): Promise<void> => {
       feishuBridgeManager.stopSessionMirrorRun(sessionId)
-      stopAgent(sessionId)
+      await stopAgent(sessionId)
     }
   )
 

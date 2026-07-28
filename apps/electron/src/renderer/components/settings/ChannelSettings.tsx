@@ -225,7 +225,7 @@ export function ChannelSettings(): React.ReactElement {
       await synchronizeSessionsToChannel(
         channel.id,
         enabledModelIds,
-        enabledModelIds[0],
+        channel.defaultModelId,
       )
       return
     }
@@ -368,32 +368,6 @@ export function ChannelSettings(): React.ReactElement {
     invalidateRendererModelCatalogs()
   }
 
-  /** 自动保存后立即同步全局 Channel，并触发 CCB 模型目录重新读取。 */
-  const handleFormChanged = React.useCallback(async (
-    savedChannel: Channel,
-  ): Promise<void> => {
-    setEditingChannel(savedChannel)
-    await loadChannels()
-    if (
-      savedChannel.enabled
-      && agentChannelIdRef.current === savedChannel.id
-    ) {
-      const enabledModelIds = savedChannel.models
-        .filter(model => model.enabled)
-        .map(model => model.id)
-      await synchronizeSessionsToChannel(
-        savedChannel.id,
-        enabledModelIds,
-        enabledModelIds[0],
-      )
-    }
-    invalidateRendererModelCatalogs()
-  }, [
-    invalidateRendererModelCatalogs,
-    loadChannels,
-    synchronizeSessionsToChannel,
-  ])
-
   const handleNativeFormSaved = async (): Promise<void> => {
     setViewMode('list')
     await loadNativeConfiguration()
@@ -430,7 +404,6 @@ export function ChannelSettings(): React.ReactElement {
       <ChannelForm
         channel={editingChannel}
         onSaved={handleFormSaved}
-        onChanged={handleFormChanged}
         onAgentEligibilityChange={syncAgentChannelEligibility}
         onCancel={handleFormCancel}
       />
@@ -615,6 +588,7 @@ function ChannelRow({
   const description = [
     PROVIDER_LABELS[channel.provider],
     enabledCount > 0 ? `${enabledCount} 个模型已启用` : undefined,
+    channel.defaultModelId ? `默认 ${channel.defaultModelId}` : undefined,
   ]
     .filter(Boolean)
     .join(' · ')

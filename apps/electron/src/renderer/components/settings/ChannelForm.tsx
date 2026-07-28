@@ -6,7 +6,7 @@
  * - 模型列表：已启用模型置顶 + 可用模型搜索
  * - 连接测试
  *
- * 编辑模式下修改即时保存（auto-save），创建模式仍需手动提交。
+ * 新增和编辑统一使用显式“保存配置”，避免字段尚未编辑完成时写入 CCB。
  */
 
 import * as React from 'react'
@@ -23,6 +23,7 @@ import {
   Download,
   Search,
   Pencil,
+  Save,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { useSetAtom } from 'jotai'
@@ -84,8 +85,6 @@ interface ChannelFormProps {
   /** 编辑模式下传入已有渠道，创建模式传 null */
   channel: Channel | null
   onSaved: (channel?: Channel) => void
-  /** 编辑模式自动保存完成后同步外部列表，但不关闭表单。 */
-  onChanged?: (channel: Channel) => void | Promise<void>
   onAgentEligibilityChange?: (channel: Channel, eligible: boolean) => void | Promise<void>
   onCancel: () => void
 }
@@ -206,9 +205,6 @@ function buildZhipuTeamSecret(secret: ZhipuTeamSecretForm): string {
   return Object.keys(payload).length > 0 ? JSON.stringify(payload) : ''
 }
 
-/** auto-save 防抖延迟 */
-const AUTO_SAVE_DELAY = 600
-
 function isAgentEligibleChannel(channel: Pick<Channel, 'provider' | 'enabled'>): boolean {
   return channel.enabled && isAgentCompatibleProvider(channel.provider)
 }
@@ -256,7 +252,6 @@ function toCcbConfiguredModelEditorValue(
 export function ChannelForm({
   channel,
   onSaved,
-  onChanged,
   onAgentEligibilityChange,
   onCancel,
 }: ChannelFormProps): React.ReactElement {
@@ -273,7 +268,13 @@ export function ChannelForm({
   const [zhipuTeamSecret, setZhipuTeamSecret] = React.useState<ZhipuTeamSecretForm>(EMPTY_ZHIPU_TEAM_SECRET)
   const [showApiKey, setShowApiKey] = React.useState(false)
   const [models, setModels] = React.useState<ChannelModel[]>(channel?.models ?? [])
+  const [defaultModelId, setDefaultModelId] = React.useState(
+    channel?.defaultModelId
+      ?? channel?.models.find(model => model.enabled)?.id
+      ?? '',
+  )
   const [enabled, setEnabled] = React.useState(channel?.enabled ?? true)
+  const initialApiKeyRef = React.useRef('')
 
   // 模型新增和编辑
   const [newModelDraft, setNewModelDraft] =
@@ -296,7 +297,8 @@ export function ChannelForm({
   const [apiKeyLoaded, setApiKeyLoaded] = React.useState(false)
   const [showExitDialog, setShowExitDialog] = React.useState(false)
   const [showBaseUrlRiskDialog, setShowBaseUrlRiskDialog] = React.useState(false)
-  const [pendingRiskAction, setPendingRiskAction] = React.useState<'auto-save' | 'create' | 'fetch' | 'save-and-close' | 'test' | null>(null)
+  const [pendingRiskAction, setPendingRiskAction] =
+    React.useState<'save' | 'fetch' | 'test' | null>(null)
   const [codexLoggingIn, setCodexLoggingIn] = React.useState(false)
 
   const setChannelFormDirty = useSetAtom(channelFormDirtyAtom)
@@ -311,6 +313,7 @@ export function ChannelForm({
     if (isEdit && channel && !apiKeyLoaded) {
       window.electronAPI.decryptApiKey(channel.id).then((key) => {
         setApiKey(key)
+        initialApiKeyRef.current = key
         if (channel.provider === 'zhipu-coding-team') {
           setZhipuTeamSecret({ ...EMPTY_ZHIPU_TEAM_SECRET, ...parseZhipuTeamSecret(key) })
         }
@@ -364,7 +367,7 @@ export function ChannelForm({
         baseUrl,
         apiKey: effectiveApiKey,
         models,
-        defaultModel: models.find(model => model.enabled)?.id ?? models[0]?.id,
+        defaultModel: defaultModelId || undefined,
       }).then(catalog => {
         if (runtimeCatalogRequestIdRef.current !== requestId) return
         setRuntimeCatalog(catalog)
@@ -389,6 +392,7 @@ export function ChannelForm({
     isCodexProvider,
     isEdit,
     models,
+    defaultModelId,
     modelListValidationError,
     provider,
   ])
@@ -401,86 +405,14 @@ export function ChannelForm({
     })
   }, [])
 
-  // ===== Auto-save（仅编辑模式） =====
-  const autoSaveTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null)
-  /** 初始化完成标志，避免加载时触发 auto-save */
-  const initializedRef = React.useRef(false)
-
-  /** 执行 auto-save */
-  const doAutoSave = React.useCallback(async (
-    currentModels: ChannelModel[],
-    currentName: string,
-    currentProvider: ProviderType,
-    currentBaseUrl: string,
-    currentApiKey: string,
-    currentEnabled: boolean,
-  ) => {
-    if (!isEdit || !channel) return
-    try {
-      const savedChannel = await window.electronAPI.updateChannel(channel.id, {
-        name: currentName,
-        provider: currentProvider,
-        baseUrl: currentBaseUrl,
-        apiKey: currentApiKey || undefined,
-        models: currentModels,
-        enabled: currentEnabled,
-      })
-      const eligible = isAgentEligibleChannel(savedChannel)
-      if (eligible !== lastAgentEligibleRef.current) {
-        lastAgentEligibleRef.current = eligible
-        await onAgentEligibilityChange?.(savedChannel, eligible)
-      }
-      await onChanged?.(savedChannel)
-      toast.success('已保存', { id: 'auto-save-success' })
-    } catch (error) {
-      console.error('[模型配置表单] auto-save 失败:', error)
-      toast.error('自动保存失败，请检查后手动重试', { id: 'auto-save-error' })
-    }
-  }, [isEdit, channel, onAgentEligibilityChange, onChanged])
-
-  /** 触发防抖 auto-save */
-  const scheduleAutoSave = React.useCallback((
-    nextModels: ChannelModel[],
-    nextName: string,
-    nextProvider: ProviderType,
-    nextBaseUrl: string,
-    nextApiKey: string,
-    nextEnabled: boolean,
-    requiresRiskAcknowledgement: boolean,
-  ) => {
-    if (!isEdit || !initializedRef.current || requiresRiskAcknowledgement) return
-    if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current)
-    autoSaveTimerRef.current = setTimeout(() => {
-      doAutoSave(nextModels, nextName, nextProvider, nextBaseUrl, nextApiKey, nextEnabled)
-    }, AUTO_SAVE_DELAY)
-  }, [isEdit, doAutoSave])
-
-  // API Key 加载完成后标记初始化
+  // 默认模型始终归一化到已启用模型；禁用、删除或改名默认模型时自动回退。
   React.useEffect(() => {
-    if (isEdit && apiKeyLoaded) {
-      // 延迟标记，避免加载时触发
-      const t = setTimeout(() => { initializedRef.current = true }, 100)
-      return () => clearTimeout(t)
-    }
-    if (!isEdit) {
-      initializedRef.current = true
-    }
-  }, [isEdit, apiKeyLoaded])
-
-  // 监听字段变化触发 auto-save
-  React.useEffect(() => {
-    if (modelListValidationError) return
-    scheduleAutoSave(
-      models,
-      name,
-      provider,
-      baseUrl,
-      effectiveApiKey,
-      enabled,
-      requiresBaseUrlRiskAcknowledgement,
+    const enabledModelIds = new Set(
+      models.filter(model => model.enabled).map(model => model.id),
     )
-    return () => { if (autoSaveTimerRef.current) clearTimeout(autoSaveTimerRef.current) }
-  }, [models, name, provider, baseUrl, effectiveApiKey, enabled, requiresBaseUrlRiskAcknowledgement, modelListValidationError, scheduleAutoSave])
+    if (defaultModelId && enabledModelIds.has(defaultModelId)) return
+    setDefaultModelId(models.find(model => model.enabled)?.id ?? '')
+  }, [defaultModelId, models])
 
   // 切换供应商时自动更新 Base URL 与名称，Anthropic 兼容渠道自动添加预设模型
   const handleProviderChange = (newProvider: string): void => {
@@ -623,6 +555,7 @@ export function ChannelForm({
     target: ChannelModel,
     patch: Partial<CcbConfiguredModelEditorValue>,
   ): void => {
+    const previousId = target.id
     setModels(current => current.map(model => {
       if (model !== target) return model
       return {
@@ -644,7 +577,12 @@ export function ChannelForm({
             : {}),
       }
     }))
-    if (patch.id !== undefined) setEditingModelId(patch.id)
+    if (patch.id !== undefined) {
+      setEditingModelId(patch.id)
+      if (defaultModelId === previousId) {
+        setDefaultModelId(patch.id)
+      }
+    }
   }
 
   /** 删除模型 */
@@ -696,27 +634,10 @@ export function ChannelForm({
         console.error('[模型配置表单] 拉取 ChatGPT 模型失败:', modelErr)
       }
 
-      // OAuth 流程中用户很容易在浏览器授权后直接关闭表单，来不及点「创建」而丢失凭据。
-      // 登录成功即明确的保存意图：创建模式下自动落库（编辑模式由 effectiveApiKey 变化触发 auto-save）。
-      // 用刚拿到的凭据/模型直接构造入参，避免依赖 setState 后同一 tick 仍是旧值的闭包。
-      if (isEdit) {
-        toast.success('ChatGPT 登录成功')
-      } else {
-        const input: ChannelCreateInput = {
-          name: name.trim() || PROVIDER_LABELS['openai-codex'],
-          provider,
-          baseUrl,
-          apiKey: credentials,
-          models: codexModels,
-          enabled,
-        }
-        const saved = await window.electronAPI.createChannel(input)
-        if (isAgentEligibleChannel(saved)) {
-          await onAgentEligibilityChange?.(saved, true)
-        }
-        toast.success('ChatGPT 渠道已创建')
-        onSaved(saved)
+      if (codexModels.length > 0) {
+        setDefaultModelId(codexModels[0]!.id)
       }
+      toast.success('ChatGPT 登录成功，请保存配置')
     } catch (error) {
       console.error('[模型配置表单] ChatGPT 登录失败:', error)
       toast.error('ChatGPT 登录失败，请重试')
@@ -820,37 +741,56 @@ export function ChannelForm({
     void testChannelConnection()
   }
 
-  /** 执行创建渠道 */
-  const doCreate = React.useCallback(async (): Promise<Channel | null> => {
+  /** 显式保存新增或编辑配置。 */
+  const doSave = React.useCallback(async (): Promise<Channel | null> => {
     if (!name.trim() || !hasRequiredSecret) return null
 
     setSaving(true)
     try {
       const input: ChannelCreateInput = {
-        name,
+        name: name.trim(),
         provider,
         baseUrl,
         apiKey: effectiveApiKey,
         models,
+        defaultModelId: defaultModelId || undefined,
         enabled,
       }
-      const savedChannel = await window.electronAPI.createChannel(input)
-      if (isAgentEligibleChannel(savedChannel)) {
-        await onAgentEligibilityChange?.(savedChannel, true)
+      const savedChannel = isEdit && channel
+        ? await window.electronAPI.updateChannel(channel.id, input)
+        : await window.electronAPI.createChannel(input)
+      const eligible = isAgentEligibleChannel(savedChannel)
+      if (eligible !== lastAgentEligibleRef.current) {
+        lastAgentEligibleRef.current = eligible
+        await onAgentEligibilityChange?.(savedChannel, eligible)
       }
-      toast.success('渠道创建成功')
+      toast.success(isEdit ? '模型配置已保存' : '模型配置已创建')
       return savedChannel
     } catch (error) {
-      console.error('[模型配置表单] 创建失败:', error)
-      toast.error('渠道创建失败，请检查配置后重试')
+      console.error('[模型配置表单] 保存失败:', error)
+      toast.error('模型配置保存失败，请检查配置后重试')
       return null
     } finally {
       setSaving(false)
     }
-  }, [name, provider, baseUrl, effectiveApiKey, hasRequiredSecret, models, enabled, onAgentEligibilityChange])
+  }, [
+    baseUrl,
+    channel,
+    defaultModelId,
+    effectiveApiKey,
+    enabled,
+    hasRequiredSecret,
+    isEdit,
+    models,
+    name,
+    onAgentEligibilityChange,
+    provider,
+  ])
 
   /** 显示第三方 Base URL 风险确认。 */
-  const requestBaseUrlRiskAcknowledgement = (action: 'auto-save' | 'create' | 'fetch' | 'save-and-close' | 'test' | null): void => {
+  const requestBaseUrlRiskAcknowledgement = (
+    action: 'save' | 'fetch' | 'test' | null,
+  ): void => {
     setPendingRiskAction(action)
     setShowBaseUrlRiskDialog(true)
   }
@@ -862,8 +802,6 @@ export function ChannelForm({
     setPendingRiskAction(null)
     setShowBaseUrlRiskDialog(false)
 
-    // 确认后由 acknowledgedBaseUrl 变化触发既有的防抖 auto-save，避免重复保存。
-    if (action === 'auto-save') return
     if (action === 'fetch') {
       await fetchAvailableModels()
       return
@@ -873,22 +811,22 @@ export function ChannelForm({
       return
     }
 
-    if (action !== 'create' && action !== 'save-and-close') return
-    const savedChannel = await doCreate()
+    if (action !== 'save') return
+    const savedChannel = await doSave()
     if (!savedChannel) return
-    if (action === 'save-and-close') setShowExitDialog(false)
+    setShowExitDialog(false)
     onSaved(savedChannel)
   }
 
   /** Base URL 失焦时，要求确认第三方中转站风险。 */
   const handleBaseUrlBlur = (): void => {
     if (requiresBaseUrlRiskAcknowledgement) {
-      requestBaseUrlRiskAcknowledgement(isEdit ? 'auto-save' : null)
+      requestBaseUrlRiskAcknowledgement(null)
     }
   }
 
-  /** 创建渠道（仅新建模式） */
-  const handleCreate = async (): Promise<void> => {
+  /** 保存配置。 */
+  const handleSave = async (): Promise<void> => {
     if (modelListValidationError) {
       toast.error(modelListValidationError)
       return
@@ -898,28 +836,43 @@ export function ChannelForm({
       return
     }
     if (requiresBaseUrlRiskAcknowledgement) {
-      requestBaseUrlRiskAcknowledgement('create')
+      requestBaseUrlRiskAcknowledgement('save')
       return
     }
-    const savedChannel = await doCreate()
+    const savedChannel = await doSave()
     if (savedChannel) onSaved(savedChannel)
   }
 
   /** 检测表单是否有未保存内容 */
-  const isDirty = !isEdit && (name.trim() !== '' || effectiveApiKey.trim() !== '' || models.length > 0)
-  const hasNoModels = !isEdit && models.length === 0
+  const originalDefaultModelId =
+    channel?.defaultModelId
+    ?? channel?.models.find(model => model.enabled)?.id
+    ?? ''
+  const isDirty = isEdit && channel
+    ? apiKeyLoaded && (
+        name !== channel.name
+        || provider !== channel.provider
+        || baseUrl !== channel.baseUrl
+        || effectiveApiKey !== initialApiKeyRef.current
+        || JSON.stringify(models) !== JSON.stringify(channel.models)
+        || defaultModelId !== originalDefaultModelId
+        || enabled !== channel.enabled
+      )
+    : (
+        name.trim() !== ''
+        || effectiveApiKey.trim() !== ''
+        || models.length > 0
+        || defaultModelId !== ''
+      )
+  const hasNoModels = models.length === 0
 
   /** 返回按钮：创建模式下有未保存内容时拦截 */
   const handleBack = (): void => {
-    if (!isEdit && isDirty) {
+    if (isDirty) {
       setShowExitDialog(true)
       return
     }
-    if (isEdit) {
-      onSaved()
-    } else {
-      onCancel()
-    }
+    onCancel()
   }
 
   /** 放弃编辑 */
@@ -931,10 +884,10 @@ export function ChannelForm({
   /** 保存并关闭（从弹窗触发） */
   const handleSaveAndClose = async (): Promise<void> => {
     if (requiresBaseUrlRiskAcknowledgement) {
-      requestBaseUrlRiskAcknowledgement('save-and-close')
+      requestBaseUrlRiskAcknowledgement('save')
       return
     }
-    const savedChannel = await doCreate()
+    const savedChannel = await doSave()
     if (savedChannel) {
       setShowExitDialog(false)
       onSaved(savedChannel)
@@ -960,6 +913,10 @@ export function ChannelForm({
 
   // ===== 模型分区 =====
   const enabledModels = models.filter((m) => m.enabled)
+  const defaultModelOptions = enabledModels.map(model => ({
+    value: model.id,
+    label: model.name || model.id,
+  }))
   const availableModels = React.useMemo(() => {
     const disabled = models.filter((m) => !m.enabled)
     if (!modelFilter.trim()) return disabled
@@ -977,12 +934,12 @@ export function ChannelForm({
   const resolveModelIdError = React.useCallback(
     (target: ChannelModel): string | undefined => {
       const id = target.id.trim()
-      if (!id) return '模型 ID 不能为空，当前修改不会自动保存'
+      if (!id) return '模型 ID 不能为空'
       const duplicate = models.some(
         model => model !== target && model.id.trim() === id,
       )
       return duplicate
-        ? `模型 ID「${id}」重复，当前修改不会自动保存`
+        ? `模型 ID「${id}」重复`
         : undefined
     },
     [models],
@@ -1017,17 +974,22 @@ export function ChannelForm({
         <h3 className="text-lg font-medium text-foreground flex-1">
           {isEdit ? '编辑模型配置' : '添加模型配置'}
         </h3>
-        {/* 新建模式：创建按钮 */}
-        {!isEdit && (
-          <Button
-            size="sm"
-            onClick={handleCreate}
-            disabled={saving || !name.trim() || !hasRequiredSecret}
-          >
-            {saving && <Loader2 size={14} className="animate-spin" />}
-            <span>创建</span>
-          </Button>
-        )}
+        <Button
+          size="sm"
+          onClick={() => void handleSave()}
+          disabled={
+            saving
+            || !name.trim()
+            || !hasRequiredSecret
+            || models.length === 0
+            || Boolean(modelListValidationError)
+          }
+        >
+          {saving
+            ? <Loader2 size={14} className="animate-spin" />
+            : <Save size={14} />}
+          <span>保存配置</span>
+        </Button>
       </div>
 
       {/* 基本信息卡片 */}
@@ -1208,6 +1170,15 @@ export function ChannelForm({
             description="关闭后该配置的模型不会在选择列表中出现"
             checked={enabled}
             onCheckedChange={setEnabled}
+          />
+          <SettingsSelect
+            label="默认模型"
+            description="新建会话和 CCB 默认使用的模型"
+            value={defaultModelId}
+            onValueChange={setDefaultModelId}
+            options={defaultModelOptions}
+            placeholder="请先启用模型"
+            disabled={defaultModelOptions.length === 0}
           />
         </SettingsCard>
       </SettingsSection>

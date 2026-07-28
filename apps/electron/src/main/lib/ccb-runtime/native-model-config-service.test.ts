@@ -6,6 +6,7 @@ import {
   getCcbNativeModelConfiguration,
   getCcbNativeModelSecret,
   updateCcbNativeModelConfiguration,
+  updateCcbNativeModelConfigurationFromChannel,
 } from './native-model-config-service'
 
 const temporaryDirectories: string[] = []
@@ -149,5 +150,124 @@ describe('CCB 原生模型配置', () => {
         directory,
       ),
     ).toThrow('默认模型必须存在于模型列表中')
+  })
+
+  test('Given Proma 当前启用配置 When 启用或编辑 Then 立即同步启用模型到 CCB', () => {
+    const directory = createConfigDirectory()
+    const result = updateCcbNativeModelConfigurationFromChannel(
+      {
+        id: 'channel-1',
+        name: 'OpenAI',
+        provider: 'openai',
+        baseUrl: 'https://gateway.example.com/v1',
+        apiKey: 'encrypted',
+        enabled: true,
+        createdAt: 1,
+        updatedAt: 2,
+        models: [
+          {
+            id: 'model-old',
+            name: 'Old',
+            enabled: false,
+          },
+          {
+            id: 'model-fast',
+            name: 'Fast',
+            enabled: true,
+            contextWindow: 200_000,
+          },
+          {
+            id: 'model-deep',
+            name: 'Deep',
+            description: '深度推理',
+            enabled: true,
+            thinkingEffortLevels: ['low', 'high', 'xhigh'],
+          },
+        ],
+      },
+      'current-secret',
+      'model-deep',
+      directory,
+    )
+
+    expect(result.defaultModel).toBe('model-deep')
+    expect(result.models.map(model => model.id)).toEqual([
+      'model-fast',
+      'model-deep',
+    ])
+    expect(getCcbNativeModelSecret(directory)).toBe('current-secret')
+  })
+
+  test('Given Proma 配置有显式默认模型 When 同步且没有会话覆盖 Then CCB 使用该默认模型', () => {
+    const directory = createConfigDirectory()
+    const result = updateCcbNativeModelConfigurationFromChannel(
+      {
+        id: 'channel-default',
+        name: 'Anthropic',
+        provider: 'anthropic',
+        baseUrl: 'https://api.anthropic.com',
+        apiKey: 'encrypted',
+        enabled: true,
+        defaultModelId: 'model-deep',
+        createdAt: 1,
+        updatedAt: 2,
+        models: [
+          { id: 'model-fast', name: 'Fast', enabled: true },
+          { id: 'model-deep', name: 'Deep', enabled: true },
+        ],
+      },
+      'current-secret',
+      undefined,
+      directory,
+    )
+
+    expect(result.defaultModel).toBe('model-deep')
+  })
+
+  test('Given ChatGPT 订阅配置 When 同步 Then 不把 OAuth JSON 写成 OPENAI_API_KEY', () => {
+    const directory = createConfigDirectory()
+    writeFileSync(
+      join(directory, 'settings.json'),
+      JSON.stringify({
+        modelType: 'openai',
+        model: 'old-model',
+        models: [{ id: 'old-model' }],
+        env: {
+          OPENAI_API_KEY: 'old-secret',
+          KEEP_ME: 'yes',
+        },
+      }),
+    )
+
+    const result = updateCcbNativeModelConfigurationFromChannel(
+      {
+        id: 'codex-channel',
+        name: 'ChatGPT 订阅',
+        provider: 'openai-codex',
+        baseUrl: '',
+        apiKey: 'encrypted-oauth-json',
+        enabled: true,
+        createdAt: 1,
+        updatedAt: 2,
+        models: [
+          {
+            id: 'gpt-codex',
+            name: 'GPT Codex',
+            enabled: true,
+          },
+        ],
+      },
+      '{"access":"oauth-access-token"}',
+      'gpt-codex',
+      directory,
+    )
+
+    expect(result.defaultModel).toBe('gpt-codex')
+    expect(result.hasApiKey).toBe(false)
+    expect(getCcbNativeModelSecret(directory)).toBe('')
+    const saved = JSON.parse(
+      readFileSync(join(directory, 'settings.json'), 'utf-8'),
+    ) as { env?: Record<string, string> }
+    expect(saved.env).toEqual({ KEEP_ME: 'yes' })
   })
 })

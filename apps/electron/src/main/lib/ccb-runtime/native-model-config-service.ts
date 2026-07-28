@@ -5,9 +5,11 @@ import type {
   CcbNativeModelConfiguration,
   CcbNativeModelConfigurationUpdate,
   CcbNativeModelType,
+  Channel,
   ThinkingEffortLevel,
 } from '@proma/shared'
 import { readJsonFileSafe, writeJsonFileAtomic } from '../safe-file'
+import { resolveCcbModelType } from './provider-environment'
 import { getCcbUserConfigDir } from './user-config'
 
 interface ProviderEnvironmentDefinition {
@@ -291,4 +293,59 @@ export function updateCcbNativeModelConfiguration(
     `[CCB 模型配置] 已更新: provider=${input.modelType}, models=${models.length}`,
   )
   return getCcbNativeModelConfiguration(configDir)
+}
+
+/**
+ * 将 Proma 当前启用的模型配置同步为 CCB CLI/Desktop 共用的当前配置。
+ *
+ * Proma 可以保存多个配置预设，但只有启用配置会调用该方法。编辑未启用配置
+ * 不会影响 CCB；编辑当前启用配置则立即更新 Provider、凭证和模型目录。
+ */
+export function updateCcbNativeModelConfigurationFromChannel(
+  channel: Channel,
+  apiKey: string,
+  preferredModelId?: string,
+  configDir = getCcbUserConfigDir(),
+): CcbNativeModelConfiguration {
+  if (!channel.enabled) {
+    throw new Error(`模型配置「${channel.name}」尚未启用`)
+  }
+  const enabledModels = channel.models.filter(model => model.enabled)
+  if (enabledModels.length === 0) {
+    throw new Error(`模型配置「${channel.name}」没有启用的模型`)
+  }
+  const defaultModel =
+    preferredModelId
+    && enabledModels.some(model => model.id === preferredModelId)
+      ? preferredModelId
+      : channel.defaultModelId
+        && enabledModels.some(model => model.id === channel.defaultModelId)
+        ? channel.defaultModelId
+        : enabledModels[0]!.id
+  // ChatGPT 订阅渠道保存的是 OAuth JSON，而不是 OPENAI_API_KEY。
+  // Desktop Session 会通过独立的 OAuth 环境变量注入凭证，这里只同步模型目录。
+  const providerApiKey = channel.provider === 'openai-codex' ? '' : apiKey
+
+  return updateCcbNativeModelConfiguration(
+    {
+      modelType: resolveCcbModelType(channel.provider),
+      defaultModel,
+      baseUrl: channel.baseUrl,
+      apiKey: providerApiKey,
+      models: enabledModels.map(model => ({
+        id: model.id,
+        name: model.name,
+        ...(model.description !== undefined
+          ? { description: model.description }
+          : {}),
+        ...(model.contextWindow !== undefined
+          ? { contextWindow: model.contextWindow }
+          : {}),
+        ...(model.thinkingEffortLevels !== undefined
+          ? { effortLevels: model.thinkingEffortLevels }
+          : {}),
+      })),
+    },
+    configDir,
+  )
 }

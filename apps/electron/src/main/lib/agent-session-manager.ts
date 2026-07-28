@@ -213,29 +213,15 @@ export function listAgentSessions(): AgentSessionMeta[] {
 /**
  * 将 CCB Transcript 目录同步为 Proma UI 投影。
  *
- * CCB runtimeSessionId 是执行上下文真源；Proma 索引仅保留置顶、归档、
- * Channel、Workspace 等桌面展示字段。
+ * Proma 本地索引是桌面 UI 会话真源；CCB Catalog 只负责导入 Runtime 原生
+ * 会话和刷新已知 Runtime 元数据。Catalog 的一次暂时缺失绝不能删除 Proma
+ * 会话，真实删除只能由用户显式操作触发。
  */
 export function syncRuntimeSessionCatalog(
   workspaceId: string,
   runtimeSessions: AgentRuntimeSessionSummary[],
 ): AgentSessionMeta[] {
   const index = readIndex()
-  const runtimeSessionIds = new Set(
-    runtimeSessions.map(session => session.runtimeSessionId),
-  )
-  const removedSessions = index.sessions.filter(
-    session =>
-      session.workspaceId === workspaceId
-      && Boolean(session.runtimeSessionId)
-      && !runtimeSessionIds.has(session.runtimeSessionId!),
-  )
-  if (removedSessions.length > 0) {
-    const removedIds = new Set(removedSessions.map(session => session.id))
-    index.sessions = index.sessions.filter(
-      session => !removedIds.has(session.id),
-    )
-  }
   let changed = false
   for (const runtimeSession of runtimeSessions) {
     const runtimeTitle = createRuntimeSessionProjectionTitle(
@@ -258,16 +244,25 @@ export function syncRuntimeSessionCatalog(
           )
         )
       const nextTitle = runtimeOwnsTitle ? runtimeTitle : existing.title
+      // Proma 创建的会话以本地消息写入时间维护侧栏顺序。Catalog 查询可能由
+      // 模型配置、窗口聚焦等无关操作触发，不能用 CCB Transcript 时间把它
+      // 重新排序；只有 CCB 原生导入会话继续接受 Runtime 时间戳。
+      const runtimeOwnsTimestamp =
+        existing.titleSource === 'runtime'
+        || existing.id === existing.runtimeSessionId
+      const nextUpdatedAt = runtimeOwnsTimestamp
+        ? runtimeSession.updatedAt
+        : existing.updatedAt
       if (
         existing.workspaceId !== workspaceId
         || existing.title !== nextTitle
         || (runtimeOwnsTitle && existing.titleSource !== 'runtime')
-        || existing.updatedAt !== runtimeSession.updatedAt
+        || existing.updatedAt !== nextUpdatedAt
       ) {
         existing.workspaceId = workspaceId
         existing.title = nextTitle
         if (runtimeOwnsTitle) existing.titleSource = 'runtime'
-        existing.updatedAt = runtimeSession.updatedAt
+        existing.updatedAt = nextUpdatedAt
         changed = true
       }
       continue
@@ -287,14 +282,7 @@ export function syncRuntimeSessionCatalog(
     })
     changed = true
   }
-  if (removedSessions.length > 0) changed = true
   if (changed) writeIndex(index)
-  for (const removed of removedSessions) {
-    cleanupAgentSessionProjectionFiles(removed.id)
-    console.log(
-      `[Agent 会话] CCB Transcript 已不存在，移除桌面投影: ${removed.title} (${removed.id})`,
-    )
-  }
   return index.sessions.sort((a, b) => b.updatedAt - a.updatedAt)
 }
 
@@ -484,16 +472,167 @@ export function getAgentSessionSDKMessages(id: string): SDKMessage[] {
   }
 }
 
-/** 使用 CCB Transcript 重建 Proma JSONL UI 投影。 */
-export function replaceAgentSessionSDKMessages(
+function getSDKMessageIdentity(message: SDKMessage): string {
+  const uuid = (message as { uuid?: unknown }).uuid
+  if (typeof uuid === 'string' && uuid.length > 0) return `uuid:${uuid}`
+  const record = message as unknown as Record<string, unknown>
+  return `content:${message.type}:${JSON.stringify({
+    message: record.message,
+    subtype: record.subtype,
+    parent_tool_use_id: record.parent_tool_use_id,
+  })}`
+}
+
+function getAssistantMessageId(message: SDKMessage): string | undefined {
+  if (message.type !== 'assistant') return undefined
+  const messageId = (
+    message as unknown as {
+      message?: { id?: unknown }
+    }
+  ).message?.id
+  return typeof messageId === 'string' && messageId.length > 0
+    ? messageId
+    : undefined
+}
+
+function getUserMessageText(message: SDKMessage): string | undefined {
+  if (message.type !== 'user') return undefined
+  const content = (
+    message as unknown as {
+      message?: { content?: unknown }
+    }
+  ).message?.content
+  if (typeof content === 'string') return content.trim()
+  if (!Array.isArray(content)) return undefined
+  const text = content
+    .filter(
+      (block): block is { type: 'text'; text: string } =>
+        Boolean(
+          block
+          && typeof block === 'object'
+          && (block as { type?: unknown }).type === 'text'
+          && typeof (block as { text?: unknown }).text === 'string',
+        ),
+    )
+    .map(block => block.text)
+    .join('\n')
+    .trim()
+  return text || undefined
+}
+
+function hasDesktopMessageMetadata(message: SDKMessage): boolean {
+  return Object.keys(message as unknown as Record<string, unknown>)
+    .some(key => key.startsWith('_'))
+}
+
+function mergeRuntimeMessageWithLocalMetadata(
+  runtimeMessage: SDKMessage,
+  localMessage: SDKMessage,
+): SDKMessage {
+  const runtimeRecord = runtimeMessage as unknown as Record<string, unknown>
+  const localRecord = localMessage as unknown as Record<string, unknown>
+  const desktopMetadata = Object.fromEntries(
+    Object.entries(localRecord).filter(([key]) => key.startsWith('_')),
+  )
+  return {
+    ...runtimeRecord,
+    ...desktopMetadata,
+  } as unknown as SDKMessage
+}
+
+/**
+ * 将 CCB Transcript 合并进 Proma JSONL UI 投影。
+ *
+ * Runtime Transcript 负责补齐执行消息，但不能删除本地尚未落入 Transcript 的
+ * 用户消息、附件、错误和桌面专有元数据。即使 Transcript 暂时为空，也保持
+ * 当前本地投影不变。
+ */
+export function mergeAgentSessionSDKMessages(
   id: string,
-  messages: SDKMessage[],
-): void {
+  runtimeMessages: SDKMessage[],
+): SDKMessage[] {
+  const localMessages = getAgentSessionSDKMessages(id)
+  if (runtimeMessages.length === 0) return localMessages
+
+  const consumedLocalIndexes = new Set<number>()
+  const merged: SDKMessage[] = []
+
+  const findLocalIndexes = (
+    predicate: (message: SDKMessage) => boolean,
+  ): number[] => localMessages
+    .map((message, index) => ({ message, index }))
+    .filter(
+      ({ message, index }) =>
+        !consumedLocalIndexes.has(index) && predicate(message),
+    )
+    .map(({ index }) => index)
+
+  for (const runtimeMessage of runtimeMessages) {
+    const assistantMessageId = getAssistantMessageId(runtimeMessage)
+    if (assistantMessageId) {
+      const matchingIndexes = findLocalIndexes(
+        localMessage =>
+          getAssistantMessageId(localMessage) === assistantMessageId,
+      )
+      if (matchingIndexes.length > 0) {
+        const desktopIndexes = matchingIndexes.filter(index =>
+          hasDesktopMessageMetadata(localMessages[index]!),
+        )
+        const preferredIndexes =
+          desktopIndexes.length > 0 ? desktopIndexes : matchingIndexes
+        for (const index of matchingIndexes) consumedLocalIndexes.add(index)
+        merged.push(
+          ...preferredIndexes.map(index => localMessages[index]!),
+        )
+        continue
+      }
+    }
+
+    const userText = getUserMessageText(runtimeMessage)
+    if (userText) {
+      const matchingIndexes = findLocalIndexes(
+        localMessage => getUserMessageText(localMessage) === userText,
+      )
+      if (matchingIndexes.length > 0) {
+        const preferredIndex =
+          matchingIndexes.find(index =>
+            hasDesktopMessageMetadata(localMessages[index]!),
+          ) ?? matchingIndexes[0]!
+        for (const index of matchingIndexes) consumedLocalIndexes.add(index)
+        merged.push(localMessages[preferredIndex]!)
+        continue
+      }
+    }
+
+    const identity = getSDKMessageIdentity(runtimeMessage)
+    const matchingIndex = localMessages.findIndex(
+      (localMessage, index) =>
+        !consumedLocalIndexes.has(index)
+        && getSDKMessageIdentity(localMessage) === identity,
+    )
+    if (matchingIndex >= 0) {
+      consumedLocalIndexes.add(matchingIndex)
+      merged.push(
+        mergeRuntimeMessageWithLocalMetadata(
+          runtimeMessage,
+          localMessages[matchingIndex]!,
+        ),
+      )
+    } else {
+      merged.push(runtimeMessage)
+    }
+  }
+
+  localMessages.forEach((localMessage, index) => {
+    if (!consumedLocalIndexes.has(index)) merged.push(localMessage)
+  })
+
   const filePath = getAgentSessionMessagesPath(id)
-  const content = messages.length > 0
-    ? `${messages.map(message => serializeSDKMessageForStorage(message)).join('\n')}\n`
-    : ''
+  const content = `${merged
+    .map(message => serializeSDKMessageForStorage(message))
+    .join('\n')}\n`
   writeTextFileAtomic(filePath, content)
+  return merged
 }
 
 /**

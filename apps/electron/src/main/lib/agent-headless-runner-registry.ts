@@ -23,7 +23,7 @@ export type HeadlessAgentRunner = (
   callbacks: HeadlessAgentRunCallbacks,
 ) => Promise<void>
 
-export type AgentStopper = (sessionId: string) => void
+export type AgentStopper = (sessionId: string) => Promise<void>
 
 let headlessRunner: HeadlessAgentRunner | null = null
 let agentStopper: AgentStopper | null = null
@@ -46,9 +46,9 @@ export async function runRegisteredHeadlessAgent(
   await headlessRunner(input, callbacks)
 }
 
-export function stopRegisteredAgent(sessionId: string): void {
+export async function stopRegisteredAgent(sessionId: string): Promise<void> {
   if (!agentStopper) {
     throw new Error('Agent stopper 尚未初始化')
   }
-  agentStopper(sessionId)
+  await agentStopper(sessionId)
 }

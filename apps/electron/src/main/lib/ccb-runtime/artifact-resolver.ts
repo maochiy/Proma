@@ -23,7 +23,10 @@ function getRuntimeRoot(): string {
   if (configured) return isAbsolute(configured) ? configured : resolve(configured)
   const { app } = require('electron') as typeof import('electron')
   if (app.isPackaged) return join(process.resourcesPath, 'ccb-runtime')
-  return resolve(app.getAppPath(), '../../../claude-code/dist-desktop')
+  // 开发模式默认也使用 Proma 已锁定并校验过的 Artifact，避免 sibling CCB
+  // 仓库的 dist-desktop 尚未重建时，Manifest 版本与 Proma 锁定版本不一致。
+  // 开发 CCB Runtime 本身时仍可通过 PROMA_CCB_RUNTIME_PATH 显式覆盖。
+  return resolve(app.getAppPath(), 'resources/ccb-runtime')
 }
 
 export function resolveCcbRuntimeArtifact(rootOverride?: string): ResolvedCcbRuntimeArtifact {

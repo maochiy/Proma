@@ -50,7 +50,7 @@ import { normalizeHttpResponse, normalizeRequestError } from './channel-test-err
 import pkg from '../../../package.json' with { type: 'json' }
 
 /** 当前配置版本 */
-const CONFIG_VERSION = 2
+const CONFIG_VERSION = 3
 /** 连接测试 / 模型拉取的统一超时时间 */
 const CHANNEL_TEST_TIMEOUT_MS = 15_000
 // ChatGPT backend 首次经代理 / Cloudflare 建连可能超过普通模型探测的 15 秒。
@@ -106,6 +106,18 @@ function withTimeout(init: RequestInit, timeoutMs = CHANNEL_TEST_TIMEOUT_MS): Re
 
 function cloneModels(models: ChannelModel[]): ChannelModel[] {
   return models.map((model) => ({ ...model }))
+}
+
+function resolveDefaultModelId(
+  models: ChannelModel[],
+  requestedModelId?: string,
+): string | undefined {
+  const enabledModels = models.filter(model => model.enabled)
+  const requested = requestedModelId?.trim()
+  if (requested && enabledModels.some(model => model.id === requested)) {
+    return requested
+  }
+  return enabledModels[0]?.id
 }
 
 function createPresetModelsResult(providerName: string, models: ChannelModel[]): FetchModelsResult {
@@ -181,6 +193,8 @@ function inferProviderFromBaseUrl(provider: ProviderType, baseUrl: string): Prov
  * 自动补端点后缀）」改为「完整请求地址（原样使用）」。把存量 baseUrl 一次性补全为旧版本实际
  * 请求过的完整端点，使升级后的运行时行为与升级前保持一致。详见 migrateCompatibleChannelBaseUrl。
  *
+ * v2 → v3：为每个渠道补齐显式默认模型，优先使用第一个已启用模型。
+ *
  * @returns 迁移后的配置；`changed` 标记是否发生实际变更（决定是否需要回写文件）
  */
 function migrateConfig(config: ChannelsConfig): { config: ChannelsConfig; changed: boolean } {
@@ -191,21 +205,47 @@ function migrateConfig(config: ChannelsConfig): { config: ChannelsConfig; change
 
   let mutated = false
   const channels = config.channels.map((channel) => {
-    if (channel.provider !== 'custom' && channel.provider !== 'anthropic-compatible') {
-      return channel
+    let migrated = channel
+    if (
+      version < 2
+      && (
+        channel.provider === 'custom'
+        || channel.provider === 'anthropic-compatible'
+      )
+    ) {
+      const migratedUrl = migrateCompatibleChannelBaseUrl(
+        channel.baseUrl,
+        channel.provider,
+      )
+      if (migratedUrl !== channel.baseUrl) {
+        mutated = true
+        console.log(
+          `[渠道管理] v1→v2 迁移渠道 ${channel.name} (${channel.provider}) Base URL: ${channel.baseUrl} → ${migratedUrl}`,
+        )
+        migrated = { ...migrated, baseUrl: migratedUrl }
+      }
     }
-    const migratedUrl = migrateCompatibleChannelBaseUrl(channel.baseUrl, channel.provider)
-    if (migratedUrl === channel.baseUrl) {
-      return channel
+
+    if (version < 3) {
+      const defaultModelId = resolveDefaultModelId(
+        migrated.models,
+        migrated.defaultModelId,
+      )
+      if (migrated.defaultModelId !== defaultModelId) {
+        mutated = true
+        migrated = {
+          ...migrated,
+          ...(defaultModelId ? { defaultModelId } : {}),
+        }
+      }
     }
-    mutated = true
-    console.log(
-      `[渠道管理] v${version}→v${CONFIG_VERSION} 迁移渠道 ${channel.name} (${channel.provider}) Base URL: ${channel.baseUrl} → ${migratedUrl}`,
-    )
-    return { ...channel, baseUrl: migratedUrl }
+    return migrated
   })
 
-  return { config: { version: CONFIG_VERSION, channels }, changed: true }
+  return {
+    config: { version: CONFIG_VERSION, channels },
+    changed: mutated || version !== CONFIG_VERSION,
+  }
 }
 
 /**
@@ -337,6 +377,10 @@ export function createChannel(input: ChannelCreateInput): Channel {
     baseUrl: input.baseUrl,
     apiKey: encryptApiKey(input.apiKey),
     models: input.models,
+    defaultModelId: resolveDefaultModelId(
+      input.models,
+      input.defaultModelId,
+    ),
     enabled: input.enabled,
     createdAt: now,
     updatedAt: now,
@@ -365,6 +409,7 @@ export function updateChannel(id: string, input: ChannelUpdateInput): Channel {
   }
 
   const existing = config.channels[index]!
+  const models = input.models ?? existing.models
 
   const updated: Channel = {
     ...existing,
@@ -372,7 +417,11 @@ export function updateChannel(id: string, input: ChannelUpdateInput): Channel {
     provider: input.provider ?? existing.provider,
     baseUrl: input.baseUrl ?? existing.baseUrl,
     apiKey: input.apiKey ? encryptApiKey(input.apiKey) : existing.apiKey,
-    models: input.models ?? existing.models,
+    models,
+    defaultModelId: resolveDefaultModelId(
+      models,
+      input.defaultModelId ?? existing.defaultModelId,
+    ),
     enabled: input.enabled ?? existing.enabled,
     updatedAt: Date.now(),
   }

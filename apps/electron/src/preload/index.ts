@@ -35,6 +35,8 @@ import type {
   RecentMessagesResult,
   MessageSearchResult,
   AgentSessionMeta,
+  AgentSessionCatalogSyncedPayload,
+  AgentSessionTranscriptSyncedPayload,
   AgentRuntimeModelCatalog,
   AgentRuntimeModelCatalogDraftInput,
   CcbNativeModelConfiguration,
@@ -436,6 +438,16 @@ export interface ElectronAPI {
 
   /** 获取 Agent 会话 SDKMessage（Phase 4 新格式） */
   getAgentSessionSDKMessages: (id: string) => Promise<SDKMessage[]>
+
+  /** 订阅 CCB Catalog 后台同步完成事件。 */
+  onAgentSessionCatalogSynced: (
+    callback: (payload: AgentSessionCatalogSyncedPayload) => void
+  ) => () => void
+
+  /** 订阅 CCB Transcript 后台同步完成事件。 */
+  onAgentSessionTranscriptSynced: (
+    callback: (payload: AgentSessionTranscriptSyncedPayload) => void
+  ) => () => void
 
   /** 更新 Agent 会话标题 */
   updateAgentSessionTitle: (id: string, title: string) => Promise<AgentSessionMeta>
@@ -1509,6 +1521,22 @@ const electronAPI: ElectronAPI = {
 
   getAgentSessionSDKMessages: (id: string) => {
     return ipcRenderer.invoke(AGENT_IPC_CHANNELS.GET_SDK_MESSAGES, id)
+  },
+
+  onAgentSessionCatalogSynced: (callback: (payload: AgentSessionCatalogSyncedPayload) => void) => {
+    const listener = (_: unknown, payload: AgentSessionCatalogSyncedPayload): void => callback(payload)
+    ipcRenderer.on(AGENT_IPC_CHANNELS.SESSION_CATALOG_SYNCED, listener)
+    return () => {
+      ipcRenderer.removeListener(AGENT_IPC_CHANNELS.SESSION_CATALOG_SYNCED, listener)
+    }
+  },
+
+  onAgentSessionTranscriptSynced: (callback: (payload: AgentSessionTranscriptSyncedPayload) => void) => {
+    const listener = (_: unknown, payload: AgentSessionTranscriptSyncedPayload): void => callback(payload)
+    ipcRenderer.on(AGENT_IPC_CHANNELS.SESSION_TRANSCRIPT_SYNCED, listener)
+    return () => {
+      ipcRenderer.removeListener(AGENT_IPC_CHANNELS.SESSION_TRANSCRIPT_SYNCED, listener)
+    }
   },
 
   updateAgentSessionTitle: (id: string, title: string) => {

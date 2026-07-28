@@ -289,6 +289,8 @@ export interface Channel {
   apiKey: string
   /** 可用模型列表 */
   models: ChannelModel[]
+  /** 新建会话和 CCB 全局配置默认使用的模型。 */
+  defaultModelId?: string
   /** 是否启用 */
   enabled: boolean
   /** 创建时间戳 */
@@ -307,6 +309,8 @@ export interface ChannelCreateInput {
   /** 明文 API Key，主进程会加密后存储 */
   apiKey: string
   models: ChannelModel[]
+  /** 默认模型；必须存在于已启用模型中。 */
+  defaultModelId?: string
   enabled: boolean
 }
 
@@ -320,6 +324,8 @@ export interface ChannelUpdateInput {
   /** 明文 API Key，为空字符串表示不更新 */
   apiKey?: string
   models?: ChannelModel[]
+  /** 默认模型；保存时会自动归一化到已启用模型。 */
+  defaultModelId?: string
   enabled?: boolean
 }
 

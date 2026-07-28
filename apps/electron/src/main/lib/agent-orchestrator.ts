@@ -50,7 +50,7 @@ import { getWorkspaceFilesDir, getWorkspaceSkillsDir } from './config-paths'
 import { getRuntimeStatus } from './runtime-init'
 import { getSettings } from './settings-service'
 import { buildSystemPrompt, buildDynamicContext } from './agent-prompt-builder'
-import { MAX_CONTEXT_MESSAGES, buildContextPrompt, buildRecoveryPrompt, buildReferencedSessionsPrompt } from './agent-session-context-prompt'
+import { buildRecoveryPrompt, buildReferencedSessionsPrompt } from './agent-session-context-prompt'
 import { permissionService } from './agent-permission-service'
 import type { PermissionResult, CanUseToolOptions } from './agent-permission-service'
 import { askUserService } from './agent-ask-user-service'
@@ -1055,19 +1055,17 @@ export class AgentOrchestrator {
         console.log(`[Agent 编排] 注入 mentioned_tools: ${mentionedSkills?.length ?? 0} skills, ${mentionedMcpServers?.length ?? 0} MCP`)
       }
 
-      const contextualMessage = `${dynamicCtx}\n\n${enrichedMessage}`
+      const contextualMessage = dynamicCtx
+        ? `${dynamicCtx}\n\n${enrichedMessage}`
+        : enrichedMessage
 
       const isCompactCommand = userMessage.trim() === '/compact'
       const finalPrompt = isCompactCommand
         ? '/compact'
-        : existingRuntimeSessionId
-          ? contextualMessage
-          : buildContextPrompt(sessionId, contextualMessage, { agentCwd, workspaceSlug })
+        : contextualMessage
 
       if (existingRuntimeSessionId) {
         console.log(`[Agent 编排] 使用 resume 模式，SDK session ID: ${existingRuntimeSessionId}`)
-      } else if (finalPrompt !== contextualMessage) {
-        console.log(`[Agent 编排] 无 resume，已回填历史上下文（最近 ${MAX_CONTEXT_MESSAGES} 条消息）`)
       }
 
       // 12. 读取应用设置并确定权限模式
@@ -1322,6 +1320,12 @@ export class AgentOrchestrator {
         permissionMode: initialPermissionMode,
         collaborationAvailable,
       }) + (automationContext ? `\n\n## 定时任务执行上下文\n\n${automationContext}` : '')
+      console.log(
+        `[Agent Prompt] system=${systemPromptAppend.length} chars, `
+        + `user=${finalPrompt.length} chars, estimatedTokens≈${Math.ceil(
+          (systemPromptAppend.length + finalPrompt.length) / 4,
+        )}`,
+      )
       const handleSessionId = (runtimeSessionId: string): void => {
         // 仅在 Runtime Session ID 真正变化时持久化；回调可能在同一轮被多次触发。
         // capturedRuntimeSessionId 已初始化为 existingRuntimeSessionId，并在 recovery 时同步重置。
@@ -2135,19 +2139,25 @@ export class AgentOrchestrator {
    * 先从 activeSessions 移除（供 sendMessage catch 块检测用户中止），
    * 再调用 adapter.abort() 中止底层 SDK 进程。
    */
-  stop(sessionId: string): void {
-    this.activeSessions.delete(sessionId)
-    this.sessionPermissionModes.delete(sessionId)
+  async stop(sessionId: string): Promise<void> {
     this.stoppedBySessions.add(sessionId)
     this.queuedMessageUuids.delete(sessionId)
-    this.adapter.abort(sessionId)
-    console.log(`[Agent 编排] 已中止会话: ${sessionId}`)
+    console.log(`[Agent 编排] 正在等待 CCB 停止会话: ${sessionId}`)
+    try {
+      await this.adapter.abort(sessionId)
+      console.log(`[Agent 编排] CCB 已确认会话停止: ${sessionId}`)
+    } finally {
+      // 只有 CCB 已完成停止，或停止请求明确失败后，才释放 Proma 运行状态。
+      // 正常路径通常会先由 sendMessage 的 finally 清理，这里作为幂等兜底。
+      this.activeSessions.delete(sessionId)
+      this.sessionPermissionModes.delete(sessionId)
+    }
   }
 
   /** 删除会话前停止当前 Turn，并释放 CCB 长期 Worker。 */
   async closeSession(sessionId: string): Promise<void> {
     if (this.activeSessions.has(sessionId)) {
-      this.stop(sessionId)
+      await this.stop(sessionId)
     }
     await this.adapter.closeSession?.(sessionId)
   }

@@ -588,7 +588,10 @@ function getAvailableAgentModels(ctx: CollaborationToolContext): Record<string, 
   }
 }
 
-function stopDelegation(parentSessionId: string, delegationId: string): Record<string, unknown> {
+async function stopDelegation(
+  parentSessionId: string,
+  delegationId: string,
+): Promise<Record<string, unknown>> {
   const record = delegations.get(delegationId)
   if (!record) {
     // 不在内存：可能是应用重启后的遗留委派。回退到持久化记录（完全找不到才抛错），无法主动停止
@@ -608,7 +611,7 @@ function stopDelegation(parentSessionId: string, delegationId: string): Record<s
     }
   }
 
-  stopRegisteredAgent(record.childSessionId)
+  await stopRegisteredAgent(record.childSessionId)
   markDelegationFinished(record, 'cancelled')
   return {
     delegation: getDelegationSummary(record),
@@ -928,7 +931,9 @@ export async function injectAgentCollaborationMcpServer(
         '停止一个正在运行的 Proma 协作子会话。',
         schemas.stop,
         async (args) => {
-          return jsonResult(stopDelegation(ctx.sessionId, args.delegationId))
+          return jsonResult(
+            await stopDelegation(ctx.sessionId, args.delegationId),
+          )
         },
       ),
       sdk.tool(
@@ -937,7 +942,11 @@ export async function injectAgentCollaborationMcpServer(
         schemas.stopBatch,
         async (args) => {
           return jsonResult({
-            results: args.delegationIds.map((delegationId) => stopDelegation(ctx.sessionId, delegationId)),
+            results: await Promise.all(
+              args.delegationIds.map(delegationId =>
+                stopDelegation(ctx.sessionId, delegationId),
+              ),
+            ),
           })
         },
       ),

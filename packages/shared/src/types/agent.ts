@@ -808,6 +808,17 @@ export interface AgentSessionMeta {
   updatedAt: number
 }
 
+/** CCB Catalog 后台同步完成后推送给 Renderer 的本地会话投影。 */
+export interface AgentSessionCatalogSyncedPayload {
+  sessions: AgentSessionMeta[]
+}
+
+/** CCB Transcript 后台同步完成后推送给 Renderer 的本地消息投影。 */
+export interface AgentSessionTranscriptSyncedPayload {
+  sessionId: string
+  messages: SDKMessage[]
+}
+
 /** Agent 委派子会话的任务角色 */
 export type AgentDelegationRole = 'explore' | 'research' | 'implement' | 'review' | 'custom'
 
@@ -1619,6 +1630,10 @@ export const AGENT_IPC_CHANNELS = {
   CREATE_SESSION: 'agent:create-session',
   /** 获取会话 SDKMessage（Phase 4 新格式） */
   GET_SDK_MESSAGES: 'agent:get-sdk-messages',
+  /** CCB Catalog 后台同步完成 */
+  SESSION_CATALOG_SYNCED: 'agent:session-catalog-synced',
+  /** CCB Transcript 后台同步完成 */
+  SESSION_TRANSCRIPT_SYNCED: 'agent:session-transcript-synced',
   /** 更新会话标题 */
   UPDATE_TITLE: 'agent:update-title',
   /** 更新会话模型选择 */

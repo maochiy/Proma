@@ -4,7 +4,6 @@ import {
   Cpu,
   Loader2,
   Plus,
-  RotateCcw,
   Save,
   Trash2,
 } from 'lucide-react'
@@ -208,10 +207,9 @@ export function CcbNativeModelForm({
         <SettingsCard divided={false}>
           <div className="space-y-3 px-4 py-10 text-center">
             <p className="text-sm font-medium text-destructive">{loadError}</p>
-            <Button variant="outline" size="sm" onClick={() => void loadConfiguration()}>
-              <RotateCcw size={15} />
-              重新读取
-            </Button>
+            <p className="text-xs text-muted-foreground">
+              请返回后重新进入模型配置，或检查 CCB 配置文件是否可读。
+            </p>
           </div>
         </SettingsCard>
       </div>
@@ -232,21 +230,10 @@ export function CcbNativeModelForm({
           <ArrowLeft size={16} />
           返回模型配置
         </Button>
-        <div className="flex items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => void loadConfiguration()}
-            disabled={saving}
-          >
-            <RotateCcw size={15} />
-            重新读取
-          </Button>
-          <Button size="sm" onClick={() => void handleSave()} disabled={saving}>
-            {saving ? <Loader2 className="size-4 animate-spin" /> : <Save size={15} />}
-            保存配置
-          </Button>
-        </div>
+        <Button size="sm" onClick={() => void handleSave()} disabled={saving}>
+          {saving ? <Loader2 className="size-4 animate-spin" /> : <Save size={15} />}
+          保存配置
+        </Button>
       </div>
 
       <SettingsSection

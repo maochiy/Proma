@@ -1,5 +1,11 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs'
 import * as os from 'node:os'
 import { join } from 'node:path'
 import { serializeCodexCredentials } from '@proma/shared'
@@ -37,12 +43,12 @@ mock.module('node:os', () => ({
   homedir: () => tempHome,
 }))
 
-function writeChannels(channels: unknown[]): void {
+function writeChannels(channels: unknown[], version = 2): void {
   const configDir = join(tempHome, '.proma')
   mkdirSync(configDir, { recursive: true })
   writeFileSync(
     join(configDir, 'channels.json'),
-    JSON.stringify({ version: 2, channels }),
+    JSON.stringify({ version, channels }),
     'utf-8',
   )
 }
@@ -135,5 +141,67 @@ describe('渠道删除持久化', () => {
     channelManager.deleteChannel('deepseek-channel')
 
     expect(channelManager.listChannels()).toEqual([])
+  })
+})
+
+describe('渠道默认模型', () => {
+  test('Given v2 渠道没有默认模型 When 读取配置 Then 迁移第一个启用模型并持久化 v3', () => {
+    writeChannels([
+      {
+        id: 'anthropic-channel',
+        name: 'Anthropic',
+        provider: 'anthropic',
+        baseUrl: 'https://api.anthropic.com',
+        apiKey: 'plain-api-key',
+        models: [
+          { id: 'disabled-model', name: 'Disabled', enabled: false },
+          { id: 'default-model', name: 'Default', enabled: true },
+          { id: 'backup-model', name: 'Backup', enabled: true },
+        ],
+        enabled: true,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    ])
+
+    expect(channelManager.listChannels()[0]?.defaultModelId)
+      .toBe('default-model')
+    const persisted = JSON.parse(
+      readFileSync(join(tempHome, '.proma', 'channels.json'), 'utf-8'),
+    ) as {
+      version: number
+      channels: Array<{ defaultModelId?: string }>
+    }
+    expect(persisted.version).toBe(3)
+    expect(persisted.channels[0]?.defaultModelId).toBe('default-model')
+  })
+
+  test('Given 默认模型被禁用 When 保存模型列表 Then 自动回退到下一个启用模型', () => {
+    writeChannels([
+      {
+        id: 'openai-channel',
+        name: 'OpenAI',
+        provider: 'openai',
+        baseUrl: 'https://api.openai.com/v1',
+        apiKey: 'plain-api-key',
+        models: [
+          { id: 'model-a', name: 'A', enabled: true },
+          { id: 'model-b', name: 'B', enabled: true },
+        ],
+        defaultModelId: 'model-a',
+        enabled: true,
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    ], 3)
+
+    const updated = channelManager.updateChannel('openai-channel', {
+      models: [
+        { id: 'model-a', name: 'A', enabled: false },
+        { id: 'model-b', name: 'B', enabled: true },
+      ],
+    })
+
+    expect(updated.defaultModelId).toBe('model-b')
   })
 })
