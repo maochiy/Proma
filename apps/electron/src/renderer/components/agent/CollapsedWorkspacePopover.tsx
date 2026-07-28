@@ -3,7 +3,7 @@
  *
  * 鼠标悬停在折叠侧栏的 Agent 模式按钮上时弹出，提供：
  * - 当前所有项目列表，点击即切换
- * - 顶部 `+` 按钮支持 inline 新建
+ * - 顶部 `+` 按钮打开系统目录选择器添加已有项目
  *
  * 不包含重命名/删除/拖拽/高度调整等低频操作。
  * 切换/创建逻辑通过 useProjectActions 与展开态共享，确保行为一致。
@@ -26,7 +26,7 @@ interface CollapsedWorkspacePopoverProps {
 export function CollapsedWorkspacePopover({
   children,
 }: CollapsedWorkspacePopoverProps): React.ReactElement {
-  const { workspaces, currentWorkspaceId, selectProject, createProject } = useProjectActions()
+  const { workspaces, currentWorkspaceId, selectProject, addProject } = useProjectActions()
 
   const [open, setOpen] = React.useState(false)
   const closeTimerRef = React.useRef<number | null>(null)
@@ -45,57 +45,25 @@ export function CollapsedWorkspacePopover({
 
   React.useEffect(() => () => cancelClose(), [cancelClose])
 
-  // 新建状态
-  const [creating, setCreating] = React.useState(false)
-  const [newName, setNewName] = React.useState('')
-  const createInputRef = React.useRef<HTMLInputElement>(null)
-
   const handleSelect = (workspaceId: string): void => {
     selectProject(workspaceId)
     setOpen(false)
   }
 
-  const handleStartCreate = (e: React.MouseEvent): void => {
+  const handleAddProject = (e: React.MouseEvent): void => {
     e.stopPropagation()
-    setCreating(true)
-    setNewName('')
-    requestAnimationFrame(() => {
-      createInputRef.current?.focus()
+    void addProject().then((workspace) => {
+      if (workspace) setOpen(false)
     })
   }
 
-  const handleCreate = async (): Promise<void> => {
-    const trimmed = newName.trim()
-    if (!trimmed) {
-      setCreating(false)
-      return
-    }
-    const workspace = await createProject(trimmed)
-    setCreating(false)
-    if (workspace) setOpen(false)
-  }
-
-  const handleCreateKeyDown = (e: React.KeyboardEvent): void => {
-    if (e.key === 'Enter') {
-      if (e.nativeEvent.isComposing) return
-      e.preventDefault()
-      handleCreate()
-    } else if (e.key === 'Escape') {
-      e.preventDefault()
-      setCreating(false)
-    }
-  }
-
-  // 新建态下不允许 hover 离开就关闭，避免输入过程中弹层消失
   const handleContentMouseLeave = (): void => {
-    if (creating) return
     scheduleClose()
   }
 
   return (
     <Popover open={open} onOpenChange={(v) => {
       setOpen(v)
-      if (!v) setCreating(false)
     }}>
       <PopoverTrigger asChild>
         <span
@@ -130,9 +98,9 @@ export function CollapsedWorkspacePopover({
           </span>
           <button
             type="button"
-            onClick={handleStartCreate}
+            onClick={handleAddProject}
             className="p-1 rounded hover:bg-foreground/[0.06] text-foreground/35 hover:text-foreground/60 transition-colors"
-            title="新建项目"
+            title="添加已有项目"
           >
             <Plus size={13} />
           </button>
@@ -157,19 +125,9 @@ export function CollapsedWorkspacePopover({
             </button>
           ))}
 
-          {creating && (
-            <div className="flex items-center gap-2 px-2 py-[5px]">
-              <FolderOpen size={13} className="flex-shrink-0 text-foreground/40" />
-              <input
-                ref={createInputRef}
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                onKeyDown={handleCreateKeyDown}
-                onBlur={() => setCreating(false)}
-                placeholder="项目名称..."
-                className="flex-1 min-w-0 bg-transparent text-[13px] text-foreground border-b border-primary/50 outline-none px-0.5"
-                maxLength={50}
-              />
+          {workspaces.length === 0 && (
+            <div className="px-2 py-3 text-xs leading-5 text-foreground/45">
+              点击右上角 + 添加电脑上的已有项目。
             </div>
           )}
         </div>

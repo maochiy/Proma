@@ -14,7 +14,13 @@ import {
   currentAgentWorkspaceIdAtom,
   workspaceCapabilitiesVersionAtom,
 } from '@/atoms/agent-atoms'
-import type { BuiltinMcpServerSummary, SkillMeta, WorkspaceCapabilities, WorkspaceMcpConfig } from '@proma/shared'
+import type {
+  BuiltinMcpServerSummary,
+  RuntimeSkillCatalog,
+  SkillMeta,
+  WorkspaceCapabilities,
+  WorkspaceMcpConfig,
+} from '@proma/shared'
 
 export interface AgentSkillsData {
   /** 当前工作区（未选中时为 null） */
@@ -29,6 +35,9 @@ export interface AgentSkillsData {
   capabilities: WorkspaceCapabilities | null
   builtinMcpServers: BuiltinMcpServerSummary[]
   updatingSkill: string | null
+  runtimeCatalog: RuntimeSkillCatalog | null
+  refreshingRuntimeSkills: boolean
+  refreshRuntimeSkills: () => Promise<void>
   toggleSkill: (slug: string, enabled: boolean) => Promise<void>
   deleteSkill: (slug: string, name: string) => Promise<boolean>
   updateSkill: (slug: string) => Promise<void>
@@ -54,6 +63,46 @@ export function useAgentSkillsData(): AgentSkillsData {
   const [capabilities, setCapabilities] = React.useState<WorkspaceCapabilities | null>(null)
   const [builtinMcpServers, setBuiltinMcpServers] = React.useState<BuiltinMcpServerSummary[]>([])
   const [updatingSkill, setUpdatingSkill] = React.useState<string | null>(null)
+  const [runtimeCatalog, setRuntimeCatalog] = React.useState<RuntimeSkillCatalog | null>(null)
+  const [refreshingRuntimeSkills, setRefreshingRuntimeSkills] = React.useState(false)
+
+  const mergeRuntimeSkills = React.useCallback(
+    (promaSkills: SkillMeta[], catalog: RuntimeSkillCatalog | null): SkillMeta[] => {
+      if (!catalog) return promaSkills
+      const runtimePromaByName = new Map(
+        catalog.skills
+          .filter((skill) => skill.source === 'proma-project')
+          .map((skill) => [skill.name, skill]),
+      )
+      const mergedProma = promaSkills.map((skill) => {
+        const runtimeSkill = runtimePromaByName.get(skill.slug)
+          ?? runtimePromaByName.get(skill.name)
+        return {
+          ...skill,
+          registeredWithRuntime: Boolean(runtimeSkill),
+          runtimeSource: runtimeSkill?.source,
+          runtimePath: runtimeSkill?.path,
+          shadowedBy: runtimeSkill?.shadowedBy,
+        }
+      })
+      const ccbSkills = catalog.skills
+        .filter((skill) => skill.source !== 'proma-project')
+        .map((skill): SkillMeta => ({
+          slug: `__ccb__${skill.id}`,
+          name: skill.name,
+          description: skill.description,
+          enabled: skill.enabled,
+          runtimeSource: skill.source,
+          runtimePath: skill.path,
+          runtimeReadOnly: true,
+          registeredWithRuntime: true,
+          shadowedBy: skill.shadowedBy,
+          runtimePluginName: skill.pluginName,
+        }))
+      return [...mergedProma, ...ccbSkills]
+    },
+    [],
+  )
 
   const loadData = React.useCallback(async () => {
     if (!workspaceSlug) {
@@ -65,15 +114,23 @@ export function useAgentSkillsData(): AgentSkillsData {
       return
     }
     try {
-      const [config, skillList, dir, defaultSlugs, capabilities] = await Promise.all([
+      const [config, skillList, dir, defaultSlugs, capabilities, catalog] = await Promise.all([
         window.electronAPI.getWorkspaceMcpConfig(workspaceSlug),
         window.electronAPI.getWorkspaceSkills(workspaceSlug),
         window.electronAPI.getWorkspaceSkillsDir(workspaceSlug),
         window.electronAPI.getDefaultSkillSlugs(),
         window.electronAPI.getWorkspaceCapabilities(workspaceSlug),
+        currentWorkspace
+          ? window.electronAPI.getAgentRuntimeSkillCatalog(currentWorkspace.id)
+              .catch((error) => {
+                console.warn('[Agent 技能] CCB Skill Catalog 暂不可用:', error)
+                return null
+              })
+          : Promise.resolve(null),
       ])
       setMcpConfig(config)
-      setSkills(skillList)
+      setRuntimeCatalog(catalog)
+      setSkills(mergeRuntimeSkills(skillList, catalog))
       setSkillsDir(dir)
       setDefaultSkillSlugs(new Set(defaultSlugs))
       setCapabilities(capabilities)
@@ -83,7 +140,31 @@ export function useAgentSkillsData(): AgentSkillsData {
     } finally {
       setLoading(false)
     }
-  }, [workspaceSlug])
+  }, [currentWorkspace, mergeRuntimeSkills, workspaceSlug])
+
+  const refreshRuntimeSkills = React.useCallback(async (): Promise<void> => {
+    if (!currentWorkspace || refreshingRuntimeSkills) return
+    setRefreshingRuntimeSkills(true)
+    try {
+      const [promaSkills, catalog] = await Promise.all([
+        window.electronAPI.getWorkspaceSkills(workspaceSlug),
+        window.electronAPI.getAgentRuntimeSkillCatalog(currentWorkspace.id),
+      ])
+      setRuntimeCatalog(catalog)
+      setSkills(mergeRuntimeSkills(promaSkills, catalog))
+      toast.success(`已刷新 CCB Skills，共发现 ${catalog.skills.length} 个`)
+    } catch (error) {
+      console.error('[Agent 技能] 刷新 CCB Skills 失败:', error)
+      toast.error(error instanceof Error ? error.message : '刷新 CCB Skills 失败')
+    } finally {
+      setRefreshingRuntimeSkills(false)
+    }
+  }, [
+    currentWorkspace,
+    mergeRuntimeSkills,
+    refreshingRuntimeSkills,
+    workspaceSlug,
+  ])
 
   // workspaceSlug 或外部能力版本变化时重新拉取
   React.useEffect(() => {
@@ -92,6 +173,8 @@ export function useAgentSkillsData(): AgentSkillsData {
   }, [loadData, capabilitiesVersion])
 
   const toggleSkill = React.useCallback(async (slug: string, enabled: boolean) => {
+    const target = skills.find((skill) => skill.slug === slug)
+    if (target?.runtimeReadOnly) return
     try {
       await window.electronAPI.toggleWorkspaceSkill(workspaceSlug, slug, enabled)
       setSkills((prev) => prev.map((s) => (s.slug === slug ? { ...s, enabled } : s)))
@@ -100,7 +183,7 @@ export function useAgentSkillsData(): AgentSkillsData {
       console.error('[Agent 技能] 切换 Skill 状态失败:', error)
       toast.error('切换 Skill 状态失败')
     }
-  }, [workspaceSlug, bumpCapabilitiesVersion])
+  }, [skills, workspaceSlug, bumpCapabilitiesVersion])
 
   const deleteSkill = React.useCallback(async (slug: string, name: string): Promise<boolean> => {
     try {
@@ -191,6 +274,9 @@ export function useAgentSkillsData(): AgentSkillsData {
     capabilities,
     builtinMcpServers,
     updatingSkill,
+    runtimeCatalog,
+    refreshingRuntimeSkills,
+    refreshRuntimeSkills,
     toggleSkill,
     deleteSkill,
     updateSkill,

@@ -18,8 +18,8 @@ import {
   getAgentSessionsIndexPath,
   getAgentSessionsDir,
   getAgentSessionMessagesPath,
-  getAgentSessionWorkspacePath,
-  getAgentWorkspacePath,
+  getAgentSessionAttachmentsDir,
+  resolveAgentSessionAttachmentsDir,
   getConfigDir,
 } from './config-paths'
 import { getAgentWorkspace, getWorkspaceAutoMemoryDir } from './agent-workspace-manager'
@@ -241,50 +241,8 @@ export function createAgentSession(
   // 确保消息目录存在
   getAgentSessionsDir()
 
-  // 若有工作区，创建 session 级别子文件夹并初始化 .claude / .context
-  if (workspaceId) {
-    const ws = getAgentWorkspace(workspaceId)
-    if (ws) {
-      const sessionDir = getAgentSessionWorkspacePath(ws.slug, meta.id)
-
-      // 初始化 .claude/settings.json（plansDirectory → .context）
-      const claudeDir = join(sessionDir, '.claude')
-      if (!existsSync(claudeDir)) mkdirSync(claudeDir, { recursive: true })
-      const settingsPath = join(claudeDir, 'settings.json')
-      let sdkSettings: Record<string, unknown> = {}
-      try {
-        sdkSettings = JSON.parse(readFileSync(settingsPath, 'utf-8'))
-      } catch { /* 文件不存在或解析失败 */ }
-      let needsWrite = false
-      if (sdkSettings.plansDirectory !== '.context') {
-        sdkSettings.plansDirectory = '.context'
-        needsWrite = true
-      }
-      if (sdkSettings.skipWebFetchPreflight !== true) {
-        sdkSettings.skipWebFetchPreflight = true
-        needsWrite = true
-      }
-      const autoMemoryDirectory = getWorkspaceAutoMemoryDir(ws.slug)
-      if (sdkSettings.autoMemoryDirectory !== autoMemoryDirectory) {
-        sdkSettings.autoMemoryDirectory = autoMemoryDirectory
-        needsWrite = true
-      }
-      // Proma Git/PR 推广标识：覆盖 CCB 默认 Co-Authored-By
-      if (applyClaudeSdkAttributionSettings(
-        sdkSettings,
-        isGitAttributionEnabled(getSettings().gitAttributionEnabled),
-      )) {
-        needsWrite = true
-      }
-      if (needsWrite) {
-        writeFileSync(settingsPath, JSON.stringify(sdkSettings, null, 2))
-      }
-
-      // 初始化 .context/ 目录
-      const contextDir = join(sessionDir, '.context')
-      if (!existsSync(contextDir)) mkdirSync(contextDir, { recursive: true })
-    }
-  }
+  // v3 项目模型下，Agent cwd 直接使用用户选择的本机项目目录。
+  // 不再为每个会话创建独立工作目录，也不向用户项目写入 .claude 配置。
 
   console.log(`[Agent 会话] 已创建会话: ${meta.title} (${meta.id})`)
   return meta
@@ -496,20 +454,15 @@ export function deleteAgentSession(id: string): void {
     }
   }
 
-  // 清理 session 工作目录
-  if (removed.workspaceId) {
-    const ws = getAgentWorkspace(removed.workspaceId)
-    if (ws) {
-      try {
-        const sessionDir = getAgentSessionWorkspacePath(ws.slug, id)
-        if (existsSync(sessionDir)) {
-          rmSyncWithRetry(sessionDir, { recursive: true, force: true })
-          console.log(`[Agent 会话] 已清理 session 工作目录: ${sessionDir}`)
-        }
-      } catch (error) {
-        console.warn(`[Agent 会话] 清理 session 工作目录失败 (${id}):`, error)
-      }
+  // 清理 Proma 私有附件；用户项目目录永远不由会话删除逻辑处理。
+  try {
+    const attachmentsDir = resolveAgentSessionAttachmentsDir(id)
+    if (existsSync(attachmentsDir)) {
+      rmSyncWithRetry(attachmentsDir, { recursive: true, force: true })
+      console.log(`[Agent 会话] 已清理 session 附件目录: ${attachmentsDir}`)
     }
+  } catch (error) {
+    console.warn(`[Agent 会话] 清理 session 附件目录失败 (${id}):`, error)
   }
 
   console.log(`[Agent 会话] 已删除会话: ${removed.title} (${removed.id})`)
@@ -548,42 +501,13 @@ function collectSessionTreeIds(sessions: AgentSessionMeta[], sessionId: string):
   return ids
 }
 
-function moveSessionWorkspaceDir(session: AgentSessionMeta, targetWorkspaceSlug: string): void {
-  if (!session.workspaceId) return
-
-  const sourceWs = getAgentWorkspace(session.workspaceId)
-  if (!sourceWs || sourceWs.slug === targetWorkspaceSlug) return
-
-  const srcDir = join(getAgentWorkspacePath(sourceWs.slug), session.id)
-  if (!existsSync(srcDir)) return
-
-  const destDir = join(getAgentWorkspacePath(targetWorkspaceSlug), session.id)
-  // 清理已存在的目标目录，防止 renameSync 抛出 ENOTEMPTY/EEXIST。
-  if (existsSync(destDir)) {
-    try {
-      const contents = readdirSync(destDir)
-      rmSyncWithRetry(destDir, { recursive: true, force: true })
-      const reason = contents.length === 0 ? '空目标目录' : '非空目标目录（以源目录为准）'
-      console.log(`[Agent 会话] 已清理${reason}: ${destDir}`)
-    } catch (cleanupError) {
-      console.warn('[Agent 会话] 清理目标目录失败，跳过目录迁移:', cleanupError)
-      throw cleanupError
-    }
-  }
-
-  // renameWithRetry：优先 renameSync（原子），跨设备或句柄占用时自动降级 cpSync + rmSyncWithRetry。
-  renameWithRetry(srcDir, destDir)
-  console.log(`[Agent 会话] 已移动工作目录: ${srcDir} → ${destDir}`)
-}
-
 /**
  * 迁移 Agent 会话到另一个工作区
  *
  * 操作步骤：
  * 1. 验证会话和目标工作区存在
  * 2. 收集目标会话及其委派子会话
- * 3. 移动会话工作目录到目标工作区
- * 4. 更新元数据（workspaceId + 清空 Runtime Session 映射）
+ * 3. 更新元数据（workspaceId + 清空 Runtime Session 映射）
  * 5. JSONL 消息文件保持原位（全局目录）
  */
 export function moveSessionToWorkspace(sessionId: string, targetWorkspaceId: string): AgentSessionMeta {
@@ -611,10 +535,6 @@ export function moveSessionToWorkspace(sessionId: string, targetWorkspaceId: str
   for (let i = 0; i < index.sessions.length; i++) {
     const current = index.sessions[i]!
     if (!sessionTreeIds.has(current.id) || current.workspaceId === targetWorkspaceId) continue
-
-    moveSessionWorkspaceDir(current, targetWs.slug)
-    // 确保目标工作区下有 session 目录。
-    getAgentSessionWorkspacePath(targetWs.slug, current.id)
 
     const updated: AgentSessionMeta = {
       ...current,
@@ -693,12 +613,7 @@ export async function createForkedAgentSessionProjection(
         purpose: '分叉 Agent 会话',
       })
     : sourceMeta.modelId
-  const sourceWorkspace = sourceMeta.workspaceId
-    ? getAgentWorkspace(sourceMeta.workspaceId)
-    : undefined
-  const sourceDir = sourceWorkspace
-    ? getAgentSessionWorkspacePath(sourceWorkspace.slug, sourceMeta.id)
-    : undefined
+  const sourceDir = resolveAgentSessionAttachmentsDir(sourceMeta.id)
   const newMeta = createAgentSession(
     `${sourceMeta.title} (fork)`,
     sourceMeta.channelId,
@@ -711,10 +626,8 @@ export async function createForkedAgentSessionProjection(
       runtimeSessionId,
       permissionMode: sourceMeta.permissionMode,
     })
-    const destDir = sourceWorkspace
-      ? getAgentSessionWorkspacePath(sourceWorkspace.slug, newMeta.id)
-      : undefined
-    if (sourceDir && destDir) {
+    const destDir = getAgentSessionAttachmentsDir(newMeta.id)
+    if (existsSync(sourceDir)) {
       copyForkWorkspaceFiles(sourceDir, destDir)
     }
     await copyForkStoredSDKMessages({

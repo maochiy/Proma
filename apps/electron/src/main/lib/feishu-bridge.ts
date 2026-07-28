@@ -1082,12 +1082,11 @@ class FeishuBridge {
     let workspaceId = overrideWorkspaceId ?? this.botConfig.defaultWorkspaceId ?? appSettings.agentWorkspaceId
     if (!workspaceId) {
       const byTime = listAgentWorkspacesByUpdatedAt()
-      const def = byTime.find((w) => w.slug === 'default')
-      workspaceId = def?.id ?? byTime[0]?.id
+      workspaceId = byTime[0]?.id
     }
 
     if (!workspaceId) {
-      await this.sendMessage(chatId, '请先在 Proma 设置中创建工作区。')
+      await this.sendMessage(chatId, '请先在 Proma 桌面端添加一个本机已有项目目录。')
       return
     }
 

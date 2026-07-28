@@ -63,7 +63,7 @@ export function BotDefaultSettings(): React.ReactElement {
             />
           ) : (
             <div className="py-3 text-sm text-muted-foreground">
-              暂无工作区。请先在「配置」中创建工作区。
+              暂无项目。请先在侧边栏添加一个本机已有项目目录。
             </div>
           )}
         </SettingsCard>

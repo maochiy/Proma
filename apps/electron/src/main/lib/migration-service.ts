@@ -25,7 +25,8 @@ import {
   getAgentSessionsDir,
   getAgentSessionMessagesPath,
   getAgentWorkspacePath,
-  getAgentSessionWorkspacePath,
+  getAgentSessionAttachmentsDir,
+  resolveAgentSessionAttachmentsDir,
   getWorkspaceMcpPath,
   getWorkspaceSkillsDir,
   getInactiveSkillsDir,
@@ -383,7 +384,7 @@ function _addSessions(zip: AdmZip, workspace: AgentWorkspace, filterIds: string[
         zip.addLocalFile(msgPath, 'sessions/agent')
         exportedIds.add(session.id)
       }
-      const workDir = join(getAgentWorkspacePath(workspace.slug), session.id)
+      const workDir = resolveAgentSessionAttachmentsDir(session.id)
       if (existsSync(workDir)) {
         _addDirToZip(zip, workDir, `sessions/workspace-data/${session.id}`, warnings)
       }
@@ -429,7 +430,7 @@ function _addSessionsMultiWorkspace(zip: AdmZip, workspaces: AgentWorkspace[], f
       }
       const ws = workspaces.find((w) => w.id === session.workspaceId)
       if (ws) {
-        const workDir = join(getAgentWorkspacePath(ws.slug), session.id)
+        const workDir = resolveAgentSessionAttachmentsDir(session.id)
         if (existsSync(workDir)) {
           _addDirToZip(zip, workDir, `sessions/workspace-data/${session.id}`, warnings)
         }
@@ -792,12 +793,11 @@ export async function confirmImport(options: ConfirmImportOptions | ConfirmImpor
     }
 
     // v1.0 原有逻辑
-    const { targetWorkspaceId, createNewWorkspace, newWorkspaceName, conflictResolution } = options as ConfirmImportOptions
+    const { targetWorkspaceId, createNewWorkspace, conflictResolution } = options as ConfirmImportOptions
     const overwrite = conflictResolution === 'overwrite'
     let targetWorkspace: AgentWorkspace | undefined
     if (createNewWorkspace) {
-      const { createAgentWorkspace } = await import('./agent-workspace-manager')
-      targetWorkspace = createAgentWorkspace(newWorkspaceName ?? (manifest as MigrationManifest).workspaceName)
+      throw new Error('新版项目必须先在 Proma 中添加本机已有目录，再选择该项目作为导入目标')
     } else if (targetWorkspaceId) {
       targetWorkspace = getAgentWorkspace(targetWorkspaceId)
     } else {
@@ -842,8 +842,6 @@ async function _confirmImportV2(options: ConfirmImportOptionsV2): Promise<{ succ
   const v2Manifest = manifest as MigrationManifestV2
   const overwrite = conflictResolution === 'overwrite'
 
-  const { createAgentWorkspace } = await import('./agent-workspace-manager')
-
   const localWorkspaces = listAgentWorkspaces()
   const localBySlug = new Map(localWorkspaces.map((w) => [w.slug, w]))
 
@@ -859,10 +857,9 @@ async function _confirmImportV2(options: ConfirmImportOptionsV2): Promise<{ succ
         if (!target) continue
         resolvedMappings.push({ sourceSlug: mapping.sourceSlug, target })
       } else if (mapping.action === 'create') {
-        const wsEntry = v2Manifest.workspaces.find((w) => w.workspaceSlug === mapping.sourceSlug)
-        const name = mapping.newWorkspaceName ?? wsEntry?.workspaceName ?? mapping.sourceSlug
-        const target = createAgentWorkspace(name)
-        resolvedMappings.push({ sourceSlug: mapping.sourceSlug, target })
+        throw new Error(
+          `无法自动创建项目「${mapping.newWorkspaceName ?? mapping.sourceSlug}」：请先添加本机已有目录，再选择合并目标`,
+        )
       }
     }
   } else {
@@ -871,8 +868,9 @@ async function _confirmImportV2(options: ConfirmImportOptionsV2): Promise<{ succ
       if (local) {
         resolvedMappings.push({ sourceSlug: wsEntry.workspaceSlug, target: local })
       } else {
-        const target = createAgentWorkspace(wsEntry.workspaceName)
-        resolvedMappings.push({ sourceSlug: wsEntry.workspaceSlug, target })
+        throw new Error(
+          `未找到项目「${wsEntry.workspaceName}」：请先添加对应的本机已有目录，并在导入时选择合并目标`,
+        )
       }
     }
   }
@@ -944,7 +942,7 @@ async function _importSessions(tempDir: string, targetWorkspace: AgentWorkspace)
   if (existsSync(workspaceDataDir)) {
     for (const sessionId of readdirSync(workspaceDataDir)) {
       const src = join(workspaceDataDir, sessionId)
-      const dest = getAgentSessionWorkspacePath(targetWorkspace.slug, sessionId)
+      const dest = getAgentSessionAttachmentsDir(sessionId)
       if (!existsSync(dest)) {
         cpSync(src, dest, { recursive: true })
       }
@@ -1262,7 +1260,7 @@ async function _importSessionsV2(
   if (existsSync(workspaceDataDir)) {
     for (const sessionId of readdirSync(workspaceDataDir)) {
       const src = join(workspaceDataDir, sessionId)
-      const dest = getAgentSessionWorkspacePath(fallbackWorkspace.slug, sessionId)
+      const dest = getAgentSessionAttachmentsDir(sessionId)
       if (!existsSync(dest)) {
         cpSync(src, dest, { recursive: true })
       }

@@ -48,6 +48,8 @@ export interface AgentQueryInput {
   model?: string
   /** Agent 工作目录 */
   cwd?: string
+  /** 由宿主额外注册到 Runtime 的 Skill 目录（目录内直接包含 skill-name/SKILL.md） */
+  additionalSkillDirectories?: string[]
   /** 中止信号 */
   abortSignal?: AbortSignal
 }
@@ -66,6 +68,7 @@ export interface AgentRuntimeSessionOperationInput {
   effortLevel?: ThinkingEffortLevel
   mcpServers?: Record<string, unknown>
   systemPrompt?: string
+  additionalSkillDirectories?: string[]
 }
 
 export interface AgentRuntimeForkResult {
@@ -89,6 +92,8 @@ export interface AgentProviderAdapter {
   query(input: AgentQueryInput): AsyncIterable<SDKMessage>
   /** 中止指定会话的执行 */
   abort(sessionId: string): void
+  /** 关闭并释放指定会话的长期 Runtime Worker。 */
+  closeSession?(sessionId: string): Promise<void>
   /**
    * 软中断当前 turn，但保留活跃 Query/Channel 以便继续注入下一条用户消息。
    * 与 abort() 的区别：不杀子进程，允许立即续跑新消息。

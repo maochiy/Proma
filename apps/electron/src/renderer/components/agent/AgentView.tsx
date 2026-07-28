@@ -1795,12 +1795,16 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     workspaces,
   ])
 
-  const handleProjectCreate = React.useCallback(async (name: string): Promise<boolean> => {
+  const handleProjectAdd = React.useCallback(async (): Promise<boolean> => {
     if (projectChanging) return false
 
     try {
-      const workspace = await window.electronAPI.createAgentWorkspace(name)
-      setAgentWorkspaces((prev) => [workspace, ...prev])
+      const workspace = await window.electronAPI.createAgentWorkspace()
+      if (!workspace) return false
+      setAgentWorkspaces((prev) => [
+        workspace,
+        ...prev.filter((item) => item.id !== workspace.id),
+      ])
 
       if (!canSwitchProject) {
         const createdSessionId = await createAgent({
@@ -1813,7 +1817,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         }
         setGlobalWorkspaceId(workspace.id)
         window.electronAPI.updateSettings({ agentWorkspaceId: workspace.id }).catch(console.error)
-        toast.success('项目已创建并新建任务', {
+        toast.success('项目已添加并新建任务', {
           description: workspace.name,
         })
         return true
@@ -1835,13 +1839,13 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         map.delete(sessionId)
         return map
       })
-      toast.success('项目已创建', {
+      toast.success('项目已添加', {
         description: workspace.name,
       })
       return true
     } catch (error) {
-      console.error('[AgentView] 创建项目失败:', error)
-      toast.error('创建项目失败', {
+      console.error('[AgentView] 添加项目失败:', error)
+      toast.error('添加项目失败', {
         description: error instanceof Error ? error.message : '未知错误',
       })
       return false
@@ -2767,7 +2771,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
             workspaceId={currentWorkspaceId}
             changing={projectChanging}
             onSelect={handleProjectSelect}
-            onCreate={handleProjectCreate}
+            onAdd={handleProjectAdd}
           />
           <div
             className={cn(

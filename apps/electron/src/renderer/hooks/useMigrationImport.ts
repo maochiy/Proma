@@ -44,9 +44,8 @@ export interface WorkspaceImportPreviewItem {
 
 export interface WorkspaceImportMapping {
   sourceSlug: string
-  action: 'merge' | 'create' | 'skip'
+  action: 'merge' | 'skip'
   targetWorkspaceId?: string
-  newWorkspaceName?: string
 }
 
 interface UseMigrationImportReturn {
@@ -94,9 +93,8 @@ export function useMigrationImport(initialFilePath?: string | null): UseMigratio
     if (preview.manifest.version === '2.0' && preview.workspaces) {
       const mappings: WorkspaceImportMapping[] = preview.workspaces.map((ws) => ({
         sourceSlug: ws.workspaceSlug,
-        action: ws.existsLocally ? 'merge' : 'create',
+        action: ws.existsLocally ? 'merge' : 'skip',
         targetWorkspaceId: ws.localWorkspaceId,
-        newWorkspaceName: ws.workspaceName,
       }))
       setWorkspaceMappings(mappings)
     } else {

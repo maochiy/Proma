@@ -16,8 +16,8 @@
 
 import { randomUUID } from 'node:crypto'
 import { homedir } from 'node:os'
-import { join, dirname } from 'node:path'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { dirname } from 'node:path'
+import { existsSync } from 'node:fs'
 import type { AgentSendInput, AgentMessage, AgentGenerateTitleInput, AgentProviderAdapter, AgentSessionMeta, AgentRuntimeProviderConfiguration, AgentRuntimeSessionOperationInput, ForkSessionInput, TypedError, RetryAttempt, SDKMessage, SDKAssistantMessage, AgentStreamPayload, RewindSessionResult, ProviderType, CodexOAuthCredentials } from '@proma/shared'
 import {
   PROMA_DEFAULT_PERMISSION_MODE,
@@ -39,8 +39,8 @@ import pkg from '../../../package.json' with { type: 'json' }
 import { getFetchFn } from './proxy-fetch'
 import { getEffectiveProxyUrl } from './proxy-settings-service'
 import { appendSDKMessages, updateAgentSessionMeta, getAgentSessionMeta, getAgentSessionMessages, truncateSDKMessages, removeSDKErrorMessage, createForkedAgentSessionProjection } from './agent-session-manager'
-import { getAgentWorkspace, getWorkspaceMcpConfig, ensurePluginManifest, getWorkspaceAutoMemoryDir, getWorkspaceAttachedDirectories, getWorkspaceAttachedFiles } from './agent-workspace-manager'
-import { getAgentWorkspacePath, getAgentSessionWorkspacePath, getWorkspaceFilesDir, getWorkspaceSkillsDir } from './config-paths'
+import { getAgentWorkspace, getWorkspaceMcpConfig, ensurePluginManifest, getWorkspaceAttachedDirectories, getWorkspaceAttachedFiles } from './agent-workspace-manager'
+import { getWorkspaceFilesDir, getWorkspaceSkillsDir } from './config-paths'
 import { getRuntimeStatus } from './runtime-init'
 import { getSettings } from './settings-service'
 import { buildSystemPrompt, buildDynamicContext } from './agent-prompt-builder'
@@ -49,8 +49,6 @@ import { permissionService } from './agent-permission-service'
 import type { PermissionResult, CanUseToolOptions } from './agent-permission-service'
 import { askUserService } from './agent-ask-user-service'
 import { exitPlanService, type ExitPlanPermissionResult } from './agent-exit-plan-service'
-import { removePromaAutoCompactSettings } from './agent-auto-compact-settings'
-import { applyClaudeSdkAttributionSettings, isGitAttributionEnabled } from './agent-git-attribution'
 import { validateToolInput } from './agent-tool-input-validator'
 import { estimateTokenCount, WRITE_CONTENT_TOKEN_THRESHOLD } from './agent-tool-token-estimator'
 import { injectBuiltinMcpServers } from './builtin-mcp/registry'
@@ -998,10 +996,13 @@ export class AgentOrchestrator {
       if (workspaceId) {
         const ws = getAgentWorkspace(workspaceId)
         if (ws) {
-          agentCwd = getAgentSessionWorkspacePath(ws.slug, sessionId)
+          agentCwd = ws.canonicalPath || ws.path
+          if (!existsSync(agentCwd)) {
+            throw new Error(`项目目录不可用，请重新添加项目：${agentCwd}`)
+          }
           workspaceSlug = ws.slug
           workspace = ws
-          console.log(`[Agent 编排] 使用 session 级别 cwd: ${agentCwd} (${ws.name}/${sessionId})`)
+          console.log(`[Agent 编排] 使用本机项目 cwd: ${agentCwd} (${ws.name})`)
 
           ensurePluginManifest(ws.slug, ws.name)
 
@@ -1013,50 +1014,8 @@ export class AgentOrchestrator {
         }
       }
 
-      // 9.4.1 Fork session JSONL 迁移已在 forkAgentSession 中完成，
-      // fork 后的会话直接使用自己的 cwd，无需回退到源目录。
-      // forkSourceDir 仅作为备用参考字段保留，不再影响 agentCwd。
-
-      // 9.5 确保 SDK 项目设置（plansDirectory → .context）
-      {
-        const claudeSettingsDir = join(agentCwd, '.claude')
-        if (!existsSync(claudeSettingsDir)) mkdirSync(claudeSettingsDir, { recursive: true })
-        const settingsPath = join(claudeSettingsDir, 'settings.json')
-        let sdkProjectSettings: Record<string, unknown> = {}
-        try {
-          sdkProjectSettings = JSON.parse(readFileSync(settingsPath, 'utf-8'))
-        } catch { /* 文件不存在或解析失败 */ }
-        let needsWrite = false
-        if (sdkProjectSettings.plansDirectory !== '.context') {
-          sdkProjectSettings.plansDirectory = '.context'
-          needsWrite = true
-        }
-        if (sdkProjectSettings.skipWebFetchPreflight !== true) {
-          sdkProjectSettings.skipWebFetchPreflight = true
-          needsWrite = true
-        }
-        if (workspaceSlug) {
-          const autoMemoryDirectory = getWorkspaceAutoMemoryDir(workspaceSlug)
-          if (sdkProjectSettings.autoMemoryDirectory !== autoMemoryDirectory) {
-            sdkProjectSettings.autoMemoryDirectory = autoMemoryDirectory
-            needsWrite = true
-          }
-        }
-        if (removePromaAutoCompactSettings(sdkProjectSettings)) {
-          needsWrite = true
-        }
-        // Proma Git/PR 推广标识：覆盖 CCB 默认 Co-Authored-By / Generated with
-        if (applyClaudeSdkAttributionSettings(
-          sdkProjectSettings,
-          isGitAttributionEnabled(getSettings().gitAttributionEnabled),
-        )) {
-          needsWrite = true
-        }
-        if (needsWrite) {
-          writeFileSync(settingsPath, JSON.stringify(sdkProjectSettings, null, 2))
-          console.log(`[Agent 编排] 已设置 SDK settings (plansDirectory, skipWebFetchPreflight, autoMemoryDirectory, autoCompact, attribution)`)
-        }
-      }
+      // 用户选择的项目目录只作为 CCB cwd。Proma 不再自动写入项目内的
+      // .claude/settings.json；项目设置和项目 Skills 均由 CCB 原生发现。
 
       // 9.6 直接信任已保存的 runtimeSessionId，跳过 listSessions 预验证
       // 原因：listSessions({ dir }) 基于 cwd 路径哈希查找，但 session 级别的 cwd
@@ -1109,10 +1068,7 @@ export class AgentOrchestrator {
       if (mentionedSkills?.length || mentionedMcpServers?.length) {
         const toolLines: string[] = ['用户在消息中明确引用了以下工具，请在本次回复中主动调用：']
         for (const slug of mentionedSkills ?? []) {
-          const qualifiedName = workspaceSlug
-            ? `proma-workspace-${workspaceSlug}:${slug}`
-            : slug
-          toolLines.push(`- Skill: ${qualifiedName}（请立即调用此 Skill）`)
+          toolLines.push(`- Skill: ${slug}（请立即调用此 Skill）`)
         }
         for (const name of mentionedMcpServers ?? []) {
           toolLines.push(`- MCP 服务器: ${name}（请使用此 MCP 服务器的工具来完成任务）`)
@@ -1370,6 +1326,7 @@ export class AgentOrchestrator {
       const systemPromptAppend = buildSystemPrompt({
         workspaceName: workspace?.name,
         workspaceSlug,
+        workspacePath: workspace ? (workspace.canonicalPath || workspace.path) : undefined,
         sessionId,
         permissionMode: initialPermissionMode,
         collaborationAvailable,
@@ -1420,6 +1377,9 @@ export class AgentOrchestrator {
           ? runtimeThinking.effortLevel
           : appSettings.agentThinkingEffortLevel,
         cwd: agentCwd,
+        additionalSkillDirectories: workspaceSlug
+          ? [getWorkspaceSkillsDir(workspaceSlug)]
+          : [],
         env: sdkEnv,
         ...(maxTurns != null && { maxTurns }),
         sdkPermissionMode: sdkPermissionModeForPromaMode(initialPermissionMode),
@@ -2193,6 +2153,14 @@ export class AgentOrchestrator {
     console.log(`[Agent 编排] 已中止会话: ${sessionId}`)
   }
 
+  /** 删除会话前停止当前 Turn，并释放 CCB 长期 Worker。 */
+  async closeSession(sessionId: string): Promise<void> {
+    if (this.activeSessions.has(sessionId)) {
+      this.stop(sessionId)
+    }
+    await this.adapter.closeSession?.(sessionId)
+  }
+
   /** 检查指定会话是否正在处理中 */
   isActive(sessionId: string): boolean {
     return this.activeSessions.has(sessionId)
@@ -2258,7 +2226,7 @@ export class AgentOrchestrator {
       ? getAgentWorkspace(sessionMeta.workspaceId)
       : undefined
     const cwd = workspace
-      ? getAgentSessionWorkspacePath(workspace.slug, sessionMeta.id)
+      ? (workspace.canonicalPath || workspace.path)
       : homedir()
     const mcpServers = this.buildMcpServers(workspace?.slug)
     if (isBuiltinMcpUserEnabled('chrome-devtools')) {
@@ -2275,6 +2243,9 @@ export class AgentOrchestrator {
       env: runtimeEnv.env,
       permissionMode: sessionMeta.permissionMode ?? PROMA_DEFAULT_PERMISSION_MODE,
       mcpServers,
+      additionalSkillDirectories: workspace
+        ? [getWorkspaceSkillsDir(workspace.slug)]
+        : [],
     }
   }
 
@@ -2382,10 +2353,7 @@ export class AgentOrchestrator {
     if (mentionedSkills?.length || mentionedMcpServers?.length) {
       const toolLines: string[] = ['用户在消息中明确引用了以下工具，请在本次回复中主动调用：']
       for (const slug of mentionedSkills ?? []) {
-        const qualifiedName = workspaceSlug
-          ? `proma-workspace-${workspaceSlug}:${slug}`
-          : slug
-        toolLines.push(`- Skill: ${qualifiedName}（请立即调用此 Skill）`)
+        toolLines.push(`- Skill: ${slug}（请立即调用此 Skill）`)
       }
       for (const name of mentionedMcpServers ?? []) {
         toolLines.push(`- MCP 服务器: ${name}（请使用此 MCP 服务器的工具来完成任务）`)

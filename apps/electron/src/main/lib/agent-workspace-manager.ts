@@ -1,9 +1,10 @@
 /**
  * Agent 工作区管理器
  *
- * 负责 Agent 工作区的 CRUD 操作。
- * - 工作区索引：~/.proma/agent-workspaces.json（轻量元数据）
- * - 工作区目录：~/.proma/agent-workspaces/{slug}/（Agent 的 cwd）
+ * 负责 Agent 项目的 CRUD 操作。
+ * - 项目索引：~/.proma/agent-workspaces.json（保留历史文件名）
+ * - 项目 cwd：用户从本机选择的已有目录
+ * - Proma 私有配置：~/.proma/agent-workspaces/{slug}/
  */
 
 import { readFileSync, writeFileSync, existsSync, readdirSync, cpSync, mkdirSync, statSync, openSync, readSync, closeSync, realpathSync } from 'node:fs'
@@ -33,7 +34,7 @@ interface AgentWorkspacesIndex {
   workspaces: AgentWorkspace[]
 }
 
-const INDEX_VERSION = 2
+const INDEX_VERSION = 3
 const WINDOWS_RESERVED_SLUGS = new Set([
   'con',
   'prn',
@@ -83,9 +84,35 @@ function migrateIndex(index: AgentWorkspacesIndex): void {
     activateSkillCreatorInAllWorkspaces(index)
   }
 
+  // v2 → v3: 内部创建的工作区不再冒充本机项目。保留原目录，只备份并移出索引。
+  if (oldVersion < 3) {
+    const legacyWorkspaces = index.workspaces.filter((workspace) => {
+      const candidate = workspace as AgentWorkspace & { path?: string }
+      return !candidate.path
+    })
+    if (legacyWorkspaces.length > 0) {
+      const legacyPath = join(
+        dirname(getAgentWorkspacesIndexPath()),
+        `legacy-agent-workspaces-index-${Date.now()}.json`,
+      )
+      writeJsonFileAtomic(legacyPath, {
+        version: oldVersion,
+        migratedAt: new Date().toISOString(),
+        workspaces: legacyWorkspaces,
+      })
+      index.workspaces = index.workspaces.filter((workspace) => {
+        const candidate = workspace as AgentWorkspace & { path?: string }
+        return Boolean(candidate.path)
+      })
+      console.log(
+        `[Agent 项目] 已备份并移出 ${legacyWorkspaces.length} 个旧内部工作区: ${legacyPath}`,
+      )
+    }
+  }
+
   index.version = INDEX_VERSION
   writeIndex(index)
-  console.log(`[Agent 工作区] 索引已迁移: v${oldVersion} → v${INDEX_VERSION}`)
+  console.log(`[Agent 项目] 索引已迁移: v${oldVersion} → v${INDEX_VERSION}`)
 }
 
 /** v1→v2 迁移：将 skills-inactive/skill-creator 移到 skills/ */
@@ -212,14 +239,24 @@ function copyDefaultSkills(workspaceSlug: string, options: { throwOnError?: bool
   }
 }
 
-export function createAgentWorkspace(name: string): AgentWorkspace {
+export function createAgentWorkspace(projectPath: string): AgentWorkspace {
   const index = readIndex()
-
-  const duplicate = index.workspaces.find((w) => w.name === name)
+  const resolvedPath = resolve(projectPath)
+  if (!existsSync(resolvedPath)) {
+    throw new Error(`项目目录不存在: ${resolvedPath}`)
+  }
+  if (!statSync(resolvedPath).isDirectory()) {
+    throw new Error(`选择的路径不是目录: ${resolvedPath}`)
+  }
+  const canonicalPath = realpathSync.native(resolvedPath)
+  const duplicate = index.workspaces.find(
+    (workspace) => workspace.canonicalPath === canonicalPath,
+  )
   if (duplicate) {
-    throw new Error(`工作区名称「${name}」已存在`)
+    return duplicate
   }
 
+  const name = basename(canonicalPath) || canonicalPath
   const existingSlugs = new Set(index.workspaces.map((w) => w.slug))
   const slug = slugify(name, existingSlugs)
   const now = Date.now()
@@ -228,8 +265,11 @@ export function createAgentWorkspace(name: string): AgentWorkspace {
     id: randomUUID(),
     name,
     slug,
+    path: resolvedPath,
+    canonicalPath,
     createdAt: now,
     updatedAt: now,
+    lastOpenedAt: now,
   }
 
   try {
@@ -247,14 +287,14 @@ export function createAgentWorkspace(name: string): AgentWorkspace {
         console.warn(`[Agent 工作区] 创建失败后清理目录失败 (${slug}):`, cleanupError)
       }
     }
-    console.error(`[Agent 工作区] 创建工作区失败 (${name}, slug: ${slug}):`, error)
-    throw new Error(`创建项目失败: ${(error as Error)?.message ?? '初始化项目目录失败'}`)
+    console.error(`[Agent 项目] 添加项目失败 (${canonicalPath}, slug: ${slug}):`, error)
+    throw new Error(`添加项目失败: ${(error as Error)?.message ?? '初始化项目配置失败'}`)
   }
 
   index.workspaces.unshift(workspace)
   writeIndex(index)
 
-  console.log(`[Agent 工作区] 已创建工作区: ${name} (slug: ${slug})`)
+  console.log(`[Agent 项目] 已添加已有项目: ${name} (${canonicalPath})`)
   return workspace
 }
 
@@ -290,7 +330,7 @@ export function updateAgentWorkspace(
   return updated
 }
 
-/** 删除工作区索引条目及其本地目录 */
+/** 从 Proma 中移除项目；只删除 Proma 私有配置，绝不删除用户项目目录。 */
 export function deleteAgentWorkspace(id: string): void {
   const index = readIndex()
   const idx = index.workspaces.findIndex((w) => w.id === id)
@@ -300,13 +340,6 @@ export function deleteAgentWorkspace(id: string): void {
   }
 
   const target = index.workspaces[idx]!
-  if (target.slug === 'default') {
-    throw new Error('默认项目不能删除')
-  }
-  if (index.workspaces.length <= 1) {
-    throw new Error('至少需要保留一个项目')
-  }
-
   const workspacesRoot = resolve(getAgentWorkspacesDir())
   const workspaceDir = resolve(join(workspacesRoot, target.slug))
   const relativePath = relative(workspacesRoot, workspaceDir)
@@ -314,53 +347,21 @@ export function deleteAgentWorkspace(id: string): void {
     throw new Error(`工作区目录路径异常，已跳过删除: ${workspaceDir}`)
   }
 
-  // 先移除索引条目并落盘，再删目录：
-  // 即使随后 rmSync 失败，也只会残留一个无引用目录（无害，可被同 slug 重建覆盖），
-  // 而不会留下指向已删目录的孤儿索引条目导致 UI 状态不一致
+  // 先移除索引条目并落盘，再删 Proma 私有配置目录。
+  // target.path / target.canonicalPath 指向的用户项目目录永远不会进入删除逻辑。
   const removed = index.workspaces.splice(idx, 1)[0]!
   writeIndex(index)
 
   if (existsSync(workspaceDir)) {
     try {
       rmSyncWithRetry(workspaceDir, { recursive: true, force: true })
-      console.log(`[Agent 工作区] 已删除工作区目录: ${workspaceDir}`)
+      console.log(`[Agent 项目] 已删除 Proma 项目配置目录: ${workspaceDir}`)
     } catch (error) {
       console.warn(`[Agent 工作区] 删除工作区目录失败，已残留无引用目录 (${target.slug}):`, error)
     }
   }
 
-  console.log(`[Agent 工作区] 已删除工作区: ${removed.name} (slug: ${removed.slug})`)
-}
-
-/** 确保默认工作区存在，首次启动时自动创建（slug: default） */
-export function ensureDefaultWorkspace(): AgentWorkspace {
-  const index = readIndex()
-  let defaultWs = index.workspaces.find((w) => w.slug === 'default')
-
-  if (!defaultWs) {
-    const now = Date.now()
-    defaultWs = {
-      id: randomUUID(),
-      name: '默认工作区',
-      slug: 'default',
-      createdAt: now,
-      updatedAt: now,
-    }
-
-    getAgentWorkspacePath('default')
-    ensurePluginManifest('default', '默认工作区')
-    copyDefaultSkills('default')
-
-    index.workspaces.push(defaultWs)
-    writeIndex(index)
-
-    console.log('[Agent 工作区] 已创建默认工作区')
-  } else {
-    // 迁移兼容：确保已有默认工作区包含 plugin manifest
-    ensurePluginManifest(defaultWs.slug, defaultWs.name)
-  }
-
-  return defaultWs
+  console.log(`[Agent 项目] 已移除项目: ${removed.name} (${removed.canonicalPath})`)
 }
 
 // ===== 默认 Skills 自动升级 =====
@@ -665,7 +666,22 @@ export function getWorkspaceCapabilities(workspaceSlug: string): WorkspaceCapabi
   return { mcpServers, builtinMcpServers, skills, memory }
 }
 
+function assertSafePathSegment(value: string, label: string): void {
+  if (
+    !value
+    || value === '.'
+    || value === '..'
+    || value.includes('/')
+    || value.includes('\\')
+    || value.includes('\0')
+  ) {
+    throw new Error(`${label} 非法`)
+  }
+}
+
 export function deleteWorkspaceSkill(workspaceSlug: string, skillSlug: string): void {
+  assertSafePathSegment(workspaceSlug, '项目标识')
+  assertSafePathSegment(skillSlug, 'Skill 标识')
   const skillsDir = getWorkspaceSkillsDir(workspaceSlug)
   const skillPath = join(skillsDir, skillSlug)
 
@@ -751,6 +767,8 @@ export function getAllWorkspaceSkills(workspaceSlug: string): SkillMeta[] {
 
 /** 在 skills/ 和 skills-inactive/ 之间移动来切换启用/禁用 */
 export function toggleWorkspaceSkill(workspaceSlug: string, skillSlug: string, enabled: boolean): void {
+  assertSafePathSegment(workspaceSlug, '项目标识')
+  assertSafePathSegment(skillSlug, 'Skill 标识')
   const activeDir = getWorkspaceSkillsDir(workspaceSlug)
   const inactiveDir = getInactiveSkillsDir(workspaceSlug)
 

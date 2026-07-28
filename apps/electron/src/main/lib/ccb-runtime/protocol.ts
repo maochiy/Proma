@@ -1,14 +1,15 @@
 import type {
   AgentRuntimeModelCatalog,
   AgentRuntimeProviderConfiguration,
+  RuntimeSkillCatalog,
   SDKMessage,
   ThinkingConfig,
   ThinkingEffortLevel,
 } from '@proma/shared'
 
-export const CCB_PROTOCOL_VERSION = 2
-export const EXPECTED_CCB_RUNTIME_VERSION = '2.8.9'
-export const EXPECTED_CCB_RUNTIME_COMMIT = '9c2a5caf5bd19f8af9f480679f16b165fe04d745'
+export const CCB_PROTOCOL_VERSION = 3
+export const EXPECTED_CCB_RUNTIME_VERSION = '2.8.11'
+export const EXPECTED_CCB_RUNTIME_COMMIT = '31bce5cc1ec514436105c60f93ab309649b7179b'
 
 export type CcbPermissionMode =
   | 'default'
@@ -29,6 +30,7 @@ export interface CcbRuntimeEnvelope<T> {
 
 export interface CcbSessionOptions {
   cwd: string
+  additionalSkillDirectories?: string[]
   runtimeSessionId?: string
   resume?: boolean
   model?: string
@@ -74,6 +76,7 @@ export type CcbRuntimeCommand =
       }
       providerConfiguration: AgentRuntimeProviderConfiguration
     }
+  | { type: 'session.resolveSkillCatalog'; options: CcbSessionOptions }
   | { type: 'session.setPermissionMode'; mode: CcbPermissionMode }
   | {
       type: 'session.updateConfig'
@@ -174,3 +177,7 @@ export interface CcbRuntimeManifest {
 }
 
 export type CcbRuntimeModelCatalog = Omit<AgentRuntimeModelCatalog, 'channelId'>
+export type CcbRuntimeSkillCatalog = Omit<
+  RuntimeSkillCatalog,
+  'runtimeVersion' | 'runtimeArtifactCommit'
+>

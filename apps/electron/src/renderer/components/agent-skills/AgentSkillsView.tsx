@@ -12,7 +12,7 @@
 import * as React from 'react'
 import { useAtom, useSetAtom } from 'jotai'
 import { toast } from 'sonner'
-import { Blocks, ChevronDown, ChevronRight, Search, Plus, Store, FolderOpen, Check, Sparkles, Loader2 } from 'lucide-react'
+import { Blocks, ChevronDown, ChevronRight, Search, Plus, Store, FolderOpen, Check, Sparkles, Loader2, RefreshCw } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import {
@@ -121,9 +121,18 @@ export function AgentSkillsView(): React.ReactElement {
     })
   }, [data.skills, q])
 
-  const customSkills = filteredSkills.filter((s) => !data.defaultSkillSlugs.has(s.slug))
-  const builtinSkills = filteredSkills.filter((s) => data.defaultSkillSlugs.has(s.slug))
-  const updateCount = data.skills.filter((s) => s.hasUpdate).length
+  const ccbSkills = filteredSkills.filter((skill) => skill.runtimeReadOnly)
+  const customSkills = filteredSkills.filter(
+    (skill) => !skill.runtimeReadOnly && !data.defaultSkillSlugs.has(skill.slug),
+  )
+  const builtinSkills = filteredSkills.filter(
+    (skill) => !skill.runtimeReadOnly && data.defaultSkillSlugs.has(skill.slug),
+  )
+  const editableSkills = React.useMemo(
+    () => data.skills.filter((skill) => !skill.runtimeReadOnly),
+    [data.skills],
+  )
+  const updateCount = editableSkills.filter((skill) => skill.hasUpdate).length
 
   const userMcpEntries = React.useMemo(() => {
     return Object.entries(data.mcpConfig.servers ?? {})
@@ -152,8 +161,24 @@ export function AgentSkillsView(): React.ReactElement {
   const selectedIsBuiltin = selectedSkill ? data.defaultSkillSlugs.has(selectedSkill.slug) : false
 
   const openSkillFolder = (slug: string): void => {
-    if (data.skillsDir) window.electronAPI.openFile(`${data.skillsDir}/${slug}`)
+    const skill = data.skills.find((item) => item.slug === slug)
+    const path = skill?.runtimePath
+      ?? (data.skillsDir ? `${data.skillsDir}/${slug}` : undefined)
+    if (path) window.electronAPI.openFile(path)
   }
+
+  const handleOpenSkill = React.useCallback((slug: string): void => {
+    const skill = data.skills.find((item) => item.slug === slug)
+    if (skill?.runtimeReadOnly) {
+      if (skill.runtimePath) {
+        window.electronAPI.openFile(skill.runtimePath)
+      } else {
+        toast.info('该 CCB 内置 Skill 编译在 Runtime 中，没有本地目录')
+      }
+      return
+    }
+    setSelectedSkillSlug(slug)
+  }, [data.skills])
 
   const configureBuiltinMcp = React.useCallback((serverId: string): void => {
     const focusMap: Partial<Record<string, ToolSettingsFocus>> = {
@@ -186,7 +211,7 @@ export function AgentSkillsView(): React.ReactElement {
         message: buildSkillClassificationPrompt({
           workspaceName: data.workspaceName,
           skillsDir: data.skillsDir,
-          skills: data.skills,
+          skills: editableSkills,
         }),
       })
       toast.success('已创建 Skills 分类整理会话')
@@ -196,7 +221,7 @@ export function AgentSkillsView(): React.ReactElement {
     } finally {
       setClassifyingSkills(false)
     }
-  }, [classifyingSkills, createAgent, data.skills, data.skillsDir, data.workspaceName, setPendingPrompt])
+  }, [classifyingSkills, createAgent, data.skillsDir, data.workspaceName, editableSkills, setPendingPrompt])
 
   if (!data.hasWorkspace) {
     return (
@@ -206,7 +231,7 @@ export function AgentSkillsView(): React.ReactElement {
         </div>
         <div className="text-[15px] font-medium text-foreground/80">未选择工作区</div>
         <div className="max-w-sm text-[13px] text-foreground/50">
-          请先在 Agent 模式下选择或创建一个工作区，再来管理它的 Skills 与 MCP。
+          请先在 Agent 模式下添加并选择一个本机已有项目，再来管理它的 Skills 与 MCP。
         </div>
       </div>
     )
@@ -328,6 +353,20 @@ export function AgentSkillsView(): React.ReactElement {
               <TooltipTrigger asChild>
                 <button
                   type="button"
+                  onClick={() => void data.refreshRuntimeSkills()}
+                  disabled={data.refreshingRuntimeSkills}
+                  className="flex h-8 items-center gap-1.5 rounded-lg border border-border/60 bg-content-area px-3 text-[13px] font-medium text-foreground/80 shadow-sm transition-colors hover:bg-foreground/[0.04] disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <RefreshCw size={14} className={cn(data.refreshingRuntimeSkills && 'animate-spin')} />
+                  <span>刷新 CCB</span>
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">重新读取 CCB 内置、用户级、项目级和 Plugin Skills</TooltipContent>
+            </Tooltip>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
                   onClick={() => void handleClassifySkills()}
                   disabled={classifyingSkills || data.skills.length === 0}
                   className="flex h-8 items-center gap-1.5 rounded-lg border border-border/60 bg-content-area px-3 text-[13px] font-medium text-foreground/80 shadow-sm transition-colors hover:bg-foreground/[0.04] disabled:cursor-not-allowed disabled:opacity-50"
@@ -371,11 +410,12 @@ export function AgentSkillsView(): React.ReactElement {
             <SkillsTab
               customSkills={customSkills}
               builtinSkills={builtinSkills}
+              ccbSkills={ccbSkills}
               total={data.skills.length}
               updateCount={updateCount}
               updatingSkill={data.updatingSkill}
               isBuiltin={(slug) => data.defaultSkillSlugs.has(slug)}
-              onOpen={setSelectedSkillSlug}
+              onOpen={handleOpenSkill}
               onToggle={data.toggleSkill}
               onUpdate={data.updateSkill}
             />
@@ -468,7 +508,7 @@ export function AgentSkillsView(): React.ReactElement {
         open={showImport}
         onOpenChange={setShowImport}
         workspaceSlug={data.workspaceSlug}
-        installedSkills={data.skills}
+        installedSkills={data.skills.filter((skill) => !skill.runtimeReadOnly)}
         onImported={() => bumpCapabilities((v) => v + 1)}
       />
     </div>
@@ -480,6 +520,7 @@ export function AgentSkillsView(): React.ReactElement {
 interface SkillsTabProps {
   customSkills: SkillMeta[]
   builtinSkills: SkillMeta[]
+  ccbSkills: SkillMeta[]
   total: number
   updateCount: number
   updatingSkill: string | null
@@ -492,6 +533,7 @@ interface SkillsTabProps {
 function SkillsTab({
   customSkills,
   builtinSkills,
+  ccbSkills,
   total,
   updateCount,
   updatingSkill,
@@ -503,7 +545,7 @@ function SkillsTab({
   if (total === 0) {
     return <EmptyState icon={<Blocks className="size-8 text-foreground/30" />} title="暂无 Skill" hint="可以在 Agent 模式下让 Proma 帮你联网查找并安装 Skill，或从其他工作区导入。" />
   }
-  if (customSkills.length === 0 && builtinSkills.length === 0) {
+  if (customSkills.length === 0 && builtinSkills.length === 0 && ccbSkills.length === 0) {
     return <EmptyState icon={<Search className="size-8 text-foreground/30" />} title="没有匹配的 Skill" hint="试试更换搜索关键词。" />
   }
 
@@ -518,7 +560,10 @@ function SkillsTab({
         <SkillSection title="我的 Skills" skills={customSkills} isBuiltin={isBuiltin} updatingSkill={updatingSkill} onOpen={onOpen} onToggle={onToggle} onUpdate={onUpdate} />
       )}
       {builtinSkills.length > 0 && (
-        <SkillSection title="PROMA 内置" skills={builtinSkills} isBuiltin={isBuiltin} updatingSkill={updatingSkill} onOpen={onOpen} onToggle={onToggle} onUpdate={onUpdate} />
+        <SkillSection title="Proma 内置" skills={builtinSkills} isBuiltin={isBuiltin} updatingSkill={updatingSkill} onOpen={onOpen} onToggle={onToggle} onUpdate={onUpdate} />
+      )}
+      {ccbSkills.length > 0 && (
+        <SkillSection title="CCB Skills" skills={ccbSkills} isBuiltin={isBuiltin} updatingSkill={updatingSkill} onOpen={onOpen} onToggle={onToggle} onUpdate={onUpdate} />
       )}
     </div>
   )

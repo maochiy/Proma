@@ -7,7 +7,10 @@
 
 import { mkdirSync, writeFileSync, readdirSync } from 'node:fs'
 import { join, resolve, basename, relative } from 'node:path'
-import { getAgentSessionWorkspacePath, resolveAgentSessionWorkspacePath } from './config-paths'
+import {
+  getAgentSessionAttachmentsDir,
+  resolveAgentSessionAttachmentsDir,
+} from './config-paths'
 
 /** 图片大小警告阈值 */
 export const MAX_IMAGE_SIZE = 10 * 1024 * 1024
@@ -72,7 +75,7 @@ function sanitizeFileName(name: string): string {
 }
 
 /**
- * 保存图片到 Agent session 工作目录
+ * 保存图片到 Proma 私有的 Agent session 附件目录
  *
  * @returns 图片文件的绝对路径
  */
@@ -83,7 +86,7 @@ export function saveImageToSession(
   mediaType: string,
   data: Buffer,
 ): string {
-  const sessionDir = getAgentSessionWorkspacePath(workspaceSlug, sessionId)
+  const sessionDir = getAgentSessionAttachmentsDir(sessionId)
   const ext = inferExtension(mediaType)
   const filename = `${sanitizeFileName(fileNameHint)}.${ext}`
   const targetPath = join(sessionDir, filename)
@@ -97,7 +100,7 @@ export function saveImageToSession(
 }
 
 /**
- * 保存文件到 Agent session 工作目录
+ * 保存文件到 Proma 私有的 Agent session 附件目录
  *
  * @returns 文件的绝对路径
  */
@@ -107,7 +110,7 @@ export function saveFileToSession(
   fileName: string,
   data: Buffer,
 ): string {
-  const sessionDir = getAgentSessionWorkspacePath(workspaceSlug, sessionId)
+  const sessionDir = getAgentSessionAttachmentsDir(sessionId)
   const targetPath = join(sessionDir, sanitizeFileName(fileName))
   ensurePathWithin(targetPath, sessionDir)
 
@@ -231,7 +234,7 @@ export function buildFileTree(rootDir: string, options: FileTreeOptions = {}): s
 /**
  * 构建会话目录的文件树文本行
  *
- * 递归遍历 ~/.proma/agent-workspaces/{slug}/{sessionId}/（只读，不创建目录）。
+ * 递归遍历 ~/.proma/attachments/agent/{sessionId}/（只读，不创建目录）。
  *
  * @returns 文本行数组；目录不存在/无可见文件时返回空数组
  */
@@ -240,6 +243,6 @@ export function buildSessionFileTree(
   sessionId: string,
   options: FileTreeOptions = {},
 ): string[] {
-  const sessionDir = resolveAgentSessionWorkspacePath(workspaceSlug, sessionId)
+  const sessionDir = resolveAgentSessionAttachmentsDir(sessionId)
   return buildFileTree(sessionDir, options)
 }

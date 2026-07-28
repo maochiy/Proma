@@ -256,9 +256,7 @@ function AgentSettingsInitializer(): null {
       // 加载工作区列表并恢复上次选中的工作区
       window.electronAPI.listAgentWorkspaces().then((workspaces) => {
         setAgentWorkspaces(workspaces)
-        const defaultWorkspaceId = workspaces.find((workspace) => workspace.slug === 'default')?.id
-          ?? workspaces[0]?.id
-          ?? null
+        const defaultWorkspaceId = workspaces[0]?.id ?? null
         if (settings.agentWorkspaceId) {
           // 验证工作区仍然存在
           const exists = workspaces.some((w) => w.id === settings.agentWorkspaceId)

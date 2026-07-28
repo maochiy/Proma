@@ -21,6 +21,7 @@ import { persistCodexOAuthCredentials } from '../channel-manager'
 import { ccbDesktopRuntimeClient } from './runtime-client'
 import { sanitizeCcbSessionEnvironment } from './runtime-security'
 import { assertCcbRuntimeModelCatalog } from './protocol-validation'
+import { createAdditionalSkillDirectoriesFingerprint } from './skill-directory-fingerprint'
 import type {
   CcbInteractionResponse,
   CcbPermissionMode,
@@ -73,6 +74,8 @@ interface SessionRuntimeConfig {
   thinkingConfig?: ThinkingConfig
   effortLevel?: ThinkingEffortLevel
   providerFingerprint?: string
+  cwd: string
+  additionalSkillDirectoriesFingerprint: string
 }
 
 function sameThinkingConfig(
@@ -94,6 +97,9 @@ function sameRuntimeConfig(
     && left?.model === right.model
     && left?.effortLevel === right.effortLevel
     && left?.providerFingerprint === right.providerFingerprint
+    && left?.cwd === right.cwd
+    && left?.additionalSkillDirectoriesFingerprint
+      === right.additionalSkillDirectoriesFingerprint
     && sameThinkingConfig(left?.thinkingConfig, right.thinkingConfig)
 }
 
@@ -174,6 +180,10 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
 
   abort(sessionId: string): void {
     void ccbDesktopRuntimeClient.request({ type: 'turn.stop' }, sessionId, 5_000)
+  }
+
+  async closeSession(sessionId: string): Promise<void> {
+    await this.closeOpenedSession(sessionId)
   }
 
   async interruptQuery(sessionId: string): Promise<void> {
@@ -261,6 +271,11 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
       model: input.model,
       thinkingConfig: input.thinkingConfig,
       effortLevel: input.effortLevel,
+      cwd: input.cwd,
+      additionalSkillDirectoriesFingerprint:
+        createAdditionalSkillDirectoriesFingerprint(
+          input.additionalSkillDirectories,
+        ),
       providerFingerprint: createProviderFingerprint(
         environment,
         input.providerConfiguration,
@@ -269,9 +284,14 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
     let current = this.openedSessions.get(input.sessionId)
     const currentRuntimeConfig = this.sessionRuntimeConfigs.get(input.sessionId)
     if (
-      current
-      && currentRuntimeConfig?.providerFingerprint
-        !== nextRuntimeConfig.providerFingerprint
+      current &&
+      (
+        !currentRuntimeConfig
+        || currentRuntimeConfig.providerFingerprint !== nextRuntimeConfig.providerFingerprint
+        || currentRuntimeConfig.cwd !== nextRuntimeConfig.cwd
+        || currentRuntimeConfig.additionalSkillDirectoriesFingerprint
+          !== nextRuntimeConfig.additionalSkillDirectoriesFingerprint
+      )
     ) {
       await this.closeOpenedSession(input.sessionId)
       current = undefined
@@ -285,6 +305,7 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
         type: 'session.resume',
         options: {
           cwd: input.cwd,
+          additionalSkillDirectories: input.additionalSkillDirectories,
           runtimeSessionId: input.runtimeSessionId,
           resume: true,
           model: input.model,
@@ -402,6 +423,11 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
       model: options.model,
       thinkingConfig: options.thinkingConfig,
       effortLevel: options.effortLevel,
+      cwd: options.cwd ?? process.cwd(),
+      additionalSkillDirectoriesFingerprint:
+        createAdditionalSkillDirectoriesFingerprint(
+          options.additionalSkillDirectories,
+        ),
       providerFingerprint: createProviderFingerprint(
         environment,
         options.providerConfiguration,
@@ -412,9 +438,14 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
       options.sessionId,
     )
     if (
-      current
-      && currentRuntimeConfig?.providerFingerprint
-        !== nextRuntimeConfig.providerFingerprint
+      current &&
+      (
+        !currentRuntimeConfig
+        || currentRuntimeConfig.providerFingerprint !== nextRuntimeConfig.providerFingerprint
+        || currentRuntimeConfig.cwd !== nextRuntimeConfig.cwd
+        || currentRuntimeConfig.additionalSkillDirectoriesFingerprint
+          !== nextRuntimeConfig.additionalSkillDirectoriesFingerprint
+      )
     ) {
       await this.closeOpenedSession(options.sessionId)
       current = undefined
@@ -460,6 +491,7 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
         type: options.resumeSessionId ? 'session.resume' : 'session.open',
         options: {
           cwd: options.cwd ?? process.cwd(),
+          additionalSkillDirectories: options.additionalSkillDirectories,
           runtimeSessionId: options.resumeSessionId,
           resume: Boolean(options.resumeSessionId),
           model: options.model,
@@ -514,6 +546,7 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
   }
 
   private async closeOpenedSession(sessionId: string): Promise<void> {
+    if (!this.openedSessions.has(sessionId)) return
     try {
       await ccbDesktopRuntimeClient.request(
         { type: 'session.close' },
@@ -547,6 +580,9 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
       thinkingConfig: config.thinkingConfig,
       effortLevel: config.effortLevel,
       providerFingerprint: config.providerFingerprint,
+      cwd: config.cwd,
+      additionalSkillDirectoriesFingerprint:
+        config.additionalSkillDirectoriesFingerprint,
     })
   }
 

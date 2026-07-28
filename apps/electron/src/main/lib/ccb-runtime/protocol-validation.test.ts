@@ -9,6 +9,7 @@ import {
   assertCcbCommandEnvelope,
   assertCcbEventEnvelope,
   assertCcbRuntimeModelCatalog,
+  assertCcbRuntimeSkillCatalog,
 } from './protocol-validation'
 
 function commandEnvelope(
@@ -163,6 +164,58 @@ describe('Proma CCB Runtime protocol validation', () => {
             supportsAdaptiveThinking: false,
             supportsFastMode: false,
             supportsAutoMode: false,
+          },
+        ],
+      }),
+    ).not.toThrow()
+  })
+
+  test('校验带 Proma Skills 目录的 CCB Skill Catalog 命令', () => {
+    expect(() =>
+      assertCcbCommandEnvelope(
+        commandEnvelope(
+          {
+            type: 'session.resolveSkillCatalog',
+            options: {
+              cwd: '/tmp/project',
+              additionalSkillDirectories: ['/tmp/proma-skills'],
+              permissionMode: 'default',
+              environment: {
+                variables: {},
+                configDir: '/tmp/ccb',
+              },
+            },
+          },
+          'skill-catalog:project-1',
+        ),
+      ),
+    ).not.toThrow()
+  })
+
+  test('校验 CCB Runtime Skill Catalog 响应', () => {
+    expect(() =>
+      assertCcbRuntimeSkillCatalog({
+        projectPath: '/tmp/project',
+        resolvedAt: Date.now(),
+        skills: [
+          {
+            id: 'proma-project:documents:/tmp/proma-skills/documents',
+            name: 'documents',
+            description: 'Proma 文档技能',
+            source: 'proma-project',
+            path: '/tmp/proma-skills/documents',
+            enabled: true,
+            userInvocable: true,
+            modelInvocable: true,
+          },
+          {
+            id: 'ccb-project:review:/tmp/project/.claude/skills/review',
+            name: 'review',
+            source: 'ccb-project',
+            path: '/tmp/project/.claude/skills/review',
+            enabled: true,
+            userInvocable: true,
+            modelInvocable: true,
           },
         ],
       }),

@@ -2,7 +2,7 @@ const { app, MessageChannelMain, utilityProcess } = require('electron')
 const { join } = require('node:path')
 const { tmpdir } = require('node:os')
 
-const PROTOCOL_VERSION = 2
+const PROTOCOL_VERSION = 3
 const smokeConfigDir = join(tmpdir(), 'proma-ccb-runtime-smoke')
 const runtimeRoot = process.env.PROMA_CCB_RUNTIME_PATH
 if (!runtimeRoot) {

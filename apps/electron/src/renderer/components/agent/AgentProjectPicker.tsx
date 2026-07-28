@@ -22,7 +22,7 @@ interface AgentProjectPickerProps {
   disabled?: boolean
   disabledReason?: string
   onSelect: (workspaceId: string) => void | Promise<void>
-  onCreate: (name: string) => Promise<boolean>
+  onAdd: () => Promise<boolean>
 }
 
 export function AgentProjectPicker({
@@ -32,14 +32,11 @@ export function AgentProjectPicker({
   disabled = false,
   disabledReason,
   onSelect,
-  onCreate,
+  onAdd,
 }: AgentProjectPickerProps): React.ReactElement {
   const [open, setOpen] = React.useState(false)
-  const [creating, setCreating] = React.useState(false)
-  const [projectName, setProjectName] = React.useState('')
   const [submitting, setSubmitting] = React.useState(false)
-  const createInputRef = React.useRef<HTMLInputElement>(null)
-  const { defaultWorkspace, projects } = React.useMemo(
+  const { projects } = React.useMemo(
     () => splitAgentProjectPickerItems(workspaces),
     [workspaces],
   )
@@ -54,44 +51,13 @@ export function AgentProjectPicker({
     void onSelect(targetWorkspaceId)
   }
 
-  const handleStartCreate = (): void => {
-    setCreating(true)
-    setProjectName('')
-    requestAnimationFrame(() => createInputRef.current?.focus())
-  }
-
-  const handleCancelCreate = (): void => {
+  const handleAdd = async (): Promise<void> => {
     if (submitting) return
-    setCreating(false)
-    setProjectName('')
-  }
-
-  const handleCreate = async (): Promise<void> => {
-    const name = projectName.trim()
-    if (!name || submitting) return
-
     setSubmitting(true)
     try {
-      const created = await onCreate(name)
-      if (!created) return
-      setCreating(false)
-      setProjectName('')
-      setOpen(false)
+      if (await onAdd()) setOpen(false)
     } finally {
       setSubmitting(false)
-    }
-  }
-
-  const handleCreateKeyDown = (event: React.KeyboardEvent<HTMLInputElement>): void => {
-    if (event.key === 'Enter') {
-      if (event.nativeEvent.isComposing) return
-      event.preventDefault()
-      void handleCreate()
-      return
-    }
-    if (event.key === 'Escape') {
-      event.preventDefault()
-      handleCancelCreate()
     }
   }
 
@@ -133,7 +99,7 @@ export function AgentProjectPicker({
             <button
               type="button"
               disabled={changing || submitting}
-              onClick={handleStartCreate}
+              onClick={() => void handleAdd()}
               className={cn(
                 'flex items-center gap-1 rounded-md px-1.5 py-1 text-[11px] text-muted-foreground transition-colors',
                 'hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45',
@@ -141,36 +107,9 @@ export function AgentProjectPicker({
               )}
             >
               <Plus className="size-3" />
-              新建项目
+              {submitting ? '选择中' : '添加项目'}
             </button>
           </div>
-
-          {creating && (
-            <div className="mb-1.5 rounded-lg bg-muted/55 p-2">
-              <div className="flex items-center gap-2">
-                <FolderOpen className="size-4 shrink-0 text-muted-foreground" />
-                <input
-                  ref={createInputRef}
-                  value={projectName}
-                  disabled={submitting}
-                  maxLength={50}
-                  placeholder="输入项目名称"
-                  aria-label="项目名称"
-                  onChange={(event) => setProjectName(event.target.value)}
-                  onKeyDown={handleCreateKeyDown}
-                  className="h-7 min-w-0 flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/65"
-                />
-                <button
-                  type="button"
-                  disabled={!projectName.trim() || submitting}
-                  onClick={() => void handleCreate()}
-                  className="flex h-7 items-center rounded-md bg-foreground px-2.5 text-xs text-background transition-opacity disabled:opacity-40"
-                >
-                  {submitting ? <Loader2 className="size-3.5 animate-spin" /> : '创建'}
-                </button>
-              </div>
-            </div>
-          )}
 
           {projects.length > 0 ? (
             <div className="max-h-64 overflow-y-auto scrollbar-thin">
@@ -196,29 +135,8 @@ export function AgentProjectPicker({
             </div>
           ) : (
             <div className="rounded-md px-2 py-3 text-xs leading-5 text-muted-foreground">
-              还没有项目，可以新建项目或继续使用默认工作区。
+              还没有项目。添加电脑上的已有文件夹后，会把该目录作为 CCB 的工作目录。
             </div>
-          )}
-
-          {defaultWorkspace && (
-            <>
-              <div className="mx-1 my-1 h-px bg-border/60" />
-              <button
-                type="button"
-                onClick={() => handleSelect(defaultWorkspace.id)}
-                className={cn(
-                  'flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors',
-                  'hover:bg-accent focus-visible:bg-accent focus-visible:outline-none',
-                  defaultWorkspace.id === workspaceId && 'bg-accent/75',
-                )}
-              >
-                <FolderOpen className="size-4 shrink-0 text-muted-foreground" />
-                <span className="min-w-0 flex-1 truncate">默认工作区</span>
-                {defaultWorkspace.id === workspaceId && (
-                  <Check className="size-3.5 shrink-0 text-foreground/65" />
-                )}
-              </button>
-            </>
           )}
         </PopoverContent>
       </Popover>

@@ -8,18 +8,24 @@ import type { ChannelModel, ProviderType } from './channel'
 
 // ===== Agent 工作区 =====
 
-/** Agent 工作区 */
+/** Agent 项目（历史命名仍保留 Workspace，以减少 IPC 和持久化结构迁移范围） */
 export interface AgentWorkspace {
-  /** 工作区唯一标识 */
+  /** 项目唯一标识 */
   id: string
-  /** 显示名称 */
+  /** 项目目录名，可由用户修改为自定义显示名 */
   name: string
-  /** URL-safe 目录名（创建后不可变） */
+  /** Proma 私有配置目录 key（不再作为 Agent cwd） */
   slug: string
+  /** 用户选择的本机项目目录 */
+  path: string
+  /** 解析符号链接后的规范项目目录，用于去重和安全比较 */
+  canonicalPath: string
   /** 创建时间戳 */
   createdAt: number
   /** 更新时间戳 */
   updatedAt: number
+  /** 最近选择时间戳 */
+  lastOpenedAt?: number
 }
 
 /**
@@ -884,6 +890,51 @@ export interface SkillMeta {
   importSource?: SkillImportSource
   /** 是否有可用更新（源 Skill 版本 > importSource.sourceVersion） */
   hasUpdate?: boolean
+  /** CCB Runtime 实际解析出的来源；存在时表示该条目来自或已注册到 CCB。 */
+  runtimeSource?: RuntimeSkillSource
+  /** CCB Runtime 解析出的 Skill 根目录。 */
+  runtimePath?: string
+  /** CCB 原生/用户/项目/插件 Skill 由其来源管理，Proma 仅只读展示。 */
+  runtimeReadOnly?: boolean
+  /** Proma Skill 是否已被当前 CCB Catalog 成功发现。 */
+  registeredWithRuntime?: boolean
+  /** 同名冲突时，实际生效的 Skill ID。 */
+  shadowedBy?: string
+  /** Plugin Skill 所属插件。 */
+  runtimePluginName?: string
+}
+
+/** CCB Runtime 动态发现的 Skill 来源。 */
+export type RuntimeSkillSource =
+  | 'ccb-bundled'
+  | 'ccb-user'
+  | 'ccb-project'
+  | 'ccb-plugin'
+  | 'ccb-managed'
+  | 'proma-project'
+  | 'unknown'
+
+/** CCB Runtime 按当前项目 cwd 解析出的 Skill。 */
+export interface RuntimeSkillInfo {
+  id: string
+  name: string
+  description?: string
+  source: RuntimeSkillSource
+  path?: string
+  enabled: boolean
+  userInvocable: boolean
+  modelInvocable: boolean
+  pluginName?: string
+  shadowedBy?: string
+}
+
+/** 当前项目的 CCB Skill Catalog。 */
+export interface RuntimeSkillCatalog {
+  projectPath: string
+  skills: RuntimeSkillInfo[]
+  resolvedAt: number
+  runtimeVersion?: string
+  runtimeArtifactCommit?: string
 }
 
 /** 其他工作区 Skill 分组（导入对话框用） */
@@ -1480,6 +1531,8 @@ export const AGENT_IPC_CHANNELS = {
   LIST_WORKSPACES: 'agent:list-workspaces',
   /** 创建工作区 */
   CREATE_WORKSPACE: 'agent:create-workspace',
+  /** 读取当前项目经 CCB Runtime 动态解析后的 Skills */
+  GET_RUNTIME_SKILL_CATALOG: 'agent:get-runtime-skill-catalog',
   /** 更新工作区 */
   UPDATE_WORKSPACE: 'agent:update-workspace',
   /** 删除工作区 */

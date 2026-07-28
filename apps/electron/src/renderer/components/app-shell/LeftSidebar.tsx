@@ -760,10 +760,8 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
   const [dragProjectId, setDragProjectId] = React.useState<string | null>(null)
   const [projectDropIndicator, setProjectDropIndicator] = React.useState<{ id: string; position: 'before' | 'after' } | null>(null)
   const [automationGroupOrder, setAutomationGroupOrder] = useAtom(automationGroupOrderAtom)
-  /** 新建项目输入状态 */
-  const [creatingProject, setCreatingProject] = React.useState(false)
-  const [newProjectName, setNewProjectName] = React.useState('')
-  const newProjectInputRef = React.useRef<HTMLInputElement>(null)
+  /** 系统目录选择器正在打开 */
+  const [addingProject, setAddingProject] = React.useState(false)
   const [relativeTimeNow, setRelativeTimeNow] = React.useState(() => Date.now())
   const [userProfile, setUserProfile] = useAtom(userProfileAtom)
   const streamingIds = useAtomValue(streamingConversationIdsAtom)
@@ -1350,10 +1348,7 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
     })
   }, [])
 
-  const canDeleteWorkspace = React.useCallback(
-    (workspace: AgentWorkspace): boolean => workspace.slug !== 'default' && workspaces.length > 1,
-    [workspaces.length],
-  )
+  const canDeleteWorkspace = React.useCallback((_workspace: AgentWorkspace): boolean => true, [])
 
   /** 请求删除项目（弹出二次确认框） */
   const handleRequestDeleteWorkspace = React.useCallback((workspaceId: string): void => {
@@ -1365,12 +1360,6 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
     const workspaceId = pendingDeleteWorkspaceId
     const workspace = workspaces.find((item) => item.id === workspaceId)
     if (!workspaceId || !workspace) return
-
-    if (!canDeleteWorkspace(workspace)) {
-      toast.error(workspace.slug === 'default' ? '默认项目不能删除' : '至少需要保留一个项目')
-      setPendingDeleteWorkspaceId(null)
-      return
-    }
 
     const deletedSessionIds = new Set(
       agentSessions
@@ -1445,10 +1434,12 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
       })
 
       if (workspaceId === currentWorkspaceId) {
-        const fallback = remainingWorkspaces.find((item) => item.slug === 'default') ?? remainingWorkspaces[0] ?? null
+        const fallback = remainingWorkspaces[0] ?? null
         setCurrentWorkspaceId(fallback?.id ?? null)
         if (fallback) {
           window.electronAPI.updateSettings({ agentWorkspaceId: fallback.id }).catch(console.error)
+        } else {
+          window.electronAPI.updateSettings({ agentWorkspaceId: undefined }).catch(console.error)
         }
       }
 
@@ -1549,7 +1540,15 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
       )
       if (sessions.length === 0) return null
       return {
-        workspace: { id: AUTOMATION_GROUP_ID, name: '自动任务', slug: AUTOMATION_GROUP_ID, createdAt: 0, updatedAt: 0 },
+        workspace: {
+          id: AUTOMATION_GROUP_ID,
+          name: '自动任务',
+          slug: AUTOMATION_GROUP_ID,
+          path: '',
+          canonicalPath: '',
+          createdAt: 0,
+          updatedAt: 0,
+        },
         sessions,
       }
     },
@@ -1627,47 +1626,26 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
     setProjectDropIndicator(null)
   }, [])
 
-  /** 开始创建新项目 */
-  const handleStartCreateProject = React.useCallback((): void => {
-    setCreatingProject(true)
-    setNewProjectName('')
-    requestAnimationFrame(() => {
-      newProjectInputRef.current?.focus()
-    })
-  }, [])
-
-  /** 创建新项目，并设为当前项目 */
-  const handleCreateProject = React.useCallback(async (): Promise<void> => {
-    const trimmed = newProjectName.trim()
-    if (!trimmed) {
-      setCreatingProject(false)
-      return
-    }
-
+  /** 从当前电脑选择已有目录并设为当前项目 */
+  const handleAddProject = React.useCallback(async (): Promise<void> => {
+    if (addingProject) return
     try {
-      const workspace = await window.electronAPI.createAgentWorkspace(trimmed)
-      setWorkspaces((prev) => [workspace, ...prev])
+      setAddingProject(true)
+      const workspace = await window.electronAPI.createAgentWorkspace()
+      if (!workspace) return
+      setWorkspaces((prev) => [
+        workspace,
+        ...prev.filter((item) => item.id !== workspace.id),
+      ])
       setCurrentWorkspaceId(workspace.id)
       window.electronAPI.updateSettings({ agentWorkspaceId: workspace.id }).catch(console.error)
-      setCreatingProject(false)
-      setNewProjectName('')
     } catch (error) {
-      const msg = error instanceof Error ? error.message : '创建项目失败'
+      const msg = error instanceof Error ? error.message : '添加项目失败'
       toast.error(msg)
+    } finally {
+      setAddingProject(false)
     }
-  }, [newProjectName, setCurrentWorkspaceId, setWorkspaces])
-
-  const handleCreateProjectKeyDown = React.useCallback((e: React.KeyboardEvent): void => {
-    if (e.key === 'Enter') {
-      if (e.nativeEvent.isComposing) return
-      e.preventDefault()
-      void handleCreateProject()
-    } else if (e.key === 'Escape') {
-      e.preventDefault()
-      setCreatingProject(false)
-      setNewProjectName('')
-    }
-  }, [handleCreateProject])
+  }, [addingProject, setCurrentWorkspaceId, setWorkspaces])
 
   /** 选择 Agent 会话（打开或聚焦标签页） */
   const handleSelectAgentSession = React.useCallback((id: string, title: string): void => {
@@ -2100,7 +2078,7 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
         )
       )
 
-      const defaultWsId = workspaces.find((ws) => ws.slug === 'default')?.id ?? workspaces[0]?.id
+      const defaultWsId = workspaces[0]?.id
       for (const session of visibleHistory) {
         const targetId = session.workspaceId && sessionsByWorkspaceId.has(session.workspaceId)
           ? session.workspaceId
@@ -2315,7 +2293,7 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
     </AlertDialog>
   )
 
-  // 项目删除确认弹窗（会同时删除项目下的会话与工作区资源）
+  // 项目移除确认弹窗（清理 Proma 绑定数据，但绝不删除用户的本机项目目录）
   const projectDeleteDialog = (
     <AlertDialog
       open={pendingDeleteWorkspaceId !== null}
@@ -2333,9 +2311,9 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
         }}
       >
         <AlertDialogHeader>
-          <AlertDialogTitle>确认删除项目</AlertDialogTitle>
+          <AlertDialogTitle>确认从 Proma 移除项目</AlertDialogTitle>
           <AlertDialogDescription>
-            将删除「{pendingDeleteWorkspace?.name ?? '该项目'}」及其绑定的所有会话、自动任务、MCP、Skills、工作区文件和本地项目目录。附加目录和附加文件只会移除引用，不会删除原始文件。删除后无法恢复。
+            将移除「{pendingDeleteWorkspace?.name ?? '该项目'}」在 Proma 中的会话、自动任务、MCP、Skills 和私有配置。用户电脑上的原项目目录及其中所有文件都会保留。
           </AlertDialogDescription>
         </AlertDialogHeader>
         <AlertDialogFooter>
@@ -2345,7 +2323,7 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
             onClick={handleConfirmDeleteWorkspace}
             className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
           >
-            {deletingWorkspaceId ? '删除中...' : '删除项目'}
+            {deletingWorkspaceId ? '移除中...' : '移除项目'}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>
@@ -2847,38 +2825,20 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
               <TooltipTrigger asChild>
                 <button
                   type="button"
-                  onClick={handleStartCreateProject}
+                  onClick={() => void handleAddProject()}
+                  disabled={addingProject}
                   className="size-6 flex items-center justify-center rounded-md text-foreground/40 hover:bg-foreground/[0.06] hover:text-foreground/60 transition-colors titlebar-no-drag"
-                  aria-label="新建项目"
+                  aria-label="添加已有项目"
                 >
                   <Plus size={16} />
                 </button>
               </TooltipTrigger>
-              <TooltipContent side="top">新建项目</TooltipContent>
+              <TooltipContent side="top">添加已有项目</TooltipContent>
             </Tooltip>
           </div>
 
           {/* 下区：项目分组历史 */}
           <div className="flex-1 overflow-y-auto px-2 pb-3 scrollbar-thin min-h-0 titlebar-no-drag">
-            {creatingProject && (
-              <div className="flex items-center gap-2 px-2 py-1.5 mb-1 rounded-md bg-foreground/[0.04]">
-                <FolderOpen size={14} className="flex-shrink-0 text-foreground/40" />
-                <input
-                  ref={newProjectInputRef}
-                  value={newProjectName}
-                  onChange={(e) => setNewProjectName(e.target.value)}
-                  onKeyDown={handleCreateProjectKeyDown}
-                  onBlur={() => {
-                    setCreatingProject(false)
-                    setNewProjectName('')
-                  }}
-                  placeholder="项目名称..."
-                  className="flex-1 min-w-0 bg-transparent text-[13px] text-foreground border-b border-primary/50 outline-none px-0.5"
-                  maxLength={50}
-                />
-              </div>
-            )}
-
             <div className="flex flex-col gap-0.5">
               {displayProjectGroups.map((group) => {
                 const isAuto = group.workspace.id === AUTOMATION_GROUP_ID

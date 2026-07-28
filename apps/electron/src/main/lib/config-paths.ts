@@ -138,6 +138,20 @@ export function getConversationAttachmentsDir(conversationId: string): string {
   return dir
 }
 
+/** 获取 Agent 会话附件目录。附件属于 Proma 私有数据，不作为 Agent cwd。 */
+export function getAgentSessionAttachmentsDir(sessionId: string): string {
+  const dir = join(getAttachmentsDir(), 'agent', sessionId)
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true })
+  }
+  return dir
+}
+
+/** 解析 Agent 会话附件目录，不创建目录。 */
+export function resolveAgentSessionAttachmentsDir(sessionId: string): string {
+  return join(getConfigDir(), 'attachments', 'agent', sessionId)
+}
+
 /**
  * 解析附件相对路径为完整路径
  *
@@ -343,20 +357,6 @@ export function getWorkspaceFilesDir(slug: string): string {
  */
 export function resolveWorkspaceFilesDir(slug: string): string {
   return join(getConfigDir(), 'agent-workspaces', slug, 'workspace-files')
-}
-
-/**
- * 解析 Agent 会话工作目录路径（只读，不创建目录）
- *
- * 与 getAgentSessionWorkspacePath 的区别：不会触发 mkdir 副作用，
- * 适用于 /now 等只读查询场景。
- *
- * @param slug 工作区 slug
- * @param sessionId 会话 ID
- * @returns ~/.proma/agent-workspaces/{slug}/{sessionId}/
- */
-export function resolveAgentSessionWorkspacePath(slug: string, sessionId: string): string {
-  return join(getConfigDir(), 'agent-workspaces', slug, sessionId)
 }
 
 /**
@@ -614,27 +614,6 @@ export function getFeishuBotBindingsPath(botId: string): string {
  */
 export function getFeishuBotMetadataPath(botId: string): string {
   return join(getConfigDir(), `feishu-metadata-${botId}.json`)
-}
-
-/**
- * 获取指定 Agent 会话的工作路径
- *
- * 在工作区目录下创建以 sessionId 命名的子文件夹，
- * 作为该会话的独立 Agent cwd。如果目录不存在则自动创建。
- *
- * @param workspaceSlug 工作区 slug
- * @param sessionId 会话 ID
- * @returns ~/.proma/agent-workspaces/{slug}/{sessionId}/
- */
-export function getAgentSessionWorkspacePath(workspaceSlug: string, sessionId: string): string {
-  const dir = join(getAgentWorkspacePath(workspaceSlug), sessionId)
-
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true })
-    console.log(`[配置] 已创建 Agent 会话工作目录: ${dir}`)
-  }
-
-  return dir
 }
 
 /**

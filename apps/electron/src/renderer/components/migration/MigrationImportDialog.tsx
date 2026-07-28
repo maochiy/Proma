@@ -271,7 +271,7 @@ function V1ContentSummary({ preview }: { preview: { manifest: { workspaceName?: 
 
 interface V2ContentSummaryProps {
   preview: { manifest: { exportedAt: number; components: string[] }; agentSessionCount: number; chatConversationCount: number; workspaces?: WorkspaceImportPreviewItem[] }
-  workspaceMappings: Array<{ sourceSlug: string; action: string; targetWorkspaceId?: string; newWorkspaceName?: string }>
+  workspaceMappings: Array<{ sourceSlug: string; action: 'merge' | 'skip'; targetWorkspaceId?: string }>
   localWorkspaces: Array<{ id: string; name: string; slug: string }>
   onWorkspaceMapping: (sourceSlug: string, mapping: Record<string, unknown>) => void
   hasConflicts: boolean
@@ -305,7 +305,12 @@ function V2ContentSummary({ preview, workspaceMappings, localWorkspaces, onWorks
       </div>
 
       <div className="space-y-2">
-        <label className="text-sm font-medium text-foreground">工作区导入方式</label>
+        <label className="text-sm font-medium text-foreground">项目导入方式</label>
+        {localWorkspaces.length === 0 && (
+          <p className="text-xs text-amber-600 dark:text-amber-400">
+            Proma 不再自动创建内部工作区。请先从侧边栏添加一个本机已有项目目录，再将备份内容合并到该项目。
+          </p>
+        )}
         <div className="rounded-lg border border-border/50 divide-y divide-border/30">
           {(preview.workspaces ?? []).map((ws) => {
             const mapping = workspaceMappings.find((m) => m.sourceSlug === ws.workspaceSlug)
@@ -339,13 +344,11 @@ function V2ContentSummary({ preview, workspaceMappings, localWorkspaces, onWorks
                   <select
                     value={action}
                     onChange={(e) => {
-                      const newAction = e.target.value as 'merge' | 'create' | 'skip'
+                      const newAction = e.target.value as 'merge' | 'skip'
                       if (newAction === 'merge' && ws.existsLocally) {
                         onWorkspaceMapping(ws.workspaceSlug, { action: 'merge', targetWorkspaceId: ws.localWorkspaceId })
                       } else if (newAction === 'merge') {
                         onWorkspaceMapping(ws.workspaceSlug, { action: 'merge', targetWorkspaceId: localWorkspaces[0]?.id })
-                      } else if (newAction === 'create') {
-                        onWorkspaceMapping(ws.workspaceSlug, { action: 'create', newWorkspaceName: ws.workspaceName })
                       } else {
                         onWorkspaceMapping(ws.workspaceSlug, { action: 'skip' })
                       }
@@ -353,12 +356,11 @@ function V2ContentSummary({ preview, workspaceMappings, localWorkspaces, onWorks
                     className="text-xs border border-border rounded px-2 py-1 bg-background"
                   >
                     {ws.existsLocally && (
-                      <option value="merge">合并到已有工作区</option>
+                      <option value="merge">合并到已添加项目</option>
                     )}
                     {!ws.existsLocally && localWorkspaces.length > 0 && (
-                      <option value="merge">合并到现有工作区...</option>
+                      <option value="merge">合并到已添加项目...</option>
                     )}
-                    <option value="create">创建新工作区</option>
                     <option value="skip">跳过</option>
                   </select>
 
@@ -368,7 +370,7 @@ function V2ContentSummary({ preview, workspaceMappings, localWorkspaces, onWorks
                       onChange={(e) => onWorkspaceMapping(ws.workspaceSlug, { action: 'merge', targetWorkspaceId: e.target.value })}
                       className="text-xs border border-border rounded px-2 py-1 bg-background"
                     >
-                      <option value="">选择工作区...</option>
+                      <option value="">选择已添加项目...</option>
                       {localWorkspaces.map((lw) => (
                         <option key={lw.id} value={lw.id}>{lw.name}</option>
                       ))}

@@ -34,7 +34,7 @@ import { CcbDesktopRuntimeAdapter } from './ccb-runtime/ccb-agent-adapter'
 import { ccbDesktopRuntimeClient } from './ccb-runtime/runtime-client'
 import { AgentEventBus } from './agent-event-bus'
 import { AgentOrchestrator } from './agent-orchestrator'
-import { getAgentSessionWorkspacePath, getWorkspaceFilesDir } from './config-paths'
+import { getAgentSessionAttachmentsDir, getWorkspaceFilesDir } from './config-paths'
 import { getAgentSessionMeta, updateAgentSessionMeta } from './agent-session-manager'
 import { setAgentStopper, setHeadlessAgentRunner } from './agent-headless-runner-registry'
 import { sendAgentStreamComplete } from './agent-completion-payload'
@@ -320,6 +320,10 @@ export function stopAgent(sessionId: string): void {
   orchestrator.stop(sessionId)
 }
 
+export async function closeAgentSessionRuntime(sessionId: string): Promise<void> {
+  await orchestrator.closeSession(sessionId)
+}
+
 setHeadlessAgentRunner(runAgentHeadless)
 setAgentStopper(stopAgent)
 
@@ -395,12 +399,12 @@ export async function queueAgentMessage(
 // ===== 文件操作 =====
 
 /**
- * 保存文件到 Agent session 工作目录
+ * 保存文件到 Proma 私有的 Agent session 附件目录
  *
- * 将 base64 编码的文件写入 session 的 cwd，供 Agent 通过 Read 工具读取。
+ * 文件通过绝对路径注入 Prompt，CCB cwd 仍保持为用户选择的真实项目目录。
  */
 export function saveFilesToAgentSession(input: AgentSaveFilesInput): AgentSavedFile[] {
-  const sessionDir = getAgentSessionWorkspacePath(input.workspaceSlug, input.sessionId)
+  const sessionDir = getAgentSessionAttachmentsDir(input.sessionId)
   const results: AgentSavedFile[] = []
   const usedPaths = new Set<string>()
 

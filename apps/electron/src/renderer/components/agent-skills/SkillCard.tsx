@@ -5,7 +5,7 @@
  */
 
 import * as React from 'react'
-import { Sparkles, RefreshCw, ShieldCheck, ArrowDownToLine } from 'lucide-react'
+import { Sparkles, RefreshCw, ShieldCheck, ArrowDownToLine, CircleCheck } from 'lucide-react'
 import { Switch } from '@/components/ui/switch'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
@@ -21,6 +21,16 @@ interface SkillCardProps {
 }
 
 export function SkillCard({ skill, isBuiltin, updating, onOpen, onToggle, onUpdate }: SkillCardProps): React.ReactElement {
+  const runtimeSourceLabel = {
+    'ccb-bundled': 'CCB 内置',
+    'ccb-user': 'CCB 用户',
+    'ccb-project': '项目 .claude',
+    'ccb-plugin': skill.runtimePluginName ? `Plugin · ${skill.runtimePluginName}` : 'CCB Plugin',
+    'ccb-managed': 'CCB 托管',
+    'proma-project': 'Proma 项目',
+    unknown: 'CCB',
+  }[skill.runtimeSource ?? 'unknown']
+
   return (
     <div
       role="button"
@@ -57,6 +67,7 @@ export function SkillCard({ skill, isBuiltin, updating, onOpen, onToggle, onUpda
           checked={skill.enabled}
           onCheckedChange={onToggle}
           onClick={(e) => e.stopPropagation()}
+          disabled={skill.runtimeReadOnly}
           className="shrink-0"
         />
       </div>
@@ -66,9 +77,13 @@ export function SkillCard({ skill, isBuiltin, updating, onOpen, onToggle, onUpda
       </p>
 
       <div className="mt-auto flex items-center gap-2">
-        {isBuiltin ? (
+        {skill.runtimeReadOnly ? (
+          <span className="truncate rounded-md bg-violet-500/10 px-1.5 py-0.5 text-[11px] font-medium text-violet-600 dark:text-violet-400">
+            {runtimeSourceLabel}
+          </span>
+        ) : isBuiltin ? (
           <span className="flex items-center gap-1 rounded-md bg-blue-500/10 px-1.5 py-0.5 text-[11px] font-medium text-blue-600 dark:text-blue-400">
-            <ShieldCheck size={12} /> PROMA 内置
+            <ShieldCheck size={12} /> Proma 内置
           </span>
         ) : skill.importSource ? (
           <span className="truncate rounded-md bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
@@ -78,6 +93,25 @@ export function SkillCard({ skill, isBuiltin, updating, onOpen, onToggle, onUpda
           <span className="rounded-md bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
             本工作区
           </span>
+        )}
+
+        {!skill.runtimeReadOnly && skill.registeredWithRuntime && (
+          <span className="flex items-center gap-1 rounded-md bg-emerald-500/10 px-1.5 py-0.5 text-[11px] font-medium text-emerald-600 dark:text-emerald-400">
+            <CircleCheck size={11} /> 已注册到 CCB
+          </span>
+        )}
+
+        {skill.shadowedBy && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span className="truncate rounded-md bg-orange-500/10 px-1.5 py-0.5 text-[11px] font-medium text-orange-600 dark:text-orange-400">
+                已被同名 Skill 覆盖
+              </span>
+            </TooltipTrigger>
+            <TooltipContent side="top">
+              当前实际生效项：{skill.shadowedBy}
+            </TooltipContent>
+          </Tooltip>
         )}
 
         {skill.hasUpdate && (

@@ -8,6 +8,7 @@ import {
   type CcbRuntimeError,
   type CcbRuntimeEvent,
   type CcbRuntimeModelCatalog,
+  type CcbRuntimeSkillCatalog,
   type CcbSessionOptions,
 } from './protocol'
 import type { AgentRuntimeProviderConfiguration } from '@proma/shared'
@@ -187,6 +188,12 @@ function assertSessionOptions(
 ): asserts value is CcbSessionOptions {
   assertRecord(value, path)
   assertString(value.cwd, `${path}.cwd`)
+  if (value.additionalSkillDirectories !== undefined) {
+    assertStringArray(
+      value.additionalSkillDirectories,
+      `${path}.additionalSkillDirectories`,
+    )
+  }
   assertOptionalString(value.runtimeSessionId, `${path}.runtimeSessionId`)
   assertOptionalBoolean(value.resume, `${path}.resume`)
   assertOptionalString(value.model, `${path}.model`)
@@ -411,6 +418,10 @@ export function assertCcbCommandEnvelope(
         `${payload.type}.providerConfiguration`,
       )
       return
+    case 'session.resolveSkillCatalog':
+      assertSessionId(value)
+      assertSessionOptions(payload.options, `${payload.type}.options`)
+      return
     case 'session.setPermissionMode':
       assertSessionId(value)
       assertPermissionMode(payload.mode, `${payload.type}.mode`)
@@ -524,6 +535,34 @@ export function assertCcbRuntimeModelCatalog(
     )
     assertBoolean(model.supportsFastMode, `${path}.supportsFastMode`)
     assertBoolean(model.supportsAutoMode, `${path}.supportsAutoMode`)
+  }
+}
+
+export function assertCcbRuntimeSkillCatalog(
+  value: unknown,
+): asserts value is CcbRuntimeSkillCatalog {
+  assertRecord(value, 'CCB Runtime skill catalog')
+  assertString(value.projectPath, 'CCB Runtime skill catalog.projectPath')
+  assertFiniteNumber(
+    value.resolvedAt,
+    'CCB Runtime skill catalog.resolvedAt',
+  )
+  if (!Array.isArray(value.skills)) {
+    throw new Error('CCB Runtime skill catalog.skills 必须是数组')
+  }
+  for (const [index, skill] of value.skills.entries()) {
+    const path = `CCB Runtime skill catalog.skills.${index}`
+    assertRecord(skill, path)
+    assertString(skill.id, `${path}.id`)
+    assertString(skill.name, `${path}.name`)
+    assertOptionalString(skill.description, `${path}.description`)
+    assertString(skill.source, `${path}.source`)
+    assertOptionalString(skill.path, `${path}.path`)
+    assertBoolean(skill.enabled, `${path}.enabled`)
+    assertBoolean(skill.userInvocable, `${path}.userInvocable`)
+    assertBoolean(skill.modelInvocable, `${path}.modelInvocable`)
+    assertOptionalString(skill.pluginName, `${path}.pluginName`)
+    assertOptionalString(skill.shadowedBy, `${path}.shadowedBy`)
   }
 }
 

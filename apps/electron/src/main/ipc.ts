@@ -5,6 +5,7 @@
  */
 
 import { ipcMain, nativeTheme, shell, dialog, BrowserWindow, app, clipboard, nativeImage } from 'electron'
+import type { OpenDialogOptions } from 'electron'
 import { join, resolve, sep, dirname } from 'node:path'
 import { existsSync, realpathSync, rmSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
@@ -45,6 +46,7 @@ import type {
   AgentSessionMeta,
   AgentRuntimeModelCatalog,
   AgentRuntimeModelCatalogDraftInput,
+  RuntimeSkillCatalog,
   AgentSendInput,
   AgentWorkspace,
   AgentGenerateTitleInput,
@@ -191,15 +193,16 @@ import {
   searchAgentSessionMessages,
   searchAgentSessionReferences,
 } from './lib/agent-session-manager'
-import { runAgent, stopAgent, generateAgentTitle, saveFilesToAgentSession, saveFilesToWorkspaceFiles, isAgentSessionActive, queueAgentMessage, updateAgentPermissionMode, rewindAgentSession, forkAgentRuntimeSession } from './lib/agent-service'
+import { runAgent, stopAgent, closeAgentSessionRuntime, generateAgentTitle, saveFilesToAgentSession, saveFilesToWorkspaceFiles, isAgentSessionActive, queueAgentMessage, updateAgentPermissionMode, rewindAgentSession, forkAgentRuntimeSession } from './lib/agent-service'
 import {
   resolveAgentRuntimeModelCatalog,
   resolveDraftAgentRuntimeModelCatalog,
 } from './lib/ccb-runtime/model-catalog-service'
+import { resolveAgentRuntimeSkillCatalog } from './lib/ccb-runtime/skill-catalog-service'
 import { permissionService } from './lib/agent-permission-service'
 import { askUserService } from './lib/agent-ask-user-service'
 import { exitPlanService } from './lib/agent-exit-plan-service'
-import { getAgentSessionWorkspacePath, getAgentWorkspacesDir, getWorkspaceSkillsDir, getWorkspaceFilesDir, getScratchPadPath } from './lib/config-paths'
+import { getAgentWorkspacesDir, getWorkspaceSkillsDir, getWorkspaceFilesDir, getScratchPadPath } from './lib/config-paths'
 import { getCachedDefaultAppInfo, saveCachedDefaultAppInfo } from './lib/default-app-cache'
 import { calculateStorageStats, cleanupStorage, cleanupTempFiles } from './lib/storage-service'
 import type { CleanupOptions } from './lib/storage-service'
@@ -209,7 +212,6 @@ import {
   updateAgentWorkspace,
   deleteAgentWorkspace,
   reorderAgentWorkspaces,
-  ensureDefaultWorkspace,
   getWorkspaceMcpConfig,
   saveWorkspaceMcpConfig,
   getAllWorkspaceSkills,
@@ -308,6 +310,9 @@ function getAuthorizedRoots(options?: FileAccessOptions): string[] {
     getAgentWorkspacesDir(),
     join(tmpdir(), 'proma-preview'),
   ]
+  for (const workspace of listAgentWorkspaces()) {
+    roots.push(workspace.canonicalPath || workspace.path)
+  }
 
   const workspaceSlugs = new Set<string>()
 
@@ -351,6 +356,20 @@ function isPathAllowed(filePath: string, options?: FileAccessOptions): boolean {
     return false
   }
   return getAuthorizedRoots(options).some((root) => isUnderRoot(resolved, root))
+}
+
+/** 破坏性操作只允许作用于授权根目录的后代，禁止删除项目根目录本身。 */
+function isPathInsideAuthorizedRoot(filePath: string, options?: FileAccessOptions): boolean {
+  let resolved: string
+  try {
+    resolved = realpathSync(resolve(filePath))
+  } catch {
+    return false
+  }
+  return getAuthorizedRoots(options).some((root) => {
+    const resolvedRoot = realpathOrResolve(root)
+    return resolved.startsWith(resolvedRoot + sep)
+  })
 }
 
 function normalizeFileAccessOptions(value?: FileAccessOptions | string[]): FileAccessOptions | undefined {
@@ -1879,6 +1898,14 @@ export function registerIpcHandlers(): void {
     },
   )
 
+  // 按当前项目 cwd 读取 CCB + Proma 的完整 Skills
+  ipcMain.handle(
+    AGENT_IPC_CHANNELS.GET_RUNTIME_SKILL_CATALOG,
+    async (_, workspaceId: string): Promise<RuntimeSkillCatalog> => {
+      return resolveAgentRuntimeSkillCatalog(workspaceId)
+    },
+  )
+
   // 生成 Agent 会话标题
   ipcMain.handle(
     AGENT_IPC_CHANNELS.GENERATE_TITLE,
@@ -1891,6 +1918,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     AGENT_IPC_CHANNELS.DELETE_SESSION,
     async (_, id: string): Promise<void> => {
+      await closeAgentSessionRuntime(id)
       // 清理权限服务中该会话的白名单
       permissionService.clearSessionWhitelist(id)
       permissionService.clearSessionPending(id)
@@ -2023,9 +2051,6 @@ export function registerIpcHandlers(): void {
 
   // ===== Agent 工作区管理相关 =====
 
-  // 确保默认工作区存在
-  ensureDefaultWorkspace()
-
   // 获取 Agent 工作区列表
   ipcMain.handle(
     AGENT_IPC_CHANNELS.LIST_WORKSPACES,
@@ -2034,11 +2059,22 @@ export function registerIpcHandlers(): void {
     }
   )
 
-  // 创建 Agent 工作区
+  // 从当前电脑选择已有目录并添加为 Agent 项目
   ipcMain.handle(
     AGENT_IPC_CHANNELS.CREATE_WORKSPACE,
-    async (_, name: string): Promise<AgentWorkspace> => {
-      return createAgentWorkspace(name)
+    async (): Promise<AgentWorkspace | null> => {
+      const focusedWindow = BrowserWindow.getFocusedWindow()
+      const options: OpenDialogOptions = {
+        title: '添加已有项目',
+        buttonLabel: '添加项目',
+        properties: ['openDirectory'],
+      }
+      const result = focusedWindow
+        ? await dialog.showOpenDialog(focusedWindow, options)
+        : await dialog.showOpenDialog(options)
+      const selectedPath = result.filePaths[0]
+      if (result.canceled || !selectedPath) return null
+      return createAgentWorkspace(selectedPath)
     }
   )
 
@@ -2057,15 +2093,6 @@ export function registerIpcHandlers(): void {
       const deletingWorkspace = getAgentWorkspace(id)
       if (!deletingWorkspace) {
         return deleteAgentWorkspace(id)
-      }
-
-      // 守卫前置：在删除任何会话/自动任务前就拦截不可删除的工作区，
-      // 否则会先把绑定数据删光、再由 deleteAgentWorkspace 抛错，造成数据丢失与状态不一致
-      if (deletingWorkspace.slug === 'default') {
-        throw new Error('默认项目不能删除')
-      }
-      if (listAgentWorkspaces().length <= 1) {
-        throw new Error('至少需要保留一个项目')
       }
 
       const affectedSessionIds = listAgentSessions()
@@ -2819,10 +2846,11 @@ export function registerIpcHandlers(): void {
   // 获取 session 工作路径
   ipcMain.handle(
     AGENT_IPC_CHANNELS.GET_SESSION_PATH,
-    async (_, workspaceId: string, sessionId: string): Promise<string | null> => {
+    async (_, workspaceId: string, _sessionId: string): Promise<string | null> => {
       const ws = getAgentWorkspace(workspaceId)
       if (!ws) return null
-      return getAgentSessionWorkspacePath(ws.slug, sessionId)
+      const projectPath = ws.canonicalPath || ws.path
+      return existsSync(projectPath) ? projectPath : null
     }
   )
 
@@ -2833,11 +2861,9 @@ export function registerIpcHandlers(): void {
       const { existsSync, readdirSync, statSync } = await import('node:fs')
       const { resolve } = await import('node:path')
 
-      // 安全校验：路径必须在 agent-workspaces 目录下
       const safePath = resolve(dirPath)
-      const workspacesRoot = resolve(getAgentWorkspacesDir())
-      if (!safePath.startsWith(workspacesRoot)) {
-        throw new Error('访问路径超出 Agent 工作区范围')
+      if (!isPathAllowed(safePath)) {
+        throw new Error('访问路径超出已添加项目范围')
       }
 
       // 目录可能已被删除（如删除 Agent 会话后面板仍持有旧路径），优雅返回空列表
@@ -2881,11 +2907,9 @@ export function registerIpcHandlers(): void {
       const { rmSync } = await import('node:fs')
       const { resolve } = await import('node:path')
 
-      // 安全校验：路径必须在 agent-workspaces 目录下
       const safePath = resolve(filePath)
-      const workspacesRoot = resolve(getAgentWorkspacesDir())
-      if (!safePath.startsWith(workspacesRoot)) {
-        throw new Error('访问路径超出 Agent 工作区范围')
+      if (!isPathInsideAuthorizedRoot(safePath)) {
+        throw new Error('访问路径超出已添加项目范围')
       }
 
       rmSync(safePath, { recursive: true, force: true })
@@ -2900,9 +2924,8 @@ export function registerIpcHandlers(): void {
       const { resolve } = await import('node:path')
 
       const safePath = resolve(filePath)
-      const workspacesRoot = resolve(getAgentWorkspacesDir())
-      if (!safePath.startsWith(workspacesRoot)) {
-        throw new Error('访问路径超出 Agent 工作区范围')
+      if (!isPathAllowed(safePath)) {
+        throw new Error('访问路径超出已添加项目范围')
       }
 
       await shell.openPath(safePath)
@@ -2953,9 +2976,8 @@ export function registerIpcHandlers(): void {
       const { resolve } = await import('node:path')
 
       const safePath = resolve(filePath)
-      const workspacesRoot = resolve(getAgentWorkspacesDir())
-      if (!safePath.startsWith(workspacesRoot)) {
-        throw new Error('访问路径超出 Agent 工作区范围')
+      if (!isPathAllowed(safePath)) {
+        throw new Error('访问路径超出已添加项目范围')
       }
 
       shell.showItemInFolder(safePath)

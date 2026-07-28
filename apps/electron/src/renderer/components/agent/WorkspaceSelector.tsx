@@ -1,7 +1,7 @@
 /**
  * WorkspaceSelector — Agent 项目切换器
  *
- * 垂直列表展示所有项目，支持新建、重命名、删除、切换和拖拽排序。
+ * 垂直列表展示所有本机项目，支持添加已有目录、重命名、移除、切换和拖拽排序。
  * 切换项目后持久化到底层 workspace 设置。
  */
 
@@ -26,7 +26,13 @@ import { agentSessionsAtom, agentWorkspacesAtom } from '@/atoms/agent-atoms'
 import type { AgentWorkspace } from '@proma/shared'
 
 export function WorkspaceSelector(): React.ReactElement {
-  const { workspaces, currentWorkspaceId, selectProject, createProject } = useProjectActions()
+  const {
+    workspaces,
+    currentWorkspaceId,
+    selectProject,
+    addProject,
+    clearProject,
+  } = useProjectActions()
   const [, setWorkspaces] = useAtom(agentWorkspacesAtom)
   const [, setAgentSessions] = useAtom(agentSessionsAtom)
   const [listHeight, setListHeight] = useAtom(projectListHeightAtom)
@@ -73,11 +79,6 @@ export function WorkspaceSelector(): React.ReactElement {
     [setListHeight],
   )
 
-  // 新建状态
-  const [creating, setCreating] = React.useState(false)
-  const [newName, setNewName] = React.useState('')
-  const createInputRef = React.useRef<HTMLInputElement>(null)
-
   // 重命名状态
   const [editingId, setEditingId] = React.useState<string | null>(null)
   const [editName, setEditName] = React.useState('')
@@ -94,31 +95,6 @@ export function WorkspaceSelector(): React.ReactElement {
   const handleSelect = (workspace: AgentWorkspace): void => {
     if (editingId) return
     selectProject(workspace.id)
-  }
-
-  // ===== 新建 =====
-
-  const handleStartCreate = (): void => {
-    setCreating(true)
-    setNewName('')
-    requestAnimationFrame(() => {
-      createInputRef.current?.focus()
-    })
-  }
-
-  const handleCreate = async (): Promise<void> => {
-    await createProject(newName)
-    setCreating(false)
-  }
-
-  const handleCreateKeyDown = (e: React.KeyboardEvent): void => {
-    if (e.key === 'Enter') {
-      if (e.nativeEvent.isComposing) return
-      e.preventDefault()
-      handleCreate()
-    } else if (e.key === 'Escape') {
-      setCreating(false)
-    }
   }
 
   // ===== 重命名 =====
@@ -182,9 +158,12 @@ export function WorkspaceSelector(): React.ReactElement {
       setWorkspaces(remaining)
       setAgentSessions(sessions)
 
-      if (deleteTargetId === currentWorkspaceId && remaining.length > 0) {
-        const defaultWorkspace = remaining.find((workspace) => workspace.slug === 'default')
-        selectProject((defaultWorkspace ?? remaining[0]!).id)
+      if (deleteTargetId === currentWorkspaceId) {
+        if (remaining[0]) {
+          selectProject(remaining[0].id)
+        } else {
+          clearProject()
+        }
       }
     } catch (error) {
       console.error('[WorkspaceSelector] 删除项目失败:', error)
@@ -193,9 +172,7 @@ export function WorkspaceSelector(): React.ReactElement {
     }
   }
 
-  const canDelete = (ws: AgentWorkspace): boolean => {
-    return ws.slug !== 'default' && workspaces.length > 1
-  }
+  const canDelete = (_ws: AgentWorkspace): boolean => true
 
   // ===== 拖拽排序 =====
 
@@ -275,9 +252,9 @@ export function WorkspaceSelector(): React.ReactElement {
         <div className="flex items-center justify-between px-2.5 py-1.5 border-b border-border/40">
           <span className="text-[11px] font-medium text-foreground/50 uppercase tracking-wide">项目</span>
           <button
-            onClick={handleStartCreate}
+            onClick={() => void addProject()}
             className="p-1 rounded hover:bg-foreground/[0.06] text-foreground/35 hover:text-foreground/60 transition-colors titlebar-no-drag"
-            title="新建项目"
+            title="添加已有项目"
           >
             <Plus size={13} />
           </button>
@@ -361,20 +338,9 @@ export function WorkspaceSelector(): React.ReactElement {
             </div>
           ))}
 
-          {/* 新建项目输入框 */}
-          {creating && (
-            <div className="flex items-center gap-2 px-2 py-[5px]">
-              <FolderOpen size={13} className="flex-shrink-0 text-foreground/40" />
-              <input
-                ref={createInputRef}
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                onKeyDown={handleCreateKeyDown}
-                onBlur={() => setCreating(false)}
-                placeholder="项目名称..."
-                className="flex-1 min-w-0 bg-transparent text-[13px] text-foreground border-b border-primary/50 outline-none px-0.5"
-                maxLength={50}
-              />
+          {workspaces.length === 0 && (
+            <div className="px-2 py-3 text-xs leading-5 text-muted-foreground">
+              尚未添加项目。点击右上角 + 从电脑选择已有文件夹。
             </div>
           )}
         </div>

@@ -512,8 +512,11 @@ export interface ElectronAPI {
   /** 获取 Agent 工作区列表 */
   listAgentWorkspaces: () => Promise<AgentWorkspace[]>
 
-  /** 创建 Agent 工作区 */
-  createAgentWorkspace: (name: string) => Promise<AgentWorkspace>
+  /** 按当前项目 cwd 读取 CCB + Proma 完整 Skill Catalog */
+  getAgentRuntimeSkillCatalog: (workspaceId: string) => Promise<import('@proma/shared').RuntimeSkillCatalog>
+
+  /** 从当前电脑选择已有目录并添加为 Agent 项目；取消选择时返回 null */
+  createAgentWorkspace: () => Promise<AgentWorkspace | null>
 
   /** 更新 Agent 工作区 */
   updateAgentWorkspace: (id: string, updates: { name: string }) => Promise<AgentWorkspace>
@@ -1573,8 +1576,12 @@ const electronAPI: ElectronAPI = {
     return ipcRenderer.invoke(AGENT_IPC_CHANNELS.LIST_WORKSPACES)
   },
 
-  createAgentWorkspace: (name: string) => {
-    return ipcRenderer.invoke(AGENT_IPC_CHANNELS.CREATE_WORKSPACE, name)
+  getAgentRuntimeSkillCatalog: (workspaceId: string) => {
+    return ipcRenderer.invoke(AGENT_IPC_CHANNELS.GET_RUNTIME_SKILL_CATALOG, workspaceId)
+  },
+
+  createAgentWorkspace: () => {
+    return ipcRenderer.invoke(AGENT_IPC_CHANNELS.CREATE_WORKSPACE)
   },
 
   updateAgentWorkspace: (id: string, updates: { name: string }) => {
