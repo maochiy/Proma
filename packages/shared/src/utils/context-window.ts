@@ -21,6 +21,38 @@ export const CODEX_GPT_54_55_CONTEXT_WINDOW = 272_000
 export const CODEX_GPT_54_MINI_CONTEXT_WINDOW = 400_000
 export const CODEX_GPT_56_CONTEXT_WINDOW = 372_000
 
+export interface RuntimeReportedModelUsage {
+  contextWindow?: number
+}
+
+/**
+ * 从 Runtime 明确返回的模型用量中选择最大的有效上下文窗口。
+ *
+ * Agent 桌面端必须以 CCB Runtime 的能力目录和执行结果为唯一真源，
+ * 这里不根据模型名称或 Provider 做任何推断。
+ */
+export function pickRuntimeReportedContextWindow(
+  modelUsage?: Readonly<Record<string, RuntimeReportedModelUsage | undefined>>,
+): number | undefined {
+  if (!modelUsage) return undefined
+
+  let largestContextWindow: number | undefined
+  for (const usage of Object.values(modelUsage)) {
+    const contextWindow = usage?.contextWindow
+    if (
+      typeof contextWindow !== 'number'
+      || !Number.isFinite(contextWindow)
+      || contextWindow <= 0
+    ) {
+      continue
+    }
+    if (largestContextWindow === undefined || contextWindow > largestContextWindow) {
+      largestContextWindow = contextWindow
+    }
+  }
+  return largestContextWindow
+}
+
 /**
  * 为与 ChatGPT Codex 同名的 GPT-5.x 模型返回统一上下文窗口。
  *

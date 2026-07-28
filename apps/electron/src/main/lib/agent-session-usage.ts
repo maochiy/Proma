@@ -8,7 +8,7 @@
  * 数据来源：~/.proma/agent-sessions/{id}.jsonl 里最后一条带 usage 的消息。
  * 优先级：
  * 1. SDK result 消息（subtype=success/error_*）：usage + modelUsage[?].contextWindow
- * 2. SDK assistant 消息：message.usage + 按 message.model 推断 contextWindow
+ * 2. SDK assistant 消息：仅有 message.usage、没有 Runtime contextWindow 时返回未知
  * 3. 都拿不到：返回 undefined（占用率未知），调度器按"保守复用"处理
  *
  * 已用 token 口径与渲染层（useGlobalAgentListeners / SDKMessageRenderer）保持一致：
@@ -20,7 +20,7 @@
  * 避免对整份会话 JSONL 全量 JSON.parse（高频 daily 任务一天可触发数百次）。
  */
 
-import { calculateContextUsageRatio, inferAgentSdkContextWindow, inferContextWindow } from '@proma/shared'
+import { calculateContextUsageRatio, pickRuntimeReportedContextWindow } from '@proma/shared'
 import type { SDKAssistantMessage, SDKResultMessage } from '@proma/shared'
 import { existsSync, readFileSync } from 'node:fs'
 import { getAgentSessionMessagesPath } from './config-paths'
@@ -80,12 +80,7 @@ export function getSessionContextUsageRatio(sessionId: string): number | undefin
       const asst = parsed as SDKAssistantMessage
       const usage = asst.message?.usage
       if (!usage) continue
-      const usedTokens = sumUsedTokens(usage)
-      const modelId = asst._channelModelId ?? asst.message?.model
-      const contextWindow = asst._channelProvider
-        ? inferAgentSdkContextWindow(modelId, asst._channelProvider)
-        : inferContextWindow(modelId)
-      return calculateContextUsageRatio(usedTokens, contextWindow)
+      return undefined
     }
   }
 
@@ -101,19 +96,8 @@ export function getSessionContextUsageRatio(sessionId: string): number | undefin
  *   - 单 entry（常态）：行为与从前一致
  *   - 多 entry：避免被子 agent 的小窗口拉低、过早误触发 daily 切换阈值
  *
- * 每个 entry 优先用 SDK 实测的 contextWindow，缺失时按本次 Agent provider 的运行窗口推断。
+ * 只使用 CCB Runtime 明确返回的有效 contextWindow，不根据模型名或 Provider 推断。
  */
 function pickResultContextWindow(result: SDKResultMessage): number | undefined {
-  if (!result.modelUsage) return undefined
-  let best: number | undefined
-  for (const [modelId, info] of Object.entries(result.modelUsage)) {
-    const fallbackModelId = result._channelModelId ?? modelId
-    const fallbackWindow = result._channelProvider
-      ? inferAgentSdkContextWindow(fallbackModelId, result._channelProvider)
-      : inferContextWindow(fallbackModelId)
-    const win = Math.max(info?.contextWindow ?? 0, fallbackWindow ?? 0) || undefined
-    if (win === undefined) continue
-    if (best === undefined || win > best) best = win
-  }
-  return best
+  return pickRuntimeReportedContextWindow(result.modelUsage)
 }

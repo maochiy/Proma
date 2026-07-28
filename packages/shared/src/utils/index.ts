@@ -15,12 +15,14 @@ export {
   CODEX_GPT_54_55_CONTEXT_WINDOW,
   CODEX_GPT_54_MINI_CONTEXT_WINDOW,
   CODEX_GPT_56_CONTEXT_WINDOW,
+  pickRuntimeReportedContextWindow,
   inferCodexAlignedGPT5ContextWindow,
   supports1MContext,
   inferContextWindow,
   inferAgentSdkContextWindow,
   resolveAgentSdkModelId,
 } from './context-window'
+export type { RuntimeReportedModelUsage } from './context-window'
 export { calculateContextUsageRatio } from './context-usage'
 export {
   inferMcpTransportType,

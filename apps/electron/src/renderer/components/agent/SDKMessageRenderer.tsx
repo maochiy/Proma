@@ -78,8 +78,7 @@ import type {
 import type { AgentPendingFile } from '@proma/shared'
 import {
   getSDKCompactStatus,
-  inferAgentSdkContextWindow,
-  inferContextWindow,
+  pickRuntimeReportedContextWindow,
   THINKING_SIGNATURE_ERROR_CODE,
   THINKING_SIGNATURE_ERROR_TITLE,
   THINKING_SIGNATURE_ERROR_MESSAGE,
@@ -209,24 +208,8 @@ function extractTurnUsage(turnMessages: SDKMessage[]): { durationMs?: number; us
     const durationMs = typeof raw._durationMs === 'number' ? raw._durationMs : undefined
     const u = resultMsg.usage
     if (!u) return { durationMs }
-    // 多 entry 场景（Task 子 Agent 等）：取最大 contextWindow
-    let contextWindow: number | undefined
-    if (resultMsg.modelUsage) {
-      for (const [modelId, info] of Object.entries(resultMsg.modelUsage)) {
-        const fallbackModelId = resultMsg._channelModelId ?? modelId
-        const fallbackWindow = resultMsg._channelProvider
-          ? inferAgentSdkContextWindow(fallbackModelId, resultMsg._channelProvider)
-          : inferContextWindow(fallbackModelId)
-        const candidate = Math.max(info?.contextWindow ?? 0, fallbackWindow ?? 0) || undefined
-        if (candidate && (contextWindow === undefined || candidate > contextWindow)) {
-          contextWindow = candidate
-        }
-      }
-    } else {
-      contextWindow = resultMsg._channelProvider
-        ? inferAgentSdkContextWindow(resultMsg._channelModelId, resultMsg._channelProvider)
-        : inferContextWindow(resultMsg._channelModelId)
-    }
+    // 多 entry 场景（Task 子 Agent 等）只使用 CCB Runtime 明确报告的最大窗口。
+    const contextWindow = pickRuntimeReportedContextWindow(resultMsg.modelUsage)
     return {
       durationMs,
       usage: {

@@ -8,11 +8,35 @@ import {
   inferAgentSdkContextWindow,
   inferCodexAlignedGPT5ContextWindow,
   inferContextWindow,
+  pickRuntimeReportedContextWindow,
   resolveAgentSdkModelId,
   supports1MContext,
 } from './context-window'
 
 describe('模型上下文窗口', () => {
+  test('Given Runtime 返回多个模型窗口 When 选择上下文窗口 Then 使用最大的明确值', () => {
+    expect(pickRuntimeReportedContextWindow({
+      primary: { contextWindow: 200_000 },
+      subagent: { contextWindow: 1_000_000 },
+    })).toBe(1_000_000)
+  })
+
+  test('Given 模型名可推断但 Runtime 未返回窗口 When 选择上下文窗口 Then 不做名称推断', () => {
+    expect(pickRuntimeReportedContextWindow({
+      'claude-opus-4-8': {},
+      'gpt-5.6': undefined,
+    })).toBeUndefined()
+  })
+
+  test('Given Runtime 返回无效窗口 When 选择上下文窗口 Then 忽略无效值', () => {
+    expect(pickRuntimeReportedContextWindow({
+      zero: { contextWindow: 0 },
+      negative: { contextWindow: -1 },
+      invalid: { contextWindow: Number.NaN },
+      valid: { contextWindow: 372_000 },
+    })).toBe(372_000)
+  })
+
   test.each([
     ['gpt-5.4', CODEX_GPT_54_55_CONTEXT_WINDOW],
     ['gpt-5.4-mini', CODEX_GPT_54_MINI_CONTEXT_WINDOW],

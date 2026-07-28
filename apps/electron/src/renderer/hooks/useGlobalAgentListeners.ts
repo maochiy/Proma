@@ -60,7 +60,7 @@ import { previewFileMapAtom } from '@/atoms/preview-atoms'
 import type { NotificationSoundType } from '@/types/settings'
 import { toast } from 'sonner'
 import type { AgentStreamEvent, AgentStreamCompletePayload, AgentEvent, AgentStreamPayload, SDKAssistantMessage, SDKUserMessage, SDKSystemMessage, SDKContentBlock, SDKUserContentBlock, PromaEvent, AgentSessionMeta, ProviderType } from '@proma/shared'
-import { inferAgentSdkContextWindow, inferContextWindow } from '@proma/shared'
+import { pickRuntimeReportedContextWindow } from '@proma/shared'
 import { buildExternalAgentRunActivation } from '@/lib/external-agent-run'
 import { upsertAgentSession, mergeFetchedAgentSessions } from '@/lib/agent-session-list'
 import {
@@ -201,15 +201,6 @@ function payloadToLegacyEvents(payload: AgentStreamPayload): AgentEvent[] {
       if (!aMsg.parent_tool_use_id && aMsg.message.usage) {
         const u = aMsg.message.usage
         const inputTokens = u.input_tokens + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0)
-        // 流式过程中 SDK 不返回 contextWindow，按模型名推断一个默认值作为 fallback。
-        // 注意：必须优先用 _channelModelId（用户在 UI 上选择的原始模型 ID），
-        // 因为部分端点（如智谱）会在 message.model 里剥掉 [1m] 等规格后缀，
-        // 导致 glm-x-preview[1m] 被识别成 glm-x-preview（200K）。
-        const modelName = aMsg._channelModelId ?? aMsg.message.model
-        const provider = aMsg._channelProvider
-        const fallbackWindow = provider
-          ? inferAgentSdkContextWindow(modelName, provider)
-          : inferContextWindow(modelName)
         events.push({
           type: 'usage_update',
           usage: {
@@ -217,7 +208,6 @@ function payloadToLegacyEvents(payload: AgentStreamPayload): AgentEvent[] {
             outputTokens: u.output_tokens,
             cacheReadTokens: u.cache_read_input_tokens,
             cacheCreationTokens: u.cache_creation_input_tokens,
-            ...(fallbackWindow ? { contextWindow: fallbackWindow } : {}),
           },
         })
       }
@@ -252,8 +242,6 @@ function payloadToLegacyEvents(payload: AgentStreamPayload): AgentEvent[] {
         modelUsage?: Record<string, { contextWindow?: number }>
         usage?: { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }
         isSyntheticCompactionResult?: boolean
-        _channelModelId?: string
-        _channelProvider?: ProviderType
       }
       if (rMsg.isSyntheticCompactionResult) {
         return [{
@@ -263,23 +251,7 @@ function payloadToLegacyEvents(payload: AgentStreamPayload): AgentEvent[] {
       }
       // 多 entry 场景（Task 子 Agent 等）：取最大 contextWindow，
       // 避免子 Agent 的小窗口覆盖主模型的大窗口、导致指示器飘忽。
-      let contextWindow: number | undefined
-      const fallbackWindow = rMsg._channelProvider
-        ? inferAgentSdkContextWindow(rMsg._channelModelId, rMsg._channelProvider)
-        : inferContextWindow(rMsg._channelModelId)
-      if (rMsg.modelUsage) {
-        for (const [modelId, info] of Object.entries(rMsg.modelUsage)) {
-          const modelFallbackWindow = rMsg._channelProvider
-            ? inferAgentSdkContextWindow(rMsg._channelModelId ?? modelId, rMsg._channelProvider)
-            : inferContextWindow(rMsg._channelModelId ?? modelId)
-          const candidate = Math.max(info?.contextWindow ?? 0, modelFallbackWindow ?? 0) || undefined
-          if (candidate && (contextWindow === undefined || candidate > contextWindow)) {
-            contextWindow = candidate
-          }
-        }
-      } else {
-        contextWindow = fallbackWindow
-      }
+      const contextWindow = pickRuntimeReportedContextWindow(rMsg.modelUsage)
       // result.usage 是整个 query 内所有模型调用的累计求和，不能当成当前上下文占用，
       // 否则进度环会虚高、冲破 100%（PR #821 修的正是这个问题）。
       //
