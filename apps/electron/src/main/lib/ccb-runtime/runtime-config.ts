@@ -22,9 +22,13 @@ export function createSessionRuntimeConfigCommand(
 } {
   return {
     type: 'session.updateConfig',
-    model: updates.model,
-    thinkingConfig: updates.thinkingConfig,
-    effortLevel: updates.effortLevel,
+    ...('model' in updates ? { model: updates.model } : {}),
+    ...('thinkingConfig' in updates
+      ? { thinkingConfig: updates.thinkingConfig }
+      : {}),
+    ...('effortLevel' in updates
+      ? { effortLevel: updates.effortLevel }
+      : {}),
   }
 }
 

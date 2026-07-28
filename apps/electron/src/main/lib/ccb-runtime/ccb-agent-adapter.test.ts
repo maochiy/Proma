@@ -78,9 +78,16 @@ describe('CCB Session 思考等级桥接', () => {
       effortLevel: 'xhigh',
     })).toEqual({
       type: 'session.updateConfig',
-      model: undefined,
-      thinkingConfig: undefined,
       effortLevel: 'xhigh',
+    })
+  })
+
+  test('Given 只切换模型 When 构造热更新命令 Then 不得清空 CCB 已有思考等级', () => {
+    expect(createSessionRuntimeConfigCommand({
+      model: 'claude-sonnet-4-6',
+    })).toEqual({
+      type: 'session.updateConfig',
+      model: 'claude-sonnet-4-6',
     })
   })
 })

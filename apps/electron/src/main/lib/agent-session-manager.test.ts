@@ -151,6 +151,46 @@ describe('Agent 会话元数据', () => {
     expect(manager.getAgentSessionMeta(session.id)).toMatchObject({ starred: true, archived: true })
   })
 
+  test('Given 会话按最近活动排序 When 批量切换渠道和模型 Then 保留顺序与归档状态', () => {
+    writeAgentSessionsIndex([
+      {
+        id: 'recent-session',
+        title: '最近会话',
+        workspaceId: 'workspace-a',
+        channelId: 'channel-old',
+        modelId: 'model-old',
+        archived: true,
+        createdAt: 10,
+        updatedAt: 200,
+      },
+      {
+        id: 'older-session',
+        title: '较早会话',
+        workspaceId: 'workspace-a',
+        channelId: 'channel-old',
+        modelId: 'model-old',
+        createdAt: 5,
+        updatedAt: 100,
+      },
+    ])
+
+    const updated = manager.updateAgentSessionMeta('recent-session', {
+      channelId: 'channel-new',
+      modelId: 'model-new',
+    })
+
+    expect(updated).toMatchObject({
+      channelId: 'channel-new',
+      modelId: 'model-new',
+      archived: true,
+      updatedAt: 200,
+    })
+    expect(manager.listAgentSessions().map(session => session.id)).toEqual([
+      'recent-session',
+      'older-session',
+    ])
+  })
+
   test('Given CCB 会话目录 When 同步 UI 投影 Then 更新 Runtime 字段并保留桌面字段', () => {
     writeAgentSessionsIndex([
       {

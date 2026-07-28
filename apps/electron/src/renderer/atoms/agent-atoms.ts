@@ -224,6 +224,8 @@ export const agentModelIdAtom = atom<string | null>(null)
 export const agentChannelIdsAtom = atom<string[]>([])
 /** CCB Runtime 按「项目 + Channel」解析的模型目录；仅保存在内存中。 */
 export const agentRuntimeModelCatalogsAtom = atom<Map<string, AgentRuntimeModelCatalog>>(new Map())
+/** 模型配置保存后的刷新序号，用于立即重新向 CCB Runtime 读取目录。 */
+export const agentRuntimeModelCatalogRevisionAtom = atom(0)
 
 export function getAgentRuntimeModelCatalogKey(
   workspaceId: string | null | undefined,

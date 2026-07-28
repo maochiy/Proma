@@ -70,6 +70,7 @@ import {
   agentModelIdAtom,
   agentChannelIdsAtom,
   agentRuntimeModelCatalogsAtom,
+  agentRuntimeModelCatalogRevisionAtom,
   getAgentRuntimeModelCatalogKey,
   agentSessionChannelMapAtom,
   agentSessionModelMapAtom,
@@ -433,14 +434,21 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   const [runtimeModelCatalogs, setRuntimeModelCatalogs] = useAtom(
     agentRuntimeModelCatalogsAtom,
   )
+  const runtimeModelCatalogRevision = useAtomValue(
+    agentRuntimeModelCatalogRevisionAtom,
+  )
   const [runtimeModelsLoading, setRuntimeModelsLoading] = React.useState(false)
   const activeAgentChannel = React.useMemo(
     () => globalChannels.find((channel) => channel.id === agentChannelId),
     [agentChannelId, globalChannels],
   )
   const runtimeCatalogRequestSignature = React.useMemo(
-    () => `${agentChannelId}:${activeAgentChannel?.updatedAt ?? 0}`,
-    [activeAgentChannel?.updatedAt, agentChannelId],
+    () => `${agentChannelId}:${activeAgentChannel?.updatedAt ?? 0}:${runtimeModelCatalogRevision}`,
+    [
+      activeAgentChannel?.updatedAt,
+      agentChannelId,
+      runtimeModelCatalogRevision,
+    ],
   )
   React.useEffect(() => {
     let cancelled = false
@@ -1772,6 +1780,12 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         )))
       })
       .catch(console.error)
+
+    void window.electronAPI.updateAgentRuntimeConfig(sessionId, {
+      model: option.modelId,
+    }).catch((error) => {
+      console.error('[AgentView] 实时更新 CCB 模型失败:', error)
+    })
   }, [
     backgroundWaiting,
     sessionId,
@@ -2638,14 +2652,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     }).catch((error) => {
       console.error('[AgentView] 实时更新 CCB 思考等级失败:', error)
     })
-    if (level === 'max') {
-      if (nextThinking) {
-        window.electronAPI.updateSettings({
-          agentThinking: nextThinking,
-        }).catch(console.error)
-      }
-      return
-    }
     setAgentThinkingEffortLevel(level)
     window.electronAPI.updateSettings({
       ...(nextThinking ? { agentThinking: nextThinking } : {}),

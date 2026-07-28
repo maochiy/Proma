@@ -518,14 +518,24 @@ export function updateAgentSessionMeta(
   const updateKeys = Object.keys(updates)
   // 星标只是侧栏的视觉标记，不应改变会话的新鲜度或归档状态。
   const isStarredOnly = updateKeys.every((key) => key === 'starred')
+  // 渠道/模型绑定属于下一轮 Runtime 配置，不代表会话产生了新内容。
+  // 批量同步模型配置时必须保留 updatedAt 和归档状态，避免侧栏顺序被刷新。
+  const isModelBindingOnly =
+    updateKeys.length > 0
+    && updateKeys.every((key) => key === 'channelId' || key === 'modelId')
   // 非手动归档操作时，若会话已归档则自动恢复为活跃（仅更新 stoppedByUser 或 starred 不触发解归档）
   const isStoppedByUserOnly = updateKeys.every((key) => key === 'stoppedByUser')
-  const autoUnarchive = existing.archived && !('archived' in updates) && !isStoppedByUserOnly && !isStarredOnly
+  const preserveFreshness = isStarredOnly || isModelBindingOnly
+  const autoUnarchive =
+    existing.archived
+    && !('archived' in updates)
+    && !isStoppedByUserOnly
+    && !preserveFreshness
   const updated: AgentSessionMeta = {
     ...existing,
     ...updates,
     ...(autoUnarchive ? { archived: false } : {}),
-    updatedAt: isStarredOnly ? existing.updatedAt : Date.now(),
+    updatedAt: preserveFreshness ? existing.updatedAt : Date.now(),
   }
 
   index.sessions[idx] = updated

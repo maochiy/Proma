@@ -26,6 +26,7 @@ import {
   resolveCcbPermissionMode,
   type RuntimeConfigUpdate,
 } from './runtime-config'
+import { releaseTurnBeforeNotify } from './turn-lifecycle'
 import type {
   CcbInteractionResponse,
   CcbPermissionMode,
@@ -74,6 +75,7 @@ interface ActiveTurn {
 }
 
 interface SessionRuntimeConfig {
+  channelId?: string
   model?: string
   thinkingConfig?: ThinkingConfig
   effortLevel?: ThinkingEffortLevel
@@ -98,6 +100,7 @@ function sameRuntimeConfig(
   right: SessionRuntimeConfig,
 ): boolean {
   return Boolean(left)
+    && left?.channelId === right.channelId
     && left?.model === right.model
     && left?.effortLevel === right.effortLevel
     && left?.providerFingerprint === right.providerFingerprint
@@ -170,6 +173,7 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
   private readonly openedSessions = new Map<string, string>()
   private readonly sessionRuntimeConfigs = new Map<string, SessionRuntimeConfig>()
   private readonly lastSequences = new Map<string, number>()
+  private readonly invalidatedSessions = new Set<string>()
 
   query(input: AgentQueryInput): AsyncIterable<SDKMessage> {
     const options = input as CcbAgentQueryOptions
@@ -244,6 +248,32 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
       })
     }
     return true
+  }
+
+  /**
+   * 使指定模型配置关联的长期 Session Worker 失效。
+   *
+   * 空闲 Worker 立即关闭；正在执行的 Turn 不会被打断，而是在完成后关闭，
+   * 下一轮由 ensureSession 使用最新 Provider、凭证和模型目录恢复。
+   */
+  async invalidateChannelConfiguration(channelId: string): Promise<void> {
+    const affectedSessionIds = [...this.sessionRuntimeConfigs.entries()]
+      .filter(([, config]) => config.channelId === channelId)
+      .map(([sessionId]) => sessionId)
+
+    await Promise.all(affectedSessionIds.map(async sessionId => {
+      if (this.active.has(sessionId)) {
+        this.invalidatedSessions.add(sessionId)
+        console.log(
+          `[CCB Runtime] Session 配置已标记失效，当前 Turn 完成后刷新: session=${sessionId}, channel=${channelId}`,
+        )
+        return
+      }
+      await this.closeOpenedSession(sessionId)
+      console.log(
+        `[CCB Runtime] 已关闭使用旧模型配置的空闲 Session: session=${sessionId}, channel=${channelId}`,
+      )
+    }))
   }
 
   async getExecutionGraph(
@@ -328,6 +358,7 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
   ): Promise<void> {
     const environment = sanitizeCcbSessionEnvironment(input.env)
     const nextRuntimeConfig: SessionRuntimeConfig = {
+      channelId: this.sessionRuntimeConfigs.get(input.sessionId)?.channelId,
       model: input.model,
       thinkingConfig: input.thinkingConfig,
       effortLevel: input.effortLevel,
@@ -480,6 +511,7 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
   ): Promise<void> {
     const environment = sanitizeCcbSessionEnvironment(options.env)
     const nextRuntimeConfig: SessionRuntimeConfig = {
+      channelId: options.channelId,
       model: options.model,
       thinkingConfig: options.thinkingConfig,
       effortLevel: options.effortLevel,
@@ -621,6 +653,7 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
       this.openedSessions.delete(sessionId)
       this.sessionRuntimeConfigs.delete(sessionId)
       this.lastSequences.delete(sessionId)
+      this.invalidatedSessions.delete(sessionId)
     }
   }
 
@@ -638,6 +671,7 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
       5_000,
     )
     this.sessionRuntimeConfigs.set(sessionId, {
+      channelId: config.channelId,
       model: config.model,
       thinkingConfig: config.thinkingConfig,
       effortLevel: config.effortLevel,
@@ -779,12 +813,38 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
     if (sequence !== undefined) {
       updateAgentSessionMeta(sessionId, { runtimeLastSequence: sequence })
     }
-    if (error) {
-      active.queue.fail(error)
-      active.reject(error)
-    } else {
+    void this.finalizeTurn(sessionId, active, error)
+  }
+
+  /**
+   * 在通知消费方 Turn 完成前释放 active 标记。
+   *
+   * 这样 UI 收到完成状态后立即发送下一条消息时，不会撞上已经完成但尚未进入
+   * run finally 的旧 Turn。若 Provider 配置在执行中被修改，则先关闭旧 Worker，
+   * 避免下一轮与旧 Worker 清理发生竞态。
+   */
+  private async finalizeTurn(
+    sessionId: string,
+    active: ActiveTurn,
+    error?: Error,
+  ): Promise<void> {
+    if (this.invalidatedSessions.delete(sessionId)) {
+      await this.closeOpenedSession(sessionId).catch(closeError => {
+        console.warn(
+          `[CCB Runtime] Turn 完成后刷新失效 Session 失败: session=${sessionId}`,
+          closeError,
+        )
+      })
+    }
+
+    releaseTurnBeforeNotify(this.active, sessionId, active, () => {
+      if (error) {
+        active.queue.fail(error)
+        active.reject(error)
+        return
+      }
       active.queue.finish()
       active.resolve()
-    }
+    })
   }
 }

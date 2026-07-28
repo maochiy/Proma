@@ -13,7 +13,7 @@ import type {
 
 export const CCB_PROTOCOL_VERSION = 5
 export const EXPECTED_CCB_RUNTIME_VERSION = '2.8.15'
-export const EXPECTED_CCB_RUNTIME_COMMIT = '45a8fba6248d6256d39b73b88e8b24dd16b37fbb'
+export const EXPECTED_CCB_RUNTIME_COMMIT = '0c6c868dc55b8836e4c48288ae4dd235883711e7'
 
 export type CcbPermissionMode =
   | 'default'

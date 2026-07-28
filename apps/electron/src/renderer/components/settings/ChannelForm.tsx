@@ -78,11 +78,14 @@ import {
   CcbConfiguredModelEditor,
   type CcbConfiguredModelEditorValue,
 } from './CcbConfiguredModelEditor'
+import { isLastEnabledChannelModel } from '@/lib/channel-model-selection'
 
 interface ChannelFormProps {
   /** 编辑模式下传入已有渠道，创建模式传 null */
   channel: Channel | null
   onSaved: (channel?: Channel) => void
+  /** 编辑模式自动保存完成后同步外部列表，但不关闭表单。 */
+  onChanged?: (channel: Channel) => void | Promise<void>
   onAgentEligibilityChange?: (channel: Channel, eligible: boolean) => void | Promise<void>
   onCancel: () => void
 }
@@ -250,7 +253,13 @@ function toCcbConfiguredModelEditorValue(
   }
 }
 
-export function ChannelForm({ channel, onSaved, onAgentEligibilityChange, onCancel }: ChannelFormProps): React.ReactElement {
+export function ChannelForm({
+  channel,
+  onSaved,
+  onChanged,
+  onAgentEligibilityChange,
+  onCancel,
+}: ChannelFormProps): React.ReactElement {
   const isEdit = channel !== null
 
   // 表单状态
@@ -421,12 +430,13 @@ export function ChannelForm({ channel, onSaved, onAgentEligibilityChange, onCanc
         lastAgentEligibleRef.current = eligible
         await onAgentEligibilityChange?.(savedChannel, eligible)
       }
+      await onChanged?.(savedChannel)
       toast.success('已保存', { id: 'auto-save-success' })
     } catch (error) {
       console.error('[模型配置表单] auto-save 失败:', error)
       toast.error('自动保存失败，请检查后手动重试', { id: 'auto-save-error' })
     }
-  }, [isEdit, channel, onAgentEligibilityChange])
+  }, [isEdit, channel, onAgentEligibilityChange, onChanged])
 
   /** 触发防抖 auto-save */
   const scheduleAutoSave = React.useCallback((
@@ -639,11 +649,19 @@ export function ChannelForm({ channel, onSaved, onAgentEligibilityChange, onCanc
 
   /** 删除模型 */
   const handleRemoveModel = (modelId: string): void => {
+    if (isLastEnabledChannelModel(models, modelId)) {
+      toast.warning('至少需要保留一个启用模型')
+      return
+    }
     setModels((prev) => prev.filter((m) => m.id !== modelId))
   }
 
   /** 切换模型启用状态（点击可用模型 → 启用，点击已启用模型 → 禁用） */
   const handleToggleModel = (modelId: string): void => {
+    if (isLastEnabledChannelModel(models, modelId)) {
+      toast.warning('至少需要保留一个启用模型')
+      return
+    }
     setModels((prev) =>
       prev.map((m) => (m.id === modelId ? { ...m, enabled: !m.enabled } : m))
     )
@@ -1251,7 +1269,11 @@ export function ChannelForm({ channel, onSaved, onAgentEligibilityChange, onCanc
                       type="button"
                       onClick={() => handleToggleModel(model.id)}
                       className="p-0.5 text-muted-foreground hover:text-destructive transition-colors opacity-0 group-hover:opacity-100"
-                      title="取消启用"
+                      title={
+                        isLastEnabledChannelModel(models, model.id)
+                          ? '至少需要保留一个启用模型'
+                          : '取消启用'
+                      }
                     >
                       <X size={14} />
                     </button>

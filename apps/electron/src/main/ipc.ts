@@ -195,7 +195,7 @@ import {
   searchAgentSessionMessages,
   searchAgentSessionReferences,
 } from './lib/agent-session-manager'
-import { runAgent, stopAgent, closeAgentSessionRuntime, generateAgentTitle, saveFilesToAgentSession, saveFilesToWorkspaceFiles, isAgentSessionActive, queueAgentMessage, updateAgentPermissionMode, updateAgentRuntimeConfig, getAgentRuntimeExecutionGraph, getAgentRuntimeSubagentTranscript, rewindAgentSession, forkAgentRuntimeSession } from './lib/agent-service'
+import { runAgent, stopAgent, closeAgentSessionRuntime, generateAgentTitle, saveFilesToAgentSession, saveFilesToWorkspaceFiles, isAgentSessionActive, queueAgentMessage, updateAgentPermissionMode, updateAgentRuntimeConfig, invalidateAgentRuntimeConfiguration, getAgentRuntimeExecutionGraph, getAgentRuntimeSubagentTranscript, rewindAgentSession, forkAgentRuntimeSession } from './lib/agent-service'
 import {
   clearAgentRuntimeModelCatalogCache,
   resolveAgentRuntimeModelCatalog,
@@ -1141,7 +1141,21 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     CHANNEL_IPC_CHANNELS.CREATE,
     async (_, input: ChannelCreateInput): Promise<Channel> => {
-      return createChannel(input)
+      const previouslyEnabledIds = listChannels()
+        .filter(channel => channel.enabled)
+        .map(channel => channel.id)
+      const created = createChannel(input)
+      const affectedChannelIds = new Set<string>([created.id])
+      if (created.enabled) {
+        for (const channelId of previouslyEnabledIds) {
+          affectedChannelIds.add(channelId)
+        }
+      }
+      for (const channelId of affectedChannelIds) {
+        clearAgentRuntimeModelCatalogCache(channelId)
+        await invalidateAgentRuntimeConfiguration(channelId)
+      }
+      return created
     }
   )
 
@@ -1149,7 +1163,29 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     CHANNEL_IPC_CHANNELS.UPDATE,
     async (_, id: string, input: ChannelUpdateInput): Promise<Channel> => {
-      return updateChannel(id, input)
+      const previouslyEnabledIds = listChannels()
+        .filter(channel => channel.enabled)
+        .map(channel => channel.id)
+      const updated = updateChannel(id, input)
+      const runtimeConfigurationChanged =
+        input.provider !== undefined
+        || input.baseUrl !== undefined
+        || Boolean(input.apiKey)
+        || input.models !== undefined
+        || input.enabled !== undefined
+      if (runtimeConfigurationChanged) {
+        const affectedChannelIds = new Set<string>([id])
+        if (updated.enabled) {
+          for (const channelId of previouslyEnabledIds) {
+            affectedChannelIds.add(channelId)
+          }
+        }
+        for (const channelId of affectedChannelIds) {
+          clearAgentRuntimeModelCatalogCache(channelId)
+          await invalidateAgentRuntimeConfiguration(channelId)
+        }
+      }
+      return updated
     }
   )
 
@@ -1157,7 +1193,9 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     CHANNEL_IPC_CHANNELS.DELETE,
     async (_, id: string): Promise<void> => {
-      return deleteChannel(id)
+      deleteChannel(id)
+      clearAgentRuntimeModelCatalogCache(id)
+      await invalidateAgentRuntimeConfiguration(id)
     }
   )
 
@@ -1891,9 +1929,8 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     AGENT_IPC_CHANNELS.UPDATE_SESSION_MODEL,
     async (_, id: string, channelId?: string, modelId?: string): Promise<AgentSessionMeta> => {
-      if (isAgentSessionActive(id)) {
-        throw new Error('Agent 正在运行，完成后再切换模型')
-      }
+      // 运行中的 Turn 已持有本轮配置；这里只更新下一轮使用的会话绑定，
+      // 不会中断或热切换正在执行的 Provider。
       return updateAgentSessionMeta(id, { channelId, modelId })
     }
   )
@@ -1948,6 +1985,7 @@ export function registerIpcHandlers(): void {
     ): Promise<CcbNativeModelConfiguration> => {
       const configuration = updateCcbNativeModelConfiguration(input)
       clearAgentRuntimeModelCatalogCache(CCB_NATIVE_CHANNEL_ID)
+      await invalidateAgentRuntimeConfiguration(CCB_NATIVE_CHANNEL_ID)
       return configuration
     },
   )

@@ -19,10 +19,15 @@ import {
 import type { CcbNativeModelConfiguration, Channel } from '@proma/shared'
 import { getChannelLogo } from '@/lib/model-logo'
 import { getEnabledAgentChannelIds } from '@/lib/agent-channel-selection'
+import { resolveAgentSessionModelBinding } from '@/lib/agent-model-configuration'
+import { isLastEnabledChannelConfiguration } from '@/lib/channel-model-selection'
 import {
   agentChannelIdAtom,
   agentModelIdAtom,
   agentChannelIdsAtom,
+  agentRuntimeModelCatalogsAtom,
+  agentRuntimeModelCatalogRevisionAtom,
+  agentSessionsAtom,
 } from '@/atoms/agent-atoms'
 import { channelsAtom } from '@/atoms/chat-atoms'
 import { SettingsSection, SettingsCard, SettingsRow } from './primitives'
@@ -51,6 +56,11 @@ export function ChannelSettings(): React.ReactElement {
   const [, setAgentModelId] = useAtom(agentModelIdAtom)
   const [agentChannelIds, setAgentChannelIds] = useAtom(agentChannelIdsAtom)
   const setGlobalChannels = useSetAtom(channelsAtom)
+  const refreshRuntimeModelCatalog = useSetAtom(
+    agentRuntimeModelCatalogRevisionAtom,
+  )
+  const setRuntimeModelCatalogs = useSetAtom(agentRuntimeModelCatalogsAtom)
+  const setAgentSessions = useSetAtom(agentSessionsAtom)
   const [deleteTarget, setDeleteTarget] = React.useState<Channel | null>(null)
   const [deleting, setDeleting] = React.useState(false)
   const [nativeConfiguration, setNativeConfiguration] =
@@ -67,6 +77,44 @@ export function ChannelSettings(): React.ReactElement {
   React.useEffect(() => {
     agentChannelIdRef.current = agentChannelId
   }, [agentChannelId])
+
+  /** 清除所有项目的旧模型目录，并通知已打开与新建会话重新向 CCB 读取。 */
+  const invalidateRendererModelCatalogs = React.useCallback((): void => {
+    setRuntimeModelCatalogs(new Map())
+    refreshRuntimeModelCatalog(revision => revision + 1)
+  }, [refreshRuntimeModelCatalog, setRuntimeModelCatalogs])
+
+  /**
+   * CCB Desktop 同一时间只启用一个 Provider，因此切换配置时同步现有会话绑定。
+   * 运行中的 Turn 不受影响，更新后的绑定从下一轮开始使用。
+   */
+  const synchronizeSessionsToChannel = React.useCallback(async (
+    channelId: string,
+    modelIds: string[],
+    defaultModelId?: string,
+  ): Promise<void> => {
+    const sessions = await window.electronAPI.listAgentSessions()
+    const synchronized = await Promise.all(sessions.map(async session => {
+      const binding = resolveAgentSessionModelBinding(
+        session,
+        channelId,
+        modelIds,
+        defaultModelId,
+      )
+      if (
+        session.channelId === binding.channelId
+        && session.modelId === binding.modelId
+      ) {
+        return session
+      }
+      return window.electronAPI.updateAgentSessionModel(
+        session.id,
+        binding.channelId,
+        binding.modelId,
+      )
+    }))
+    setAgentSessions(synchronized)
+  }, [setAgentSessions])
 
   /** 加载渠道列表 */
   const loadChannels = React.useCallback(async (): Promise<Channel[]> => {
@@ -171,6 +219,14 @@ export function ChannelSettings(): React.ReactElement {
         agentChannelId: channel.id,
         agentModelId: undefined,
       }).catch(console.error)
+      const enabledModelIds = channel.models
+        .filter(model => model.enabled)
+        .map(model => model.id)
+      await synchronizeSessionsToChannel(
+        channel.id,
+        enabledModelIds,
+        enabledModelIds[0],
+      )
       return
     }
 
@@ -185,8 +241,19 @@ export function ChannelSettings(): React.ReactElement {
         agentChannelId: CCB_NATIVE_CHANNEL_ID,
         agentModelId: undefined,
       }).catch(console.error)
+      await synchronizeSessionsToChannel(
+        CCB_NATIVE_CHANNEL_ID,
+        nativeConfiguration?.models.map(model => model.id) ?? [],
+        nativeConfiguration?.defaultModel,
+      )
     }
-  }, [setAgentChannelIds, setAgentChannelId, setAgentModelId])
+  }, [
+    nativeConfiguration,
+    setAgentChannelIds,
+    setAgentChannelId,
+    setAgentModelId,
+    synchronizeSessionsToChannel,
+  ])
 
   /** 删除渠道（通过弹窗确认） */
   const handleDeleteRequest = (channel: Channel): void => {
@@ -212,9 +279,15 @@ export function ChannelSettings(): React.ReactElement {
           agentChannelId: CCB_NATIVE_CHANNEL_ID,
           agentModelId: undefined,
         })
+        await synchronizeSessionsToChannel(
+          CCB_NATIVE_CHANNEL_ID,
+          nativeConfiguration?.models.map(model => model.id) ?? [],
+          nativeConfiguration?.defaultModel,
+        )
       }
 
       await loadChannels()
+      invalidateRendererModelCatalogs()
       setDeleteTarget(null)
       toast.success(`已删除模型配置「${target.name}」`)
     } catch (error) {
@@ -231,6 +304,10 @@ export function ChannelSettings(): React.ReactElement {
 
   /** 切换渠道启用状态 */
   const handleToggle = async (channel: Channel): Promise<void> => {
+    if (isLastEnabledChannelConfiguration(channels, channel.id)) {
+      toast.warning('至少需要保留一个启用的模型配置')
+      return
+    }
     try {
       const savedChannel = await window.electronAPI.updateChannel(channel.id, { enabled: !channel.enabled })
       await syncAgentChannelEligibility(
@@ -239,8 +316,10 @@ export function ChannelSettings(): React.ReactElement {
       )
 
       await loadChannels()
+      invalidateRendererModelCatalogs()
     } catch (error) {
       console.error('[渠道设置] 切换渠道状态失败:', error)
+      toast.error('切换模型配置失败，请重试')
     }
   }
 
@@ -261,9 +340,16 @@ export function ChannelSettings(): React.ReactElement {
         agentChannelId: CCB_NATIVE_CHANNEL_ID,
         agentModelId: undefined,
       })
+      await synchronizeSessionsToChannel(
+        CCB_NATIVE_CHANNEL_ID,
+        nativeConfiguration?.models.map(model => model.id) ?? [],
+        nativeConfiguration?.defaultModel,
+      )
       await loadChannels()
+      invalidateRendererModelCatalogs()
     } catch (error) {
       console.error('[模型配置] 启用 CCB 原生配置失败:', error)
+      toast.error('启用内置模型配置失败，请重试')
     }
   }
 
@@ -279,11 +365,48 @@ export function ChannelSettings(): React.ReactElement {
     setViewMode('list')
     setEditingChannel(null)
     await loadChannels()
+    invalidateRendererModelCatalogs()
   }
+
+  /** 自动保存后立即同步全局 Channel，并触发 CCB 模型目录重新读取。 */
+  const handleFormChanged = React.useCallback(async (
+    savedChannel: Channel,
+  ): Promise<void> => {
+    setEditingChannel(savedChannel)
+    await loadChannels()
+    if (
+      savedChannel.enabled
+      && agentChannelIdRef.current === savedChannel.id
+    ) {
+      const enabledModelIds = savedChannel.models
+        .filter(model => model.enabled)
+        .map(model => model.id)
+      await synchronizeSessionsToChannel(
+        savedChannel.id,
+        enabledModelIds,
+        enabledModelIds[0],
+      )
+    }
+    invalidateRendererModelCatalogs()
+  }, [
+    invalidateRendererModelCatalogs,
+    loadChannels,
+    synchronizeSessionsToChannel,
+  ])
 
   const handleNativeFormSaved = async (): Promise<void> => {
     setViewMode('list')
     await loadNativeConfiguration()
+    if (agentChannelIdRef.current === CCB_NATIVE_CHANNEL_ID) {
+      const configuration =
+        await window.electronAPI.getCcbNativeModelConfiguration()
+      await synchronizeSessionsToChannel(
+        CCB_NATIVE_CHANNEL_ID,
+        configuration.models.map(model => model.id),
+        configuration.defaultModel,
+      )
+    }
+    invalidateRendererModelCatalogs()
   }
 
   /** 取消表单 */
@@ -307,6 +430,7 @@ export function ChannelSettings(): React.ReactElement {
       <ChannelForm
         channel={editingChannel}
         onSaved={handleFormSaved}
+        onChanged={handleFormChanged}
         onAgentEligibilityChange={syncAgentChannelEligibility}
         onCancel={handleFormCancel}
       />

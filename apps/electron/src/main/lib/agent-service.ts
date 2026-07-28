@@ -388,6 +388,18 @@ export async function updateAgentRuntimeConfig(
   return adapter.updateRuntimeConfig(sessionId, updates)
 }
 
+/**
+ * 模型配置变更后刷新关联的 CCB Session Worker。
+ *
+ * 空闲会话立即释放旧 Worker；运行中会话在当前 Turn 完成后释放，
+ * 因此不会中断正在进行的工具调用。
+ */
+export async function invalidateAgentRuntimeConfiguration(
+  channelId: string,
+): Promise<void> {
+  await adapter.invalidateChannelConfiguration(channelId)
+}
+
 export async function getAgentRuntimeExecutionGraph(
   sessionId: string,
 ): Promise<AgentRuntimeExecutionGraph> {
