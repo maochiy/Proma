@@ -68,6 +68,7 @@ import {
   agentModelIdAtom,
   agentChannelIdsAtom,
   agentRuntimeModelCatalogsAtom,
+  getAgentRuntimeModelCatalogKey,
   agentSessionChannelMapAtom,
   agentSessionModelMapAtom,
   currentAgentWorkspaceIdAtom,
@@ -447,7 +448,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       .join('|'),
     [enabledAgentChannels],
   )
-
   React.useEffect(() => {
     let cancelled = false
 
@@ -460,10 +460,18 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       for (const channel of enabledAgentChannels) {
         try {
           const catalog =
-            await window.electronAPI.getAgentRuntimeModelCatalog(channel.id)
+            await window.electronAPI.getAgentRuntimeModelCatalog(
+              channel.id,
+              undefined,
+              currentWorkspaceId ?? undefined,
+            )
           if (cancelled) return
           setRuntimeModelCatalogs((previous) => {
-            const existing = previous.get(channel.id)
+            const catalogKey = getAgentRuntimeModelCatalogKey(
+              currentWorkspaceId,
+              channel.id,
+            )
+            const existing = previous.get(catalogKey)
             if (
               existing
               && existing.runtimeArtifactCommit === catalog.runtimeArtifactCommit
@@ -474,7 +482,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
               return previous
             }
             const next = new Map(previous)
-            next.set(channel.id, catalog)
+            next.set(catalogKey, catalog)
             return next
           })
         } catch (error) {
@@ -484,9 +492,13 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
             error,
           )
           setRuntimeModelCatalogs((previous) => {
-            if (!previous.has(channel.id)) return previous
+            const catalogKey = getAgentRuntimeModelCatalogKey(
+              currentWorkspaceId,
+              channel.id,
+            )
+            if (!previous.has(catalogKey)) return previous
             const next = new Map(previous)
-            next.delete(channel.id)
+            next.delete(catalogKey)
             return next
           })
         }
@@ -500,12 +512,15 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     }
   }, [
     runtimeCatalogRequestSignature,
+    currentWorkspaceId,
     setRuntimeModelCatalogs,
   ])
 
   const runtimeModelOptions = React.useMemo<ModelOption[]>(
     () => enabledAgentChannels.flatMap(channel => {
-      const catalog = runtimeModelCatalogs.get(channel.id)
+      const catalog = runtimeModelCatalogs.get(
+        getAgentRuntimeModelCatalogKey(currentWorkspaceId, channel.id),
+      )
       if (!catalog) return []
       return catalog.models.map(model => ({
         channelId: channel.id,
@@ -518,17 +533,19 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         runtimeModelInfo: model,
       }))
     }),
-    [enabledAgentChannels, runtimeModelCatalogs],
+    [currentWorkspaceId, enabledAgentChannels, runtimeModelCatalogs],
   )
   const selectedRuntimeModel = React.useMemo(
     () => {
       if (!agentChannelId || !agentModelId) return undefined
       return findAgentRuntimeModel(
-        runtimeModelCatalogs.get(agentChannelId)?.models ?? [],
+        runtimeModelCatalogs.get(
+          getAgentRuntimeModelCatalogKey(currentWorkspaceId, agentChannelId),
+        )?.models ?? [],
         agentModelId,
       )
     },
-    [agentChannelId, agentModelId, runtimeModelCatalogs],
+    [agentChannelId, agentModelId, currentWorkspaceId, runtimeModelCatalogs],
   )
   const thinkingEffortCapability = React.useMemo(
     () => resolveAgentThinkingEffortCapability(selectedRuntimeModel),
@@ -560,7 +577,9 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   React.useEffect(() => {
     if (!agentChannelId) return
 
-    const catalog = runtimeModelCatalogs.get(agentChannelId)
+    const catalog = runtimeModelCatalogs.get(
+      getAgentRuntimeModelCatalogKey(currentWorkspaceId, agentChannelId),
+    )
     const normalizedCurrentModel = agentModelId?.replace(/\[1m\]$/i, '')
     const currentModelAvailable = catalog?.models.some(model =>
       model.value === agentModelId || model.value === normalizedCurrentModel,
@@ -590,6 +609,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     agentChannelId,
     agentModelId,
     defaultModelId,
+    currentWorkspaceId,
     runtimeModelCatalogs,
     sessionId,
     setDefaultModelId,
@@ -2555,6 +2575,12 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       return next
     })
     if (nextThinking) setAgentThinking(nextThinking)
+    void window.electronAPI.updateAgentRuntimeConfig(sessionId, {
+      thinkingConfig: nextThinking,
+      effortLevel: level,
+    }).catch((error) => {
+      console.error('[AgentView] 实时更新 CCB 思考等级失败:', error)
+    })
     if (level === 'max') {
       if (nextThinking) {
         window.electronAPI.updateSettings({
@@ -2704,7 +2730,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
           capability={thinkingEffortCapability}
           value={effectiveThinkingEffortLevel}
           expanded={thinkingExpanded}
-          disabled={streaming || backgroundWaiting}
           onValueChange={handleThinkingEffortChange}
           onExpandedChange={setThinkingExpanded}
         />

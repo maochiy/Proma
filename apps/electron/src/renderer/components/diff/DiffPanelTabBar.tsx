@@ -94,6 +94,24 @@ export function DiffPanelTabBar({
         </button>
         <button
           type="button"
+          onClick={() => onTabChange('execution')}
+          className={cn(
+            'flex-1 px-2 h-[34px] text-xs transition-colors select-none cursor-pointer whitespace-nowrap overflow-hidden',
+            isClassic ? 'rounded-t-lg' : 'rounded-none',
+            'border-t border-l border-r',
+            activeTab === 'execution'
+              ? isClassic
+                ? 'bg-content-area text-foreground border-border/50'
+                : 'app-tab-active text-foreground border-border/80'
+              : isClassic
+                ? 'text-muted-foreground border-transparent hover:text-foreground hover:bg-muted/50'
+                : 'app-tab-inactive text-muted-foreground border-transparent hover:text-foreground',
+          )}
+        >
+          执行
+        </button>
+        <button
+          type="button"
           onClick={() => onTabChange('workspace')}
           className={cn(
             'flex-1 px-3 h-[34px] text-xs transition-colors select-none cursor-pointer whitespace-nowrap overflow-hidden',

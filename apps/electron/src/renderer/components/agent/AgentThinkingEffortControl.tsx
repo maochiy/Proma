@@ -1,6 +1,6 @@
 import * as React from 'react'
 import * as SliderPrimitive from '@radix-ui/react-slider'
-import { ChevronRight, Gauge } from 'lucide-react'
+import { Gauge } from 'lucide-react'
 import type { ThinkingEffortLevel } from '@proma/shared'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Switch } from '@/components/ui/switch'
@@ -14,7 +14,6 @@ interface AgentThinkingEffortControlProps {
   capability: AgentThinkingEffortCapability
   value: ThinkingEffortLevel
   expanded: boolean
-  disabled?: boolean
   onValueChange: (value: ThinkingEffortLevel) => void
   onExpandedChange: (expanded: boolean) => void
 }
@@ -80,7 +79,6 @@ export function AgentThinkingEffortControl({
   capability,
   value,
   expanded,
-  disabled = false,
   onValueChange,
   onExpandedChange,
 }: AgentThinkingEffortControlProps): React.ReactElement {
@@ -98,13 +96,11 @@ export function AgentThinkingEffortControl({
       <PopoverTrigger asChild>
         <button
           type="button"
-          disabled={disabled}
           aria-label={`思考等级：${THINKING_EFFORT_LABELS[value]}`}
           className={cn(
             'flex h-7 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground transition-colors',
             'hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground',
             'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45',
-            'disabled:cursor-not-allowed disabled:opacity-50',
           )}
         >
           <Gauge className="size-3.5" />
@@ -118,11 +114,10 @@ export function AgentThinkingEffortControl({
         className="w-56 p-3"
         onOpenAutoFocus={(event) => event.preventDefault()}
       >
-        <div className="mb-3 flex items-center justify-between">
+        <div className="mb-3 flex items-center">
           <span className="text-xs font-medium text-foreground/75">
             {THINKING_EFFORT_LABELS[previewLevel]}
           </span>
-          <ChevronRight className="size-3.5 text-muted-foreground/55" />
         </div>
 
         <div className="py-1">

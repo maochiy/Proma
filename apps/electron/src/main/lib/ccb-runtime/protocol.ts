@@ -1,15 +1,19 @@
 import type {
   AgentRuntimeModelCatalog,
   AgentRuntimeProviderConfiguration,
+  AgentRuntimeExecutionGraph,
+  AgentRuntimeSessionCatalog,
+  AgentRuntimeSessionTranscript,
+  AgentRuntimeSubagentTranscript,
   RuntimeSkillCatalog,
   SDKMessage,
   ThinkingConfig,
   ThinkingEffortLevel,
 } from '@proma/shared'
 
-export const CCB_PROTOCOL_VERSION = 3
-export const EXPECTED_CCB_RUNTIME_VERSION = '2.8.11'
-export const EXPECTED_CCB_RUNTIME_COMMIT = '31bce5cc1ec514436105c60f93ab309649b7179b'
+export const CCB_PROTOCOL_VERSION = 5
+export const EXPECTED_CCB_RUNTIME_VERSION = '2.8.12'
+export const EXPECTED_CCB_RUNTIME_COMMIT = 'b75d4a73c7f2428191fdec39862443670ee733ba'
 
 export type CcbPermissionMode =
   | 'default'
@@ -70,6 +74,7 @@ export type CcbRuntimeCommand =
   | { type: 'session.getState' }
   | {
       type: 'session.resolveModelCatalog'
+      cwd: string
       environment: {
         variables: Record<string, string>
         configDir: string
@@ -77,6 +82,36 @@ export type CcbRuntimeCommand =
       providerConfiguration: AgentRuntimeProviderConfiguration
     }
   | { type: 'session.resolveSkillCatalog'; options: CcbSessionOptions }
+  | {
+      type: 'session.list'
+      cwd: string
+      environment: {
+        variables: Record<string, string>
+        configDir: string
+      }
+      limit?: number
+      offset?: number
+    }
+  | {
+      type: 'session.getTranscript'
+      cwd: string
+      environment: {
+        variables: Record<string, string>
+        configDir: string
+      }
+      runtimeSessionId: string
+    }
+  | {
+      type: 'session.delete'
+      cwd: string
+      environment: {
+        variables: Record<string, string>
+        configDir: string
+      }
+      runtimeSessionId: string
+    }
+  | { type: 'session.getExecutionGraph' }
+  | { type: 'session.getSubagentTranscript'; executionNodeId: string }
   | { type: 'session.setPermissionMode'; mode: CcbPermissionMode }
   | {
       type: 'session.updateConfig'
@@ -129,6 +164,7 @@ export type CcbRuntimeEvent =
       runtimeSessionId?: string
     }
   | { type: 'runtime.message'; message: SDKMessage }
+  | { type: 'runtime.executionGraphChanged'; graph: AgentRuntimeExecutionGraph }
   | { type: 'runtime.progress'; phase: string; detail?: string; data?: Record<string, unknown> }
   | {
       type: 'interaction.permissionRequested'
@@ -177,6 +213,10 @@ export interface CcbRuntimeManifest {
 }
 
 export type CcbRuntimeModelCatalog = Omit<AgentRuntimeModelCatalog, 'channelId'>
+export type CcbRuntimeSessionCatalog = AgentRuntimeSessionCatalog
+export type CcbRuntimeSessionTranscript = AgentRuntimeSessionTranscript
+export type CcbRuntimeExecutionGraph = AgentRuntimeExecutionGraph
+export type CcbRuntimeSubagentTranscript = AgentRuntimeSubagentTranscript
 export type CcbRuntimeSkillCatalog = Omit<
   RuntimeSkillCatalog,
   'runtimeVersion' | 'runtimeArtifactCommit'

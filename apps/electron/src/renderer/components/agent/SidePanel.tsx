@@ -21,6 +21,7 @@ import { FileBrowser, FileDropZone, FileTypeIcon, FileSearchBar, computeRevealAn
 import { DiffPanelTabBar } from '@/components/diff/DiffPanelTabBar'
 import { DiffChangesList } from '@/components/diff/DiffChangesList'
 import { ChatView } from '@/components/chat/ChatView'
+import { RuntimeExecutionPanel } from './RuntimeExecutionPanel'
 import {
   agentSidePanelOpenAtom,
   workspaceFilesVersionAtom,
@@ -454,6 +455,8 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
             ) : (
               <div className="flex-1 flex items-center justify-center text-muted-foreground text-xs">暂无问答会话</div>
             )
+          ) : effectiveActiveTab === 'execution' ? (
+            <RuntimeExecutionPanel sessionId={sessionId} />
           ) : effectiveActiveTab === 'changes' ? (
             sessionPath ? (
               <DiffChangesList

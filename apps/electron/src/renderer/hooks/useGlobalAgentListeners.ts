@@ -44,6 +44,7 @@ import {
   agentSessionPathMapAtom,
   agentDiffRefreshVersionAtom,
   askUserDraftsAtom,
+  agentRuntimeExecutionGraphsAtom,
 } from '@/atoms/agent-atoms'
 import {
   notificationsEnabledAtom,
@@ -59,7 +60,7 @@ import { channelsAtom } from '@/atoms/chat-atoms'
 import { previewFileMapAtom } from '@/atoms/preview-atoms'
 import type { NotificationSoundType } from '@/types/settings'
 import { toast } from 'sonner'
-import type { AgentStreamEvent, AgentStreamCompletePayload, AgentEvent, AgentStreamPayload, SDKAssistantMessage, SDKUserMessage, SDKSystemMessage, SDKContentBlock, SDKUserContentBlock, PromaEvent, AgentSessionMeta, ProviderType } from '@proma/shared'
+import type { AgentStreamEvent, AgentStreamCompletePayload, AgentEvent, AgentStreamPayload, SDKAssistantMessage, SDKUserMessage, SDKSystemMessage, SDKContentBlock, SDKUserContentBlock, PromaEvent, AgentSessionMeta, AgentRuntimeExecutionGraph, ProviderType } from '@proma/shared'
 import { pickRuntimeReportedContextWindow } from '@proma/shared'
 import { buildExternalAgentRunActivation } from '@/lib/external-agent-run'
 import { upsertAgentSession, mergeFetchedAgentSessions } from '@/lib/agent-session-list'
@@ -636,6 +637,15 @@ export function useGlobalAgentListeners(): void {
           // 它通过下方 legacyEvents 分支写入 agentPromptSuggestionsAtom，显示在输入框上方
           if (msgRecord.type === 'prompt_suggestion') {
             // 跳过写入 liveMessages
+          } else if (msgRecord.type === 'runtime_execution_graph') {
+            const graph = msgRecord.graph as AgentRuntimeExecutionGraph | undefined
+            if (graph) {
+              store.set(agentRuntimeExecutionGraphsAtom, (prev) => {
+                const next = new Map(prev)
+                next.set(sessionId, graph)
+                return next
+              })
+            }
           } else if (msgRecord.type === 'system' && msgRecord.subtype === 'thinking_tokens') {
             // thinking_tokens 是高频进度估算，只更新流式状态，不进入消息转录。
           } else if (!msgRecord.isReplay) {

@@ -7,7 +7,7 @@
 
 import { atom } from 'jotai'
 import { atomFamily, atomWithStorage } from 'jotai/utils'
-import type { AgentSessionMeta, AgentEvent, AgentWorkspace, AgentPendingFile, AgentRuntimeModelCatalog, RetryAttempt, PromaPermissionMode, PermissionRequest, AskUserRequest, ExitPlanModeRequest, ThinkingConfig, ThinkingEffortLevel, SDKMessage, UnstagedChangesResult } from '@proma/shared'
+import type { AgentSessionMeta, AgentEvent, AgentWorkspace, AgentPendingFile, AgentRuntimeModelCatalog, AgentRuntimeExecutionGraph, RetryAttempt, PromaPermissionMode, PermissionRequest, AskUserRequest, ExitPlanModeRequest, ThinkingConfig, ThinkingEffortLevel, SDKMessage, UnstagedChangesResult } from '@proma/shared'
 import { PROMA_DEFAULT_PERMISSION_MODE } from '@proma/shared'
 import { calculateDockBadgeCount, countPendingRequests } from '@/lib/dock-badge-count'
 import type { AgentQueuedMessage } from '@/lib/agent-message-queue'
@@ -222,8 +222,15 @@ export const agentChannelIdAtom = atom<string | null>(null)
 export const agentModelIdAtom = atom<string | null>(null)
 /** Agent 启用的渠道 ID 列表（多选，设置页 Switch 开关控制） */
 export const agentChannelIdsAtom = atom<string[]>([])
-/** CCB Runtime 按 Channel 解析的模型目录；仅保存在内存中。 */
+/** CCB Runtime 按「项目 + Channel」解析的模型目录；仅保存在内存中。 */
 export const agentRuntimeModelCatalogsAtom = atom<Map<string, AgentRuntimeModelCatalog>>(new Map())
+
+export function getAgentRuntimeModelCatalogKey(
+  workspaceId: string | null | undefined,
+  channelId: string,
+): string {
+  return `${workspaceId ?? '__default__'}:${channelId}`
+}
 
 /** Per-session 渠道 ID Map — sessionId → channelId */
 export const agentSessionChannelMapAtom = atom<Map<string, string>>(new Map())
@@ -319,6 +326,11 @@ export const workspaceCapabilitiesVersionAtom = atom(0)
 /** 工作区文件版本号 — 文件变化时自增，触发文件浏览器重新加载 */
 export const workspaceFilesVersionAtom = atom(0)
 
+/** CCB 原生 Subagent / Teams / Workflow / Todo 执行图，按会话隔离。 */
+export const agentRuntimeExecutionGraphsAtom = atom<
+  Map<string, AgentRuntimeExecutionGraph>
+>(new Map())
+
 // ===== 侧面板 Atoms =====
 
 /** 侧面板是否打开（全局共享，所有会话共用一个状态） */
@@ -330,7 +342,12 @@ export const agentSidePanelWidthAtom = atomWithStorage<number>('proma-agent-side
 /** @deprecated 保留以兼容旧代码，但实际所有 session 都读全局 atom */
 export const agentSidePanelOpenMapAtom = atom<Map<string, boolean>>(new Map())
 
-export type AgentSidePanelTab = 'session' | 'workspace' | 'changes' | 'chat'
+export type AgentSidePanelTab =
+  | 'session'
+  | 'workspace'
+  | 'changes'
+  | 'execution'
+  | 'chat'
 
 /** 侧面板当前 Tab：会话文件 / 工作区文件 / 文件改动 / Chat（per-session Map） */
 export const agentDiffPanelTabAtom = atom<Map<string, AgentSidePanelTab>>(new Map())

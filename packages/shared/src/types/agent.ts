@@ -83,6 +83,90 @@ export interface AgentRuntimeModelCatalog {
   runtimeArtifactCommit?: string
 }
 
+/** CCB Transcript 目录中的单个会话。 */
+export interface AgentRuntimeSessionSummary {
+  runtimeSessionId: string
+  title: string
+  summary: string
+  cwd: string
+  createdAt?: number
+  updatedAt: number
+  messageCount?: number
+  gitBranch?: string
+  tag?: string
+}
+
+/** CCB 按项目 cwd 返回的会话目录。 */
+export interface AgentRuntimeSessionCatalog {
+  cwd: string
+  sessions: AgentRuntimeSessionSummary[]
+  nextOffset?: number
+}
+
+/** CCB Transcript 的 Renderer wire-shape 投影。 */
+export interface AgentRuntimeSessionTranscript {
+  runtimeSessionId: string
+  cwd: string
+  messages: SDKMessage[]
+}
+
+export type AgentRuntimeExecutionNodeKind =
+  | 'subagent'
+  | 'teammate'
+  | 'workflow-agent'
+  | 'background-task'
+  | 'shell'
+
+export type AgentRuntimeExecutionNodeStatus =
+  | 'queued'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'stopped'
+
+/** CCB 原生 Subagent、Teams、Workflow 与后台任务节点。 */
+export interface AgentRuntimeExecutionNode {
+  id: string
+  parentId?: string
+  kind: AgentRuntimeExecutionNodeKind
+  name?: string
+  status: AgentRuntimeExecutionNodeStatus
+  description: string
+  startedAt?: number
+  completedAt?: number
+  toolUseId?: string
+  transcriptAvailable: boolean
+  summary?: string
+  model?: string
+  agentType?: string
+  teamName?: string
+}
+
+/** CCB 原生 Todo/Task 状态。 */
+export interface AgentRuntimeTodoItem {
+  id: string
+  content: string
+  status: string
+  activeForm?: string
+  owner?: string
+  blocks?: string[]
+  blockedBy?: string[]
+}
+
+/** 当前 CCB Session 的实时执行图。 */
+export interface AgentRuntimeExecutionGraph {
+  runtimeSessionId?: string
+  nodes: AgentRuntimeExecutionNode[]
+  todos: AgentRuntimeTodoItem[]
+  updatedAt: number
+}
+
+/** CCB 子代理节点的 Transcript。 */
+export interface AgentRuntimeSubagentTranscript {
+  executionNodeId: string
+  messages: SDKMessage[]
+}
+
 /** 模型配置表单在保存前交给 CCB 解析的临时配置。 */
 export interface AgentRuntimeModelCatalogDraftInput {
   provider: ProviderType
@@ -1499,8 +1583,14 @@ export const AGENT_IPC_CHANNELS = {
   UPDATE_TITLE: 'agent:update-title',
   /** 更新会话模型选择 */
   UPDATE_SESSION_MODEL: 'agent:update-session-model',
+  /** 实时更新已打开 CCB Session 的模型/思考配置 */
+  UPDATE_RUNTIME_CONFIG: 'agent:update-runtime-config',
   /** 读取指定 Channel 经 CCB Runtime 解析后的模型目录与能力 */
   GET_RUNTIME_MODEL_CATALOG: 'agent:get-runtime-model-catalog',
+  /** 读取当前 CCB Session 的 Subagent/Teams/Workflow/Todo 执行图 */
+  GET_RUNTIME_EXECUTION_GRAPH: 'agent:get-runtime-execution-graph',
+  /** 读取 CCB 子代理节点 Transcript */
+  GET_RUNTIME_SUBAGENT_TRANSCRIPT: 'agent:get-runtime-subagent-transcript',
   /** 读取尚未保存的模型配置经 CCB Runtime 解析后的模型目录与能力 */
   GET_RUNTIME_MODEL_CATALOG_DRAFT: 'agent:get-runtime-model-catalog-draft',
   /** 删除会话 */

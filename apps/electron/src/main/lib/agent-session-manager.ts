@@ -33,6 +33,7 @@ import type {
   AgentMessageSearchResult,
   AgentSessionReferenceSearchInput,
   AgentSessionReferenceSearchResult,
+  AgentRuntimeSessionSummary,
 } from '@proma/shared'
 import { migratePermissionMode } from '@proma/shared'
 import { getConversationMessages } from './conversation-manager'
@@ -202,6 +203,76 @@ function writeIndex(index: AgentSessionsIndex): void {
  */
 export function listAgentSessions(): AgentSessionMeta[] {
   const index = readIndex()
+  return index.sessions.sort((a, b) => b.updatedAt - a.updatedAt)
+}
+
+/**
+ * 将 CCB Transcript 目录同步为 Proma UI 投影。
+ *
+ * CCB runtimeSessionId 是执行上下文真源；Proma 索引仅保留置顶、归档、
+ * Channel、Workspace 等桌面展示字段。
+ */
+export function syncRuntimeSessionCatalog(
+  workspaceId: string,
+  runtimeSessions: AgentRuntimeSessionSummary[],
+): AgentSessionMeta[] {
+  const index = readIndex()
+  const runtimeSessionIds = new Set(
+    runtimeSessions.map(session => session.runtimeSessionId),
+  )
+  const removedSessions = index.sessions.filter(
+    session =>
+      session.workspaceId === workspaceId
+      && Boolean(session.runtimeSessionId)
+      && !runtimeSessionIds.has(session.runtimeSessionId!),
+  )
+  if (removedSessions.length > 0) {
+    const removedIds = new Set(removedSessions.map(session => session.id))
+    index.sessions = index.sessions.filter(
+      session => !removedIds.has(session.id),
+    )
+  }
+  let changed = false
+  for (const runtimeSession of runtimeSessions) {
+    const existing = index.sessions.find(
+      session => session.runtimeSessionId === runtimeSession.runtimeSessionId,
+    )
+    if (existing) {
+      const nextTitle = runtimeSession.title || runtimeSession.summary
+      if (
+        existing.workspaceId !== workspaceId
+        || existing.title !== nextTitle
+        || existing.updatedAt !== runtimeSession.updatedAt
+      ) {
+        existing.workspaceId = workspaceId
+        existing.title = nextTitle
+        existing.updatedAt = runtimeSession.updatedAt
+        changed = true
+      }
+      continue
+    }
+    const now = runtimeSession.createdAt ?? runtimeSession.updatedAt
+    index.sessions.push({
+      id: index.sessions.some(session => session.id === runtimeSession.runtimeSessionId)
+        ? randomUUID()
+        : runtimeSession.runtimeSessionId,
+      runtimeSessionId: runtimeSession.runtimeSessionId,
+      title: runtimeSession.title || runtimeSession.summary,
+      workspaceId,
+      createdAt: now,
+      updatedAt: runtimeSession.updatedAt,
+      runtimeWorkerState: 'cold',
+    })
+    changed = true
+  }
+  if (removedSessions.length > 0) changed = true
+  if (changed) writeIndex(index)
+  for (const removed of removedSessions) {
+    cleanupAgentSessionProjectionFiles(removed.id)
+    console.log(
+      `[Agent 会话] CCB Transcript 已不存在，移除桌面投影: ${removed.title} (${removed.id})`,
+    )
+  }
   return index.sessions.sort((a, b) => b.updatedAt - a.updatedAt)
 }
 
@@ -390,6 +461,18 @@ export function getAgentSessionSDKMessages(id: string): SDKMessage[] {
   }
 }
 
+/** 使用 CCB Transcript 重建 Proma JSONL UI 投影。 */
+export function replaceAgentSessionSDKMessages(
+  id: string,
+  messages: SDKMessage[],
+): void {
+  const filePath = getAgentSessionMessagesPath(id)
+  const content = messages.length > 0
+    ? `${messages.map(message => serializeSDKMessageForStorage(message)).join('\n')}\n`
+    : ''
+  writeTextFileAtomic(filePath, content)
+}
+
 /**
  * convertLegacyMessage 已迁移至 @proma/session-core（本文件从该包 import 使用）。
  */
@@ -432,18 +515,7 @@ export function updateAgentSessionMeta(
 /**
  * 删除会话
  */
-export function deleteAgentSession(id: string): void {
-  const index = readIndex()
-  const idx = index.sessions.findIndex((s) => s.id === id)
-
-  if (idx === -1) {
-    console.warn(`[Agent 会话] 会话不存在，跳过删除: ${id}`)
-    return
-  }
-
-  const removed = index.sessions.splice(idx, 1)[0]!
-  writeIndex(index)
-
+function cleanupAgentSessionProjectionFiles(id: string): void {
   // 删除消息文件
   const filePath = getAgentSessionMessagesPath(id)
   if (existsSync(filePath)) {
@@ -465,12 +537,24 @@ export function deleteAgentSession(id: string): void {
     console.warn(`[Agent 会话] 清理 session 附件目录失败 (${id}):`, error)
   }
 
-  console.log(`[Agent 会话] 已删除会话: ${removed.title} (${removed.id})`)
-
   // 清理 Nano Banana 生图历史
   clearNanoBananaAgentHistory(id)
   void promaBuiltinMcpHttpHost.releaseSession(id)
+}
 
+export function deleteAgentSession(id: string): void {
+  const index = readIndex()
+  const idx = index.sessions.findIndex((s) => s.id === id)
+
+  if (idx === -1) {
+    console.warn(`[Agent 会话] 会话不存在，跳过删除: ${id}`)
+    return
+  }
+
+  const removed = index.sessions.splice(idx, 1)[0]!
+  writeIndex(index)
+  cleanupAgentSessionProjectionFiles(id)
+  console.log(`[Agent 会话] 已删除会话: ${removed.title} (${removed.id})`)
 }
 
 /**

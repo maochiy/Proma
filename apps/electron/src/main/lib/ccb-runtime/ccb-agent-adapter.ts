@@ -221,6 +221,37 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
     )
   }
 
+  async updateRuntimeConfig(
+    sessionId: string,
+    updates: {
+      model?: string
+      thinkingConfig?: import('@proma/shared').ThinkingConfig
+      effortLevel?: import('@proma/shared').ThinkingEffortLevel
+    },
+  ): Promise<boolean> {
+    if (!this.openedSessions.has(sessionId)) return false
+    await ccbDesktopRuntimeClient.request(
+      {
+        type: 'session.updateConfig',
+        model: updates.model,
+        thinkingConfig: updates.thinkingConfig,
+        effortLevel: updates.effortLevel,
+      },
+      sessionId,
+      5_000,
+    )
+    const current = this.sessionRuntimeConfigs.get(sessionId)
+    if (current) {
+      this.sessionRuntimeConfigs.set(sessionId, {
+        ...current,
+        model: updates.model ?? current.model,
+        thinkingConfig: updates.thinkingConfig,
+        effortLevel: updates.effortLevel,
+      })
+    }
+    return true
+  }
+
   async forkSession(
     input: AgentRuntimeSessionOperationInput,
     upToMessageUuid?: string,
@@ -467,6 +498,7 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
         await ccbDesktopRuntimeClient.request<CcbRuntimeModelCatalog>(
           {
             type: 'session.resolveModelCatalog',
+            cwd: options.cwd ?? process.cwd(),
             environment: {
               variables: environment,
               configDir: join(getConfigDir(), 'runtime', 'ccb'),
@@ -595,6 +627,14 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
     switch (event.type) {
       case 'runtime.message':
         queue.push(event.message)
+        return
+      case 'runtime.executionGraphChanged':
+        queue.push({
+          type: 'runtime_execution_graph',
+          graph: event.graph,
+          session_id: options.sessionId,
+          uuid: `execution-graph-${event.graph.updatedAt}`,
+        } as SDKMessage)
         return
       case 'turn.completed':
         this.settleTurn(options.sessionId)

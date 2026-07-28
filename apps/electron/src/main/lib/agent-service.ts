@@ -29,6 +29,10 @@ import type {
   AgentMessage,
   ForkSessionInput,
   AgentSessionMeta,
+  ThinkingConfig,
+  ThinkingEffortLevel,
+  AgentRuntimeExecutionGraph,
+  AgentRuntimeSubagentTranscript,
 } from '@proma/shared'
 import { CcbDesktopRuntimeAdapter } from './ccb-runtime/ccb-agent-adapter'
 import { ccbDesktopRuntimeClient } from './ccb-runtime/runtime-client'
@@ -370,6 +374,39 @@ export function shutdownAgentRuntime(): void {
  */
 export async function updateAgentPermissionMode(sessionId: string, mode: PromaPermissionMode): Promise<void> {
   await orchestrator.updateSessionPermissionMode(sessionId, mode)
+}
+
+/** 实时更新已打开的 CCB Session；未打开时返回 false，由下次 turn 使用持久化设置。 */
+export async function updateAgentRuntimeConfig(
+  sessionId: string,
+  updates: {
+    model?: string
+    thinkingConfig?: ThinkingConfig
+    effortLevel?: ThinkingEffortLevel
+  },
+): Promise<boolean> {
+  return adapter.updateRuntimeConfig(sessionId, updates)
+}
+
+export async function getAgentRuntimeExecutionGraph(
+  sessionId: string,
+): Promise<AgentRuntimeExecutionGraph> {
+  return ccbDesktopRuntimeClient.request<AgentRuntimeExecutionGraph>(
+    { type: 'session.getExecutionGraph' },
+    sessionId,
+    10_000,
+  )
+}
+
+export async function getAgentRuntimeSubagentTranscript(
+  sessionId: string,
+  executionNodeId: string,
+): Promise<AgentRuntimeSubagentTranscript> {
+  return ccbDesktopRuntimeClient.request<AgentRuntimeSubagentTranscript>(
+    { type: 'session.getSubagentTranscript', executionNodeId },
+    sessionId,
+    10_000,
+  )
 }
 
 // ===== 流式追加消息 =====

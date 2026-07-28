@@ -441,16 +441,36 @@ export interface ElectronAPI {
   /** 更新 Agent 会话模型选择 */
   updateAgentSessionModel: (id: string, channelId?: string, modelId?: string) => Promise<AgentSessionMeta>
 
+  /** 实时更新已打开的 CCB Session 配置。 */
+  updateAgentRuntimeConfig: (
+    sessionId: string,
+    updates: {
+      model?: string
+      thinkingConfig?: import('@proma/shared').ThinkingConfig
+      effortLevel?: import('@proma/shared').ThinkingEffortLevel
+    },
+  ) => Promise<boolean>
+
   /** 读取指定渠道经 CCB Runtime 解析后的模型目录 */
   getAgentRuntimeModelCatalog: (
     channelId: string,
     defaultModel?: string,
+    workspaceId?: string,
   ) => Promise<AgentRuntimeModelCatalog>
 
   /** 读取尚未保存的配置经 CCB Runtime 解析后的模型目录 */
   getAgentRuntimeModelCatalogDraft: (
     input: AgentRuntimeModelCatalogDraftInput,
   ) => Promise<AgentRuntimeModelCatalog>
+
+  getAgentRuntimeExecutionGraph: (
+    sessionId: string,
+  ) => Promise<import('@proma/shared').AgentRuntimeExecutionGraph>
+
+  getAgentRuntimeSubagentTranscript: (
+    sessionId: string,
+    executionNodeId: string,
+  ) => Promise<import('@proma/shared').AgentRuntimeSubagentTranscript>
 
   /** 删除 Agent 会话 */
   deleteAgentSession: (id: string) => Promise<void>
@@ -1486,11 +1506,31 @@ const electronAPI: ElectronAPI = {
     return ipcRenderer.invoke(AGENT_IPC_CHANNELS.UPDATE_SESSION_MODEL, id, channelId, modelId)
   },
 
-  getAgentRuntimeModelCatalog: (channelId: string, defaultModel?: string) => {
+  updateAgentRuntimeConfig: (
+    sessionId: string,
+    updates: {
+      model?: string
+      thinkingConfig?: import('@proma/shared').ThinkingConfig
+      effortLevel?: import('@proma/shared').ThinkingEffortLevel
+    },
+  ) => {
+    return ipcRenderer.invoke(
+      AGENT_IPC_CHANNELS.UPDATE_RUNTIME_CONFIG,
+      sessionId,
+      updates,
+    )
+  },
+
+  getAgentRuntimeModelCatalog: (
+    channelId: string,
+    defaultModel?: string,
+    workspaceId?: string,
+  ) => {
     return ipcRenderer.invoke(
       AGENT_IPC_CHANNELS.GET_RUNTIME_MODEL_CATALOG,
       channelId,
       defaultModel,
+      workspaceId,
     )
   },
 
@@ -1498,6 +1538,24 @@ const electronAPI: ElectronAPI = {
     return ipcRenderer.invoke(
       AGENT_IPC_CHANNELS.GET_RUNTIME_MODEL_CATALOG_DRAFT,
       input,
+    )
+  },
+
+  getAgentRuntimeExecutionGraph: (sessionId: string) => {
+    return ipcRenderer.invoke(
+      AGENT_IPC_CHANNELS.GET_RUNTIME_EXECUTION_GRAPH,
+      sessionId,
+    )
+  },
+
+  getAgentRuntimeSubagentTranscript: (
+    sessionId: string,
+    executionNodeId: string,
+  ) => {
+    return ipcRenderer.invoke(
+      AGENT_IPC_CHANNELS.GET_RUNTIME_SUBAGENT_TRANSCRIPT,
+      sessionId,
+      executionNodeId,
     )
   },
 

@@ -56,7 +56,12 @@ function writeAgentSessionsIndex(sessions: Array<{
   workspaceId: string
   createdAt: number
   updatedAt: number
+  runtimeSessionId?: string
+  channelId?: string
+  modelId?: string
+  pinned?: boolean
   archived?: boolean
+  starred?: boolean
 }>): void {
   const dir = join(tempHome, '.proma')
   mkdirSync(dir, { recursive: true })
@@ -143,6 +148,64 @@ describe('Agent 会话元数据', () => {
     expect(updated).toMatchObject({ starred: true, archived: true })
     expect(updated.updatedAt).toBe(archived.updatedAt)
     expect(manager.getAgentSessionMeta(session.id)).toMatchObject({ starred: true, archived: true })
+  })
+
+  test('Given CCB 会话目录 When 同步 UI 投影 Then 更新 Runtime 字段并保留桌面字段', () => {
+    writeAgentSessionsIndex([
+      {
+        id: 'proma-session',
+        runtimeSessionId: 'ccb-session',
+        title: '旧标题',
+        workspaceId: 'workspace-old',
+        channelId: 'channel-1',
+        modelId: 'model-1',
+        pinned: true,
+        archived: true,
+        starred: true,
+        createdAt: 10,
+        updatedAt: 20,
+      },
+    ])
+
+    manager.syncRuntimeSessionCatalog('workspace-new', [
+      {
+        runtimeSessionId: 'ccb-session',
+        title: 'CCB 新标题',
+        summary: 'CCB 摘要',
+        cwd: '/tmp/project',
+        createdAt: 1,
+        updatedAt: 100,
+      },
+      {
+        runtimeSessionId: 'ccb-new-session',
+        title: 'CCB 新会话',
+        summary: '新会话摘要',
+        cwd: '/tmp/project',
+        createdAt: 50,
+        updatedAt: 60,
+      },
+    ])
+
+    expect(manager.getAgentSessionMeta('proma-session')).toMatchObject({
+      runtimeSessionId: 'ccb-session',
+      title: 'CCB 新标题',
+      workspaceId: 'workspace-new',
+      channelId: 'channel-1',
+      modelId: 'model-1',
+      pinned: true,
+      archived: true,
+      starred: true,
+      createdAt: 10,
+      updatedAt: 100,
+    })
+    expect(manager.listAgentSessions()).toContainEqual(
+      expect.objectContaining({
+        id: 'ccb-new-session',
+        runtimeSessionId: 'ccb-new-session',
+        workspaceId: 'workspace-new',
+        runtimeWorkerState: 'cold',
+      }),
+    )
   })
 })
 

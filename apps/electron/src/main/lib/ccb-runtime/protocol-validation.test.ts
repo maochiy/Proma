@@ -123,6 +123,7 @@ describe('Proma CCB Runtime protocol validation', () => {
         commandEnvelope(
           {
             type: 'session.resolveModelCatalog',
+            cwd: '/tmp/project',
             environment: {
               variables: {
                 CLAUDE_CODE_USE_OPENAI: '1',
@@ -187,6 +188,25 @@ describe('Proma CCB Runtime protocol validation', () => {
             },
           },
           'skill-catalog:project-1',
+        ),
+      ),
+    ).not.toThrow()
+  })
+
+  test('校验按项目 cwd 删除 CCB Transcript 的命令', () => {
+    expect(() =>
+      assertCcbCommandEnvelope(
+        commandEnvelope(
+          {
+            type: 'session.delete',
+            cwd: '/tmp/project',
+            environment: {
+              variables: {},
+              configDir: '/tmp/ccb',
+            },
+            runtimeSessionId: '00000000-0000-4000-8000-000000000001',
+          },
+          'delete-session',
         ),
       ),
     ).not.toThrow()

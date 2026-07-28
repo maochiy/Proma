@@ -1,13 +1,17 @@
 const { app, MessageChannelMain, utilityProcess } = require('electron')
+const { readFileSync } = require('node:fs')
 const { join } = require('node:path')
 const { tmpdir } = require('node:os')
 
-const PROTOCOL_VERSION = 3
 const smokeConfigDir = join(tmpdir(), 'proma-ccb-runtime-smoke')
 const runtimeRoot = process.env.PROMA_CCB_RUNTIME_PATH
 if (!runtimeRoot) {
   throw new Error('请设置 PROMA_CCB_RUNTIME_PATH')
 }
+const runtimeManifest = JSON.parse(
+  readFileSync(join(runtimeRoot, 'runtime-manifest.json'), 'utf8'),
+)
+const PROTOCOL_VERSION = runtimeManifest.protocolVersion
 
 app.whenReady().then(async () => {
   let expectedExit = false
@@ -78,6 +82,7 @@ app.whenReady().then(async () => {
         timestamp: Date.now(),
         payload: {
           type: 'session.resolveModelCatalog',
+          cwd: process.cwd(),
           environment: {
             variables: {
               ANTHROPIC_API_KEY: 'smoke-local-key',

@@ -399,11 +399,13 @@ export function assertCcbCommandEnvelope(
     case 'session.suspend':
     case 'session.close':
     case 'session.getState':
+    case 'session.getExecutionGraph':
     case 'turn.stop':
       assertSessionId(value)
       return
     case 'session.resolveModelCatalog':
       assertSessionId(value)
+      assertString(payload.cwd, `${payload.type}.cwd`)
       assertRecord(payload.environment, `${payload.type}.environment`)
       assertStringRecord(
         payload.environment.variables,
@@ -416,6 +418,50 @@ export function assertCcbCommandEnvelope(
       assertProviderConfiguration(
         payload.providerConfiguration,
         `${payload.type}.providerConfiguration`,
+      )
+      return
+    case 'session.list':
+      assertSessionId(value)
+      assertString(payload.cwd, `${payload.type}.cwd`)
+      assertRecord(payload.environment, `${payload.type}.environment`)
+      assertStringRecord(
+        payload.environment.variables,
+        `${payload.type}.environment.variables`,
+      )
+      assertString(
+        payload.environment.configDir,
+        `${payload.type}.environment.configDir`,
+      )
+      if (payload.limit !== undefined) {
+        assertFiniteNumber(payload.limit, `${payload.type}.limit`)
+      }
+      if (payload.offset !== undefined) {
+        assertFiniteNumber(payload.offset, `${payload.type}.offset`)
+      }
+      return
+    case 'session.getTranscript':
+    case 'session.delete':
+      assertSessionId(value)
+      assertString(payload.cwd, `${payload.type}.cwd`)
+      assertRecord(payload.environment, `${payload.type}.environment`)
+      assertStringRecord(
+        payload.environment.variables,
+        `${payload.type}.environment.variables`,
+      )
+      assertString(
+        payload.environment.configDir,
+        `${payload.type}.environment.configDir`,
+      )
+      assertString(
+        payload.runtimeSessionId,
+        `${payload.type}.runtimeSessionId`,
+      )
+      return
+    case 'session.getSubagentTranscript':
+      assertSessionId(value)
+      assertString(
+        payload.executionNodeId,
+        `${payload.type}.executionNodeId`,
       )
       return
     case 'session.resolveSkillCatalog':
@@ -599,6 +645,20 @@ export function assertCcbEventEnvelope(
     case 'runtime.message':
       assertSessionId(value)
       assertSdkMessage(payload.message, `${payload.type}.message`)
+      return
+    case 'runtime.executionGraphChanged':
+      assertSessionId(value)
+      assertRecord(payload.graph, `${payload.type}.graph`)
+      if (!Array.isArray(payload.graph.nodes)) {
+        throw new Error(`${payload.type}.graph.nodes 必须是数组`)
+      }
+      if (!Array.isArray(payload.graph.todos)) {
+        throw new Error(`${payload.type}.graph.todos 必须是数组`)
+      }
+      assertFiniteNumber(
+        payload.graph.updatedAt,
+        `${payload.type}.graph.updatedAt`,
+      )
       return
     case 'runtime.progress':
       assertSessionId(value)

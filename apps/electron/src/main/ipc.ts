@@ -193,12 +193,17 @@ import {
   searchAgentSessionMessages,
   searchAgentSessionReferences,
 } from './lib/agent-session-manager'
-import { runAgent, stopAgent, closeAgentSessionRuntime, generateAgentTitle, saveFilesToAgentSession, saveFilesToWorkspaceFiles, isAgentSessionActive, queueAgentMessage, updateAgentPermissionMode, rewindAgentSession, forkAgentRuntimeSession } from './lib/agent-service'
+import { runAgent, stopAgent, closeAgentSessionRuntime, generateAgentTitle, saveFilesToAgentSession, saveFilesToWorkspaceFiles, isAgentSessionActive, queueAgentMessage, updateAgentPermissionMode, updateAgentRuntimeConfig, getAgentRuntimeExecutionGraph, getAgentRuntimeSubagentTranscript, rewindAgentSession, forkAgentRuntimeSession } from './lib/agent-service'
 import {
   resolveAgentRuntimeModelCatalog,
   resolveDraftAgentRuntimeModelCatalog,
 } from './lib/ccb-runtime/model-catalog-service'
 import { resolveAgentRuntimeSkillCatalog } from './lib/ccb-runtime/skill-catalog-service'
+import {
+  deleteCcbSessionTranscript,
+  syncCcbSessionCatalogs,
+  syncCcbSessionTranscript,
+} from './lib/ccb-runtime/session-catalog-service'
 import { permissionService } from './lib/agent-permission-service'
 import { askUserService } from './lib/agent-ask-user-service'
 import { exitPlanService } from './lib/agent-exit-plan-service'
@@ -1827,7 +1832,10 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     AGENT_IPC_CHANNELS.LIST_SESSIONS,
     async (): Promise<AgentSessionMeta[]> => {
-      const sessions = listAgentSessions()
+      const sessions = await syncCcbSessionCatalogs().catch(error => {
+        console.warn('[CCB Session Catalog] 同步失败，暂用本地 UI 投影:', error)
+        return listAgentSessions()
+      })
       // 启动所有已有附加目录的文件监听
       for (const session of sessions) {
         if (session.attachedDirectories) {
@@ -1856,6 +1864,9 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     AGENT_IPC_CHANNELS.GET_SDK_MESSAGES,
     async (_, id: string): Promise<SDKMessage[]> => {
+      await syncCcbSessionTranscript(id).catch(error => {
+        console.warn(`[CCB Transcript] 同步失败，暂用本地 UI 投影: session=${id}`, error)
+      })
       return getAgentSessionSDKMessages(id)
     }
   )
@@ -1879,11 +1890,31 @@ export function registerIpcHandlers(): void {
     }
   )
 
+  ipcMain.handle(
+    AGENT_IPC_CHANNELS.UPDATE_RUNTIME_CONFIG,
+    async (
+      _,
+      sessionId: string,
+      updates: {
+        model?: string
+        thinkingConfig?: import('@proma/shared').ThinkingConfig
+        effortLevel?: import('@proma/shared').ThinkingEffortLevel
+      },
+    ): Promise<boolean> => {
+      return updateAgentRuntimeConfig(sessionId, updates)
+    },
+  )
+
   // 读取 CCB 内核解析后的模型能力目录
   ipcMain.handle(
     AGENT_IPC_CHANNELS.GET_RUNTIME_MODEL_CATALOG,
-    async (_, channelId: string, defaultModel?: string): Promise<AgentRuntimeModelCatalog> => {
-      return resolveAgentRuntimeModelCatalog(channelId, defaultModel)
+    async (
+      _,
+      channelId: string,
+      defaultModel?: string,
+      workspaceId?: string,
+    ): Promise<AgentRuntimeModelCatalog> => {
+      return resolveAgentRuntimeModelCatalog(channelId, defaultModel, workspaceId)
     }
   )
 
@@ -1895,6 +1926,20 @@ export function registerIpcHandlers(): void {
       input: AgentRuntimeModelCatalogDraftInput,
     ): Promise<AgentRuntimeModelCatalog> => {
       return resolveDraftAgentRuntimeModelCatalog(input)
+    },
+  )
+
+  ipcMain.handle(
+    AGENT_IPC_CHANNELS.GET_RUNTIME_EXECUTION_GRAPH,
+    async (_, sessionId: string) => {
+      return getAgentRuntimeExecutionGraph(sessionId)
+    },
+  )
+
+  ipcMain.handle(
+    AGENT_IPC_CHANNELS.GET_RUNTIME_SUBAGENT_TRANSCRIPT,
+    async (_, sessionId: string, executionNodeId: string) => {
+      return getAgentRuntimeSubagentTranscript(sessionId, executionNodeId)
     },
   )
 
@@ -1919,6 +1964,7 @@ export function registerIpcHandlers(): void {
     AGENT_IPC_CHANNELS.DELETE_SESSION,
     async (_, id: string): Promise<void> => {
       await closeAgentSessionRuntime(id)
+      await deleteCcbSessionTranscript(id)
       // 清理权限服务中该会话的白名单
       permissionService.clearSessionWhitelist(id)
       permissionService.clearSessionPending(id)
@@ -2106,6 +2152,8 @@ export function registerIpcHandlers(): void {
         if (isAgentSessionActive(sessionId)) {
           stopAgent(sessionId)
         }
+        await closeAgentSessionRuntime(sessionId)
+        await deleteCcbSessionTranscript(sessionId)
         deleteAgentSession(sessionId)
       }
       for (const automationId of affectedAutomationIds) {

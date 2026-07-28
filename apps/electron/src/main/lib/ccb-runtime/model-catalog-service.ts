@@ -16,6 +16,7 @@ import {
   resolveCodexOAuthCredentials,
 } from '../channel-manager'
 import { getConfigDir } from '../config-paths'
+import { getAgentWorkspace } from '../agent-workspace-manager'
 import { getEffectiveProxyUrl } from '../proxy-settings-service'
 import { ccbDesktopRuntimeClient } from './runtime-client'
 import {
@@ -67,6 +68,7 @@ function normalizeCatalogBaseUrl(channel: Channel): string | undefined {
 function hashCatalogConfiguration(
   channel: Channel,
   environment: Record<string, string>,
+  cwd: string,
   defaultModel?: string,
 ): string {
   return createHash('sha256')
@@ -78,6 +80,7 @@ function hashCatalogConfiguration(
       defaultModel,
       models: channel.models,
       environment,
+      cwd,
     }))
     .digest('hex')
 }
@@ -97,6 +100,7 @@ async function resolveCredentials(
 
 async function buildModelCatalogRequestContext(
   channel: Channel,
+  cwd: string,
   defaultModel?: string,
   options: {
     credentials?: { apiKey: string; codexCredentials?: CodexOAuthCredentials }
@@ -137,6 +141,7 @@ async function buildModelCatalogRequestContext(
     fingerprint: hashCatalogConfiguration(
       channel,
       environment,
+      cwd,
       defaultModel,
     ),
   }
@@ -144,12 +149,14 @@ async function buildModelCatalogRequestContext(
 
 async function loadAgentRuntimeModelCatalog(
   context: ModelCatalogRequestContext,
+  cwd: string,
   requestSessionId: string,
   resultChannelId: string,
 ): Promise<AgentRuntimeModelCatalog> {
   const result = await ccbDesktopRuntimeClient.request<CcbRuntimeModelCatalog>(
     {
       type: 'session.resolveModelCatalog',
+      cwd,
       environment: {
         variables: context.environment,
         configDir: join(getConfigDir(), 'runtime', 'ccb'),
@@ -178,28 +185,37 @@ async function loadAgentRuntimeModelCatalog(
 export async function resolveAgentRuntimeModelCatalog(
   channelId: string,
   defaultModel?: string,
+  workspaceId?: string,
 ): Promise<AgentRuntimeModelCatalog> {
   const channel = getChannelById(channelId)
   if (!channel || !channel.enabled) {
     throw new Error('Agent 渠道不存在或已禁用')
   }
 
-  const context = await buildModelCatalogRequestContext(channel, defaultModel)
-  const cached = catalogCache.get(channelId)
+  const workspace = workspaceId ? getAgentWorkspace(workspaceId) : undefined
+  const cwd = workspace?.canonicalPath ?? workspace?.path ?? process.cwd()
+  const context = await buildModelCatalogRequestContext(
+    channel,
+    cwd,
+    defaultModel,
+  )
+  const cacheKey = `${channelId}:${cwd}`
+  const cached = catalogCache.get(cacheKey)
   if (cached?.fingerprint === context.fingerprint) return cached.promise
 
   const promise = loadAgentRuntimeModelCatalog(
     context,
+    cwd,
     `__model-catalog__:${channel.id}`,
     channel.id,
   ).catch(
     error => {
-      const current = catalogCache.get(channelId)
-      if (current?.promise === promise) catalogCache.delete(channelId)
+      const current = catalogCache.get(cacheKey)
+      if (current?.promise === promise) catalogCache.delete(cacheKey)
       throw error
     },
   )
-  catalogCache.set(channelId, {
+  catalogCache.set(cacheKey, {
     fingerprint: context.fingerprint,
     promise,
   })
@@ -240,6 +256,7 @@ export async function resolveDraftAgentRuntimeModelCatalog(
   }
   const context = await buildModelCatalogRequestContext(
     channel,
+    process.cwd(),
     input.defaultModel,
     {
       credentials: {
@@ -255,6 +272,7 @@ export async function resolveDraftAgentRuntimeModelCatalog(
 
   const promise = loadAgentRuntimeModelCatalog(
     context,
+    process.cwd(),
     '__model-catalog-draft__',
     '__draft__',
   ).catch(error => {
@@ -270,7 +288,9 @@ export async function resolveDraftAgentRuntimeModelCatalog(
 
 export function clearAgentRuntimeModelCatalogCache(channelId?: string): void {
   if (channelId) {
-    catalogCache.delete(channelId)
+    for (const key of catalogCache.keys()) {
+      if (key.startsWith(`${channelId}:`)) catalogCache.delete(key)
+    }
     return
   }
   catalogCache.clear()
