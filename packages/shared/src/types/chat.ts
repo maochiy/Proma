@@ -323,6 +323,8 @@ export interface ModelOption {
   thinkingEffortLevels?: import('./agent').ThinkingEffortLevel[]
   /** 模型推荐的默认思考等级。 */
   defaultThinkingEffortLevel?: import('./agent').ThinkingEffortLevel
+  /** CCB Runtime 解析出的完整模型能力，仅 Agent 模型目录提供。 */
+  runtimeModelInfo?: import('./agent').AgentRuntimeModelInfo
 }
 
 // ===== 分页加载相关 =====

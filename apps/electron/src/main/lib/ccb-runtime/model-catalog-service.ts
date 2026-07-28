@@ -2,10 +2,12 @@ import { createHash } from 'node:crypto'
 import { join } from 'node:path'
 import type {
   AgentRuntimeModelCatalog,
+  AgentRuntimeModelCatalogDraftInput,
   AgentRuntimeProviderConfiguration,
   Channel,
   CodexOAuthCredentials,
 } from '@proma/shared'
+import { parseCodexCredentials } from '@proma/shared'
 import { getPromaUserAgent, normalizeAnthropicBaseUrlForSdk } from '@proma/core'
 import pkg from '../../../../package.json' with { type: 'json' }
 import {
@@ -37,6 +39,7 @@ interface ModelCatalogRequestContext {
 }
 
 const catalogCache = new Map<string, CachedModelCatalog>()
+let draftCatalogCache: CachedModelCatalog | undefined
 const DEFAULT_ANTHROPIC_URL = 'https://api.anthropic.com'
 
 function normalizeCatalogBaseUrl(channel: Channel): string | undefined {
@@ -95,8 +98,13 @@ async function resolveCredentials(
 async function buildModelCatalogRequestContext(
   channel: Channel,
   defaultModel?: string,
+  options: {
+    credentials?: { apiKey: string; codexCredentials?: CodexOAuthCredentials }
+    includeDisabledModels?: boolean
+  } = {},
 ): Promise<ModelCatalogRequestContext> {
-  const { apiKey, codexCredentials } = await resolveCredentials(channel)
+  const { apiKey, codexCredentials } =
+    options.credentials ?? await resolveCredentials(channel)
   const proxyUrl = await getEffectiveProxyUrl()
   const providerEnvironment = buildCcbProviderEnvironment({
     provider: channel.provider,
@@ -120,6 +128,7 @@ async function buildModelCatalogRequestContext(
   const providerConfiguration = buildCcbProviderConfiguration(
     channel,
     defaultModel,
+    { includeDisabledModels: options.includeDisabledModels },
   )
   return {
     channel,
@@ -135,6 +144,8 @@ async function buildModelCatalogRequestContext(
 
 async function loadAgentRuntimeModelCatalog(
   context: ModelCatalogRequestContext,
+  requestSessionId: string,
+  resultChannelId: string,
 ): Promise<AgentRuntimeModelCatalog> {
   const result = await ccbDesktopRuntimeClient.request<CcbRuntimeModelCatalog>(
     {
@@ -145,13 +156,13 @@ async function loadAgentRuntimeModelCatalog(
       },
       providerConfiguration: context.providerConfiguration,
     },
-    `__model-catalog__:${context.channel.id}`,
+    requestSessionId,
     30_000,
   )
   assertCcbRuntimeModelCatalog(result)
   const runtime = ccbDesktopRuntimeClient.getRuntimeInfo()
   return {
-    channelId: context.channel.id,
+    channelId: resultChannelId,
     defaultModel: result.defaultModel,
     models: result.models,
     runtimeVersion: runtime?.runtimeVersion,
@@ -177,7 +188,11 @@ export async function resolveAgentRuntimeModelCatalog(
   const cached = catalogCache.get(channelId)
   if (cached?.fingerprint === context.fingerprint) return cached.promise
 
-  const promise = loadAgentRuntimeModelCatalog(context).catch(
+  const promise = loadAgentRuntimeModelCatalog(
+    context,
+    `__model-catalog__:${channel.id}`,
+    channel.id,
+  ).catch(
     error => {
       const current = catalogCache.get(channelId)
       if (current?.promise === promise) catalogCache.delete(channelId)
@@ -191,10 +206,73 @@ export async function resolveAgentRuntimeModelCatalog(
   return promise
 }
 
+/**
+ * 读取尚未保存的 Channel 草稿在 CCB 中解析出的模型能力。
+ *
+ * 草稿会把启用和未启用模型一起交给 CCB，因此“已启用模型”和“可用模型”
+ * 都能展示同一内核实际使用的 Context Window、Effort、Adaptive/Fast/Auto 能力。
+ */
+export async function resolveDraftAgentRuntimeModelCatalog(
+  input: AgentRuntimeModelCatalogDraftInput,
+): Promise<AgentRuntimeModelCatalog> {
+  if (input.models.length === 0) {
+    throw new Error('请先添加至少一个模型')
+  }
+
+  const codexCredentials =
+    input.provider === 'openai-codex'
+      ? parseCodexCredentials(input.apiKey)
+      : undefined
+  if (input.provider === 'openai-codex' && !codexCredentials) {
+    throw new Error('ChatGPT 订阅渠道缺少完整 OAuth 凭据')
+  }
+
+  const channel: Channel = {
+    id: '__draft__',
+    name: '临时模型配置',
+    provider: input.provider,
+    baseUrl: input.baseUrl,
+    apiKey: '',
+    models: input.models,
+    enabled: true,
+    createdAt: 0,
+    updatedAt: 0,
+  }
+  const context = await buildModelCatalogRequestContext(
+    channel,
+    input.defaultModel,
+    {
+      credentials: {
+        apiKey: codexCredentials?.access ?? input.apiKey,
+        ...(codexCredentials ? { codexCredentials } : {}),
+      },
+      includeDisabledModels: true,
+    },
+  )
+  if (draftCatalogCache?.fingerprint === context.fingerprint) {
+    return draftCatalogCache.promise
+  }
+
+  const promise = loadAgentRuntimeModelCatalog(
+    context,
+    '__model-catalog-draft__',
+    '__draft__',
+  ).catch(error => {
+    if (draftCatalogCache?.promise === promise) draftCatalogCache = undefined
+    throw error
+  })
+  draftCatalogCache = {
+    fingerprint: context.fingerprint,
+    promise,
+  }
+  return promise
+}
+
 export function clearAgentRuntimeModelCatalogCache(channelId?: string): void {
   if (channelId) {
     catalogCache.delete(channelId)
     return
   }
   catalogCache.clear()
+  draftCatalogCache = undefined
 }

@@ -1,18 +1,18 @@
 /**
  * ChannelSettings - 渠道配置页
  *
- * 管理所有渠道的添加、编辑、删除与启用状态；每个渠道直接展示可用的 Agent Core。
+ * 管理所有渠道的添加、编辑、删除与启用状态，并标识 CCB Runtime 可用性。
  */
 
 import * as React from 'react'
 import { useAtom, useSetAtom } from 'jotai'
-import { ExternalLink, Pencil, Plus, Trash2 } from 'lucide-react'
+import { Pencil, Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
 import { Switch } from '@/components/ui/switch'
 import { PROVIDER_LABELS, isAgentCompatibleProvider } from '@proma/shared'
 import type { Channel } from '@proma/shared'
-import { getChannelLogo, PromaLogo } from '@/lib/model-logo'
+import { getChannelLogo } from '@/lib/model-logo'
 import { getEnabledAgentChannelIds } from '@/lib/agent-channel-selection'
 import { agentChannelIdAtom, agentModelIdAtom, agentChannelIdsAtom } from '@/atoms/agent-atoms'
 import { channelsAtom } from '@/atoms/chat-atoms'
@@ -200,7 +200,7 @@ export function ChannelSettings(): React.ReactElement {
       {/* 区块一：模型配置 */}
       <SettingsSection
         title="模型配置"
-        description="管理 AI 供应商连接，配置 API Key 和可用模型。每个渠道会标注可用的 Agent Core。"
+        description="管理 AI 供应商连接、API Key 与模型。Agent 模型能力由 CCB Runtime 解析。"
         action={
           <Button size="sm" onClick={() => setViewMode('create')}>
             <Plus size={16} />
@@ -208,9 +208,6 @@ export function ChannelSettings(): React.ReactElement {
           </Button>
         }
       >
-        <SettingsCard>
-          <PromaProviderCard />
-        </SettingsCard>
         {loading ? (
           <div className="text-sm text-muted-foreground py-8 text-center">加载中...</div>
         ) : channels.length === 0 ? (
@@ -256,10 +253,6 @@ export function ChannelSettings(): React.ReactElement {
   )
 }
 
-function openPromaDownload(): void {
-  window.open('https://proma.cool/download', '_blank')
-}
-
 // ===== 渠道行子组件 =====
 
 interface ChannelRowProps {
@@ -285,7 +278,7 @@ function ChannelRow({ channel, onEdit, onDelete, onToggle }: ChannelRowProps): R
       description={
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <span>{description}</span>
-          <AgentCoreChips provider={channel.provider} />
+          <CcbRuntimeChip provider={channel.provider} />
         </div>
       }
       className="group"
@@ -317,44 +310,18 @@ function ChannelRow({ channel, onEdit, onDelete, onToggle }: ChannelRowProps): R
   )
 }
 
-function AgentCoreChips({ provider }: Pick<Channel, 'provider'>): React.ReactElement {
-  const supportsClaude = isAgentCompatibleProvider(provider)
+function CcbRuntimeChip({ provider }: Pick<Channel, 'provider'>): React.ReactElement | null {
+  if (!isAgentCompatibleProvider(provider)) return null
 
   return (
-    <div className="inline-flex items-center gap-1" aria-label="支持的 Agent Core">
-      {supportsClaude && (
-        <Badge
-          variant="outline"
-          className="px-1.5 py-0 text-[10px] font-medium leading-5"
-          title="Claude Agent SDK"
-        >
-          Claude
-        </Badge>
-      )}
+    <div className="inline-flex items-center gap-1" aria-label="支持 CCB Desktop Runtime">
       <Badge
         variant="outline"
         className="px-1.5 py-0 text-[10px] font-medium leading-5"
-        title="Pi Agent SDK"
+        title="Claude Code Best Desktop Runtime"
       >
-        Pi
+        CCB
       </Badge>
     </div>
-  )
-}
-
-// ===== Proma 官方供应商推广卡片 =====
-
-function PromaProviderCard(): React.ReactElement {
-  return (
-    <SettingsRow
-      label="Proma"
-      icon={<img src={PromaLogo} alt="Proma" className="w-8 h-8 rounded" />}
-      description="Proma 商业版｜安全、稳定、优惠的内置模型｜适用于 Chat 与 Agent"
-    >
-      <Button size="sm" variant="outline" className="gap-1.5" onClick={openPromaDownload}>
-        <ExternalLink size={13} />
-        <span>下载商业版</span>
-      </Button>
-    </SettingsRow>
   )
 }

@@ -127,7 +127,7 @@ export const AGENT_COMPATIBLE_PROVIDERS: ReadonlySet<ProviderType> = new Set<Pro
 ])
 
 /**
- * 判断供应商是否兼容 Claude Agent Core
+ * 判断供应商是否兼容 CCB Desktop Runtime
  */
 export function isAgentCompatibleProvider(provider: ProviderType): boolean {
   return AGENT_COMPATIBLE_PROVIDERS.has(provider)

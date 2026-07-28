@@ -513,6 +513,9 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         modelId: model.value,
         modelName: model.displayName,
         provider: channel.provider,
+        thinkingEffortLevels: model.supportedEffortLevels,
+        defaultThinkingEffortLevel: model.defaultEffortLevel,
+        runtimeModelInfo: model,
       }))
     }),
     [enabledAgentChannels, runtimeModelCatalogs],

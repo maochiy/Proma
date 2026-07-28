@@ -48,12 +48,17 @@ function CodexEffortSlider({
       className="relative flex h-7 w-full touch-none select-none items-center"
     >
       <SliderPrimitive.Track className="relative h-7 w-full grow overflow-hidden rounded-full bg-[#e9e9e9] dark:bg-white/10">
-        <SliderPrimitive.Range className="absolute h-full bg-transparent" />
+        <SliderPrimitive.Range className="absolute h-full bg-primary transition-colors" />
         <span className="pointer-events-none absolute inset-x-3.5 top-1/2 flex -translate-y-1/2 justify-between">
-          {levels.map((level) => (
+          {levels.map((level, index) => (
             <span
               key={level}
-              className="size-1 rounded-full bg-[#b7b7b7] dark:bg-white/30"
+              className={cn(
+                'size-1 rounded-full transition-colors',
+                index <= value
+                  ? 'bg-primary-foreground/90'
+                  : 'bg-[#b7b7b7] dark:bg-white/30',
+              )}
             />
           ))}
         </span>

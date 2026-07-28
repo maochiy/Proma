@@ -1,4 +1,4 @@
-import type { ProviderType } from './channel'
+import type { ChannelModel, ProviderType } from './channel'
 
 /**
  * Agent 相关类型定义
@@ -75,6 +75,15 @@ export interface AgentRuntimeModelCatalog {
   models: AgentRuntimeModelInfo[]
   runtimeVersion?: string
   runtimeArtifactCommit?: string
+}
+
+/** 模型配置表单在保存前交给 CCB 解析的临时配置。 */
+export interface AgentRuntimeModelCatalogDraftInput {
+  provider: ProviderType
+  baseUrl: string
+  apiKey: string
+  models: ChannelModel[]
+  defaultModel?: string
 }
 
 /**
@@ -1441,6 +1450,8 @@ export const AGENT_IPC_CHANNELS = {
   UPDATE_SESSION_MODEL: 'agent:update-session-model',
   /** 读取指定 Channel 经 CCB Runtime 解析后的模型目录与能力 */
   GET_RUNTIME_MODEL_CATALOG: 'agent:get-runtime-model-catalog',
+  /** 读取尚未保存的模型配置经 CCB Runtime 解析后的模型目录与能力 */
+  GET_RUNTIME_MODEL_CATALOG_DRAFT: 'agent:get-runtime-model-catalog-draft',
   /** 删除会话 */
   DELETE_SESSION: 'agent:delete-session',
   /** 迁移 Chat 对话记录到 Agent 会话 */

@@ -36,6 +36,7 @@ import type {
   MessageSearchResult,
   AgentSessionMeta,
   AgentRuntimeModelCatalog,
+  AgentRuntimeModelCatalogDraftInput,
   SDKMessage,
   AgentSendInput,
   AgentStreamEvent,
@@ -444,6 +445,11 @@ export interface ElectronAPI {
   getAgentRuntimeModelCatalog: (
     channelId: string,
     defaultModel?: string,
+  ) => Promise<AgentRuntimeModelCatalog>
+
+  /** 读取尚未保存的配置经 CCB Runtime 解析后的模型目录 */
+  getAgentRuntimeModelCatalogDraft: (
+    input: AgentRuntimeModelCatalogDraftInput,
   ) => Promise<AgentRuntimeModelCatalog>
 
   /** 删除 Agent 会话 */
@@ -1482,6 +1488,13 @@ const electronAPI: ElectronAPI = {
       AGENT_IPC_CHANNELS.GET_RUNTIME_MODEL_CATALOG,
       channelId,
       defaultModel,
+    )
+  },
+
+  getAgentRuntimeModelCatalogDraft: (input: AgentRuntimeModelCatalogDraftInput) => {
+    return ipcRenderer.invoke(
+      AGENT_IPC_CHANNELS.GET_RUNTIME_MODEL_CATALOG_DRAFT,
+      input,
     )
   },
 

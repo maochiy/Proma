@@ -110,6 +110,36 @@ describe('CCB Provider 环境映射', () => {
     })
   })
 
+  test('Given 模型配置草稿 When 请求 CCB 能力 Then 同时解析尚未启用的可用模型', () => {
+    const configuration = buildCcbProviderConfiguration({
+      id: '__draft__',
+      name: '临时模型配置',
+      provider: 'anthropic',
+      baseUrl: 'https://api.anthropic.com',
+      apiKey: '',
+      enabled: true,
+      createdAt: 1,
+      updatedAt: 1,
+      models: [
+        {
+          id: 'claude-opus-4-6',
+          name: 'Claude Opus 4.6',
+          enabled: true,
+        },
+        {
+          id: 'claude-sonnet-4-6',
+          name: 'Claude Sonnet 4.6',
+          enabled: false,
+        },
+      ],
+    }, 'claude-opus-4-6', { includeDisabledModels: true })
+
+    expect(configuration.models.map(model => model.id)).toEqual([
+      'claude-opus-4-6',
+      'claude-sonnet-4-6',
+    ])
+  })
+
   test('Given Provider 类型 When 映射 CCB modelType Then 使用 CCB 原生 Provider 分类', () => {
     expect(resolveCcbModelType('google')).toBe('gemini')
     expect(resolveCcbModelType('openai-codex')).toBe('openai')

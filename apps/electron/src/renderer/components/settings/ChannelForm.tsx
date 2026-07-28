@@ -37,6 +37,8 @@ import {
   parseCodexCredentials,
 } from '@proma/shared'
 import type {
+  AgentRuntimeModelCatalog,
+  AgentRuntimeModelInfo,
   Channel,
   ChannelCreateInput,
   ChannelModel,
@@ -69,6 +71,8 @@ import {
   SettingsSelect,
   SettingsToggle,
 } from './primitives'
+import { RuntimeModelCapabilitySummary } from '@/components/agent/RuntimeModelCapabilitySummary'
+import { findAgentRuntimeModel } from '@/lib/agent-thinking-effort'
 
 interface ChannelFormProps {
   /** 编辑模式下传入已有渠道，创建模式传 null */
@@ -230,6 +234,9 @@ export function ChannelForm({ channel, onSaved, onAgentEligibilityChange, onCanc
   const [testResult, setTestResult] = React.useState<ChannelTestResult | null>(null)
   const [fetchingModels, setFetchingModels] = React.useState(false)
   const [fetchResult, setFetchResult] = React.useState<FetchModelsResult | null>(null)
+  const [runtimeCatalog, setRuntimeCatalog] = React.useState<AgentRuntimeModelCatalog | null>(null)
+  const [runtimeCatalogLoading, setRuntimeCatalogLoading] = React.useState(false)
+  const [runtimeCatalogError, setRuntimeCatalogError] = React.useState<string | null>(null)
   const [apiKeyLoaded, setApiKeyLoaded] = React.useState(false)
   const [showExitDialog, setShowExitDialog] = React.useState(false)
   const [showBaseUrlRiskDialog, setShowBaseUrlRiskDialog] = React.useState(false)
@@ -271,6 +278,58 @@ export function ChannelForm({ channel, onSaved, onAgentEligibilityChange, onCanc
       : Boolean(apiKey.trim())
   const requiresBaseUrlRiskAcknowledgement = isThirdPartyBaseUrl(provider, baseUrl)
     && normalizeBaseUrl(baseUrl) !== acknowledgedBaseUrl
+  const runtimeCatalogRequestIdRef = React.useRef(0)
+
+  React.useEffect(() => {
+    const requestId = ++runtimeCatalogRequestIdRef.current
+    const canResolve =
+      models.length > 0
+      && hasRequiredSecret
+      && (isCodexProvider || Boolean(baseUrl.trim()))
+      && (!isEdit || apiKeyLoaded)
+
+    if (!canResolve) {
+      setRuntimeCatalog(null)
+      setRuntimeCatalogLoading(false)
+      setRuntimeCatalogError(null)
+      return
+    }
+
+    setRuntimeCatalogLoading(true)
+    setRuntimeCatalogError(null)
+    const timer = setTimeout(() => {
+      void window.electronAPI.getAgentRuntimeModelCatalogDraft({
+        provider,
+        baseUrl,
+        apiKey: effectiveApiKey,
+        models,
+        defaultModel: models.find(model => model.enabled)?.id ?? models[0]?.id,
+      }).then(catalog => {
+        if (runtimeCatalogRequestIdRef.current !== requestId) return
+        setRuntimeCatalog(catalog)
+        setRuntimeCatalogLoading(false)
+      }).catch(error => {
+        if (runtimeCatalogRequestIdRef.current !== requestId) return
+        console.error('[模型配置表单] CCB 模型能力解析失败:', error)
+        setRuntimeCatalog(null)
+        setRuntimeCatalogLoading(false)
+        setRuntimeCatalogError(
+          error instanceof Error ? error.message : 'CCB 模型能力解析失败',
+        )
+      })
+    }, 450)
+
+    return () => clearTimeout(timer)
+  }, [
+    apiKeyLoaded,
+    baseUrl,
+    effectiveApiKey,
+    hasRequiredSecret,
+    isCodexProvider,
+    isEdit,
+    models,
+    provider,
+  ])
 
   const updateZhipuTeamSecret = React.useCallback((patch: Partial<ZhipuTeamSecretForm>) => {
     setZhipuTeamSecret((prev) => {
@@ -497,7 +556,7 @@ export function ChannelForm({ channel, onSaved, onAgentEligibilityChange, onCanc
       // 凭据 JSON 已含 accountId，写入 apiKey 后由 codexCredentials 派生展示，无需单独 state。
       setApiKey(credentials)
 
-      // codex 模型是 Pi SDK 内置目录、不依赖凭据/baseUrl。登录后自动拉取并全部启用。
+      // ChatGPT 模型目录由 CCB Runtime 使用的 OAuth 渠道提供；登录后自动拉取并全部启用。
       // 不复用 handleFetchModels：其 gate 读派生自 apiKey state 的 hasRequiredSecret，
       // 而 setApiKey 是异步的，同一 tick 内仍是旧值，这里直接内联拉取。
       let codexModels: ChannelModel[] = []
@@ -543,7 +602,7 @@ export function ChannelForm({ channel, onSaved, onAgentEligibilityChange, onCanc
 
   /** 从供应商 API 拉取可用模型列表。 */
   const fetchAvailableModels = async (): Promise<void> => {
-    // ChatGPT (Codex) 走 SDK 内置目录，不依赖 baseUrl；其余 provider 仍要求 baseUrl。
+    // ChatGPT 订阅由 CCB Runtime 管理请求地址；其余 Provider 仍要求 Base URL。
     if (!hasRequiredSecret || (!isCodexProvider && !baseUrl.trim())) return
 
     setFetchingModels(true)
@@ -769,6 +828,19 @@ export function ChannelForm({ channel, onSaved, onAgentEligibilityChange, onCanc
       (m) => m.id.toLowerCase().includes(keyword) || m.name.toLowerCase().includes(keyword)
     )
   }, [models, modelFilter])
+  const resolveRuntimeModelInfo = React.useCallback(
+    (modelId: string): AgentRuntimeModelInfo | undefined => (
+      findAgentRuntimeModel(runtimeCatalog?.models ?? [], modelId)
+    ),
+    [runtimeCatalog],
+  )
+  const runtimeCatalogStatus = runtimeCatalogLoading
+    ? 'CCB Runtime 正在解析模型能力…'
+    : runtimeCatalog
+      ? `CCB Runtime 已解析 ${runtimeCatalog.models.length} 个模型${runtimeCatalog.runtimeVersion ? ` · ${runtimeCatalog.runtimeVersion}` : ''}`
+      : runtimeCatalogError
+        ? 'CCB Runtime 解析失败'
+        : undefined
 
   return (
     <div className="space-y-6">
@@ -810,7 +882,7 @@ export function ChannelForm({ channel, onSaved, onAgentEligibilityChange, onCanc
           />
           {provider === 'custom' && (
             <div className="px-4 pb-3 text-xs text-muted-foreground">
-              用于 OpenAI Chat Completions 的自定义请求地址，Chat 会按原样发送请求。用于 Agent 时请选择 Pi；若服务提供 Anthropic Messages 端点，请选择「Anthropic 兼容格式」。
+              用于 OpenAI Chat Completions 的自定义请求地址，Chat 会按原样发送请求。Agent 使用 CCB Runtime；若服务提供 Anthropic Messages 端点，请选择「Anthropic 兼容格式」。
             </div>
           )}
           <SettingsInput
@@ -820,7 +892,7 @@ export function ChannelForm({ channel, onSaved, onAgentEligibilityChange, onCanc
             placeholder="例如: My Anthropic"
             required
           />
-          {/* ChatGPT (Codex) 的请求地址由 Pi SDK 内置管理，无需用户填写 */}
+          {/* ChatGPT 订阅的请求地址由 CCB Runtime 管理，无需用户填写 */}
           {!isCodexProvider && (
             <SettingsInput
               label={getUrlInputLabel(provider)}
@@ -983,8 +1055,16 @@ export function ChannelForm({ channel, onSaved, onAgentEligibilityChange, onCanc
       {/* 已启用模型 */}
       <SettingsSection
         title="已启用模型"
-        description={enabledModels.length > 0 ? `${enabledModels.length} 个模型` : undefined}
+        description={[
+          enabledModels.length > 0 ? `${enabledModels.length} 个模型` : undefined,
+          runtimeCatalogStatus,
+        ].filter(Boolean).join(' · ') || undefined}
       >
+        {runtimeCatalogError && (
+          <div className="px-1 text-xs text-destructive">
+            模型列表仍可编辑；CCB 能力信息将在配置正确后自动恢复。
+          </div>
+        )}
         <SettingsCard divided={false}>
           {enabledModels.length === 0 ? (
             <div className="px-4 py-8 text-center text-sm text-muted-foreground">
@@ -998,12 +1078,17 @@ export function ChannelForm({ channel, onSaved, onAgentEligibilityChange, onCanc
                   className="flex items-center gap-2 px-4 py-2.5 group"
                 >
                   <CheckCircle2 size={14} className="text-emerald-500 flex-shrink-0" />
-                  <span className="text-sm text-foreground flex-1">
-                    {model.name}
-                    {model.name !== model.id && (
-                      <span className="text-muted-foreground ml-1">({model.id})</span>
-                    )}
-                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm text-foreground">
+                      {model.name}
+                      {model.name !== model.id && (
+                        <span className="text-muted-foreground ml-1">({model.id})</span>
+                      )}
+                    </div>
+                    <RuntimeModelCapabilitySummary
+                      model={resolveRuntimeModelInfo(model.id)}
+                    />
+                  </div>
                   <button
                     type="button"
                     onClick={() => handleToggleModel(model.id)}
@@ -1085,12 +1170,17 @@ export function ChannelForm({ channel, onSaved, onAgentEligibilityChange, onCanc
                   onClick={() => handleToggleModel(model.id)}
                 >
                   <Plus size={14} className="text-muted-foreground flex-shrink-0" />
-                  <span className="text-sm text-foreground flex-1">
-                    {model.name}
-                    {model.name !== model.id && (
-                      <span className="text-muted-foreground ml-1">({model.id})</span>
-                    )}
-                  </span>
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm text-foreground">
+                      {model.name}
+                      {model.name !== model.id && (
+                        <span className="text-muted-foreground ml-1">({model.id})</span>
+                      )}
+                    </div>
+                    <RuntimeModelCapabilitySummary
+                      model={resolveRuntimeModelInfo(model.id)}
+                    />
+                  </div>
                   <button
                     type="button"
                     onClick={(e) => { e.stopPropagation(); handleRemoveModel(model.id) }}
@@ -1173,19 +1263,6 @@ export function ChannelForm({ channel, onSaved, onAgentEligibilityChange, onCanc
               <div className="space-y-2">
                 <p>该地址并非当前供应商的官方默认 Base URL。中转站可能存在篡改对话内容和模型响应，存在中间人攻击、凭据泄露与隐私风险。</p>
                 <p>其协议适配也可能导致上下文窗口、工具调用、多模态或流式内容显示异常。请仅使用你信赖的服务，并先用非敏感内容测试。</p>
-                <p>Proma 仅作为本地 Agent 执行环境：配置、会话等本地数据均存储在你的设备上，Proma 本身不会额外构成数据风险。</p>
-                <p>
-                  如你正在寻求更好的选择，欢迎使用{' '}
-                  <a
-                    href="https://proma.cool/download"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="font-medium text-primary underline underline-offset-2 hover:text-primary/80"
-                  >
-                    Proma 商业版
-                  </a>
-                  ：提供安全、稳定、优惠的内置模型选择，保证更好的体验，同时保留你自由配置第三方渠道的权利。
-                </p>
               </div>
             </AlertDialogDescription>
           </AlertDialogHeader>

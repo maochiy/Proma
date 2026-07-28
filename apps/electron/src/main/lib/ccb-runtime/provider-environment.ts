@@ -52,9 +52,10 @@ export function resolveCcbModelType(
 export function buildCcbProviderConfiguration(
   channel: Channel,
   defaultModel?: string,
+  options: { includeDisabledModels?: boolean } = {},
 ): AgentRuntimeProviderConfiguration {
   const models = channel.models
-    .filter(model => model.enabled)
+    .filter(model => options.includeDisabledModels || model.enabled)
     .map(model => ({
       id: model.id,
       name: model.name,

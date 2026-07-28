@@ -23,6 +23,7 @@ import { getModelLogo, getChannelLogo, DefaultLogo } from '@/lib/model-logo'
 import { cn } from '@/lib/utils'
 import type { Channel, ModelOption, ProviderType } from '@proma/shared'
 import { ChannelPlanQuotaBadge } from './ChannelPlanQuotaBadge'
+import { RuntimeModelCapabilitySummary } from '@/components/agent/RuntimeModelCapabilitySummary'
 
 /** 从渠道列表构建扁平化的模型选项 */
 export function buildModelOptions(
@@ -384,12 +385,18 @@ export function ModelSelector({
                             alt=""
                             className="size-4 flex-shrink-0 rounded object-cover"
                           />
-                          <span className={cn(
-                            'flex-1 truncate text-sm',
-                            isSelected ? 'font-medium text-foreground' : 'text-foreground/80'
-                          )}>
-                            {option.modelName}
-                          </span>
+                          <div className="min-w-0 flex-1">
+                            <div className={cn(
+                              'truncate text-sm',
+                              isSelected ? 'font-medium text-foreground' : 'text-foreground/80',
+                            )}>
+                              {option.modelName}
+                            </div>
+                            <RuntimeModelCapabilitySummary
+                              model={option.runtimeModelInfo}
+                              compact
+                            />
+                          </div>
                           {isSelected && <Check className="size-3.5 shrink-0 text-foreground/65" />}
                         </button>
                       )

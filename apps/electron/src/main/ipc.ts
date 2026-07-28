@@ -44,6 +44,7 @@ import type {
   RecentMessagesResult,
   AgentSessionMeta,
   AgentRuntimeModelCatalog,
+  AgentRuntimeModelCatalogDraftInput,
   AgentSendInput,
   AgentWorkspace,
   AgentGenerateTitleInput,
@@ -191,7 +192,10 @@ import {
   searchAgentSessionReferences,
 } from './lib/agent-session-manager'
 import { runAgent, stopAgent, generateAgentTitle, saveFilesToAgentSession, saveFilesToWorkspaceFiles, isAgentSessionActive, queueAgentMessage, updateAgentPermissionMode, rewindAgentSession, forkAgentRuntimeSession } from './lib/agent-service'
-import { resolveAgentRuntimeModelCatalog } from './lib/ccb-runtime/model-catalog-service'
+import {
+  resolveAgentRuntimeModelCatalog,
+  resolveDraftAgentRuntimeModelCatalog,
+} from './lib/ccb-runtime/model-catalog-service'
 import { permissionService } from './lib/agent-permission-service'
 import { askUserService } from './lib/agent-ask-user-service'
 import { exitPlanService } from './lib/agent-exit-plan-service'
@@ -1862,6 +1866,17 @@ export function registerIpcHandlers(): void {
     async (_, channelId: string, defaultModel?: string): Promise<AgentRuntimeModelCatalog> => {
       return resolveAgentRuntimeModelCatalog(channelId, defaultModel)
     }
+  )
+
+  // 读取尚未保存的模型配置经 CCB 内核解析后的能力目录
+  ipcMain.handle(
+    AGENT_IPC_CHANNELS.GET_RUNTIME_MODEL_CATALOG_DRAFT,
+    async (
+      _,
+      input: AgentRuntimeModelCatalogDraftInput,
+    ): Promise<AgentRuntimeModelCatalog> => {
+      return resolveDraftAgentRuntimeModelCatalog(input)
+    },
   )
 
   // 生成 Agent 会话标题
