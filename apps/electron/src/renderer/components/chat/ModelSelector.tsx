@@ -355,31 +355,19 @@ export function ModelSelector({
 
                 return (
                   <div key={channelId} className="mb-1 last:mb-0">
-                    <div className={cn(
-                      'flex items-center gap-2 px-2',
-                      runtimeModelOptions ? 'pb-1 pt-1.5' : 'py-1.5',
-                    )}>
-                      {runtimeModelOptions ? (
-                        null
-                      ) : (
+                    {!runtimeModelOptions && (
+                      <div className="flex items-center gap-2 px-2 py-1.5">
                         <img
                           src={channel ? getChannelLogo(channel) : DefaultLogo}
                           alt=""
                           className="size-4 rounded object-cover"
                         />
-                      )}
-                      <span className={cn(
-                        'min-w-0 truncate font-medium text-muted-foreground',
-                        runtimeModelOptions
-                          ? 'text-[10px] uppercase tracking-[0.08em]'
-                          : 'text-[11px]',
-                      )}>
-                        {first.channelName}
-                      </span>
-                      {!runtimeModelOptions && channel
-                        ? <ChannelPlanQuotaBadge channel={channel} />
-                        : null}
-                    </div>
+                        <span className="min-w-0 truncate text-[11px] font-medium text-muted-foreground">
+                          {first.channelName}
+                        </span>
+                        {channel ? <ChannelPlanQuotaBadge channel={channel} /> : null}
+                      </div>
+                    )}
 
                     {/* 该渠道下的模型列表 */}
                     {options.map((option) => {

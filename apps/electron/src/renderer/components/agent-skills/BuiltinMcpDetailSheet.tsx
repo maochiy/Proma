@@ -87,7 +87,7 @@ export function BuiltinMcpDetailSheet({ open, server, onOpenChange, onConfigure 
                   <div className="flex items-center gap-2">
                     <h3 className="truncate text-base font-semibold text-foreground">{server.displayName}</h3>
                     <span className="shrink-0 rounded-md bg-blue-500/10 px-1.5 py-0.5 text-[11px] font-medium text-blue-600 dark:text-blue-400">
-                      Proma 内置
+                      内置
                     </span>
                   </div>
                   <div className="mt-0.5 truncate text-xs text-muted-foreground">{server.name}</div>

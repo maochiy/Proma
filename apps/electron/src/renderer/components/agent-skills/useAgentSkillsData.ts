@@ -119,11 +119,11 @@ export function useAgentSkillsData(): AgentSkillsData {
       setRuntimeCatalog(catalog)
       setSkills(mergeRuntimeSkillCatalog(promaSkills, catalog))
       toast.success(
-        `已刷新 CCB Skills，共发现 ${getVisibleRuntimeSkills(catalog).length} 个有效能力`,
+        `已刷新 Skills，共发现 ${getVisibleRuntimeSkills(catalog).length} 个有效能力`,
       )
     } catch (error) {
       console.error('[Agent 技能] 刷新 CCB Skills 失败:', error)
-      toast.error(error instanceof Error ? error.message : '刷新 CCB Skills 失败')
+      toast.error(error instanceof Error ? error.message : '刷新 Skills 失败')
     } finally {
       setRefreshingRuntimeSkills(false)
     }
