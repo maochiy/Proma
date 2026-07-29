@@ -6,9 +6,10 @@
  */
 
 import { autoUpdater } from 'electron-updater'
-import { BrowserWindow, app } from 'electron'
+import { BrowserWindow } from 'electron'
 import type { UpdateStatus } from './updater-types'
 import { UPDATER_IPC_CHANNELS } from './updater-types'
+import { hasAppUpdateConfiguration } from './update-availability'
 
 /** 当前更新状态 */
 let currentStatus: UpdateStatus = { status: 'idle' }
@@ -18,6 +19,9 @@ let win: BrowserWindow | null = null
 
 /** 定时检查定时器 */
 let checkInterval: ReturnType<typeof setInterval> | null = null
+
+/** 当前包是否包含 electron-updater 所需配置。 */
+let updaterEnabled = false
 
 /** 更新状态并推送给渲染进程 */
 function setStatus(status: UpdateStatus): void {
@@ -32,6 +36,14 @@ export function getUpdateStatus(): UpdateStatus {
 
 /** 手动触发检查更新 */
 export async function checkForUpdates(): Promise<void> {
+  if (!updaterEnabled) {
+    setStatus({
+      status: 'disabled',
+      reason: '当前为本地签名版本，不支持自动更新',
+    })
+    return
+  }
+
   // 已在下载中或已下载完成，不重复检查
   if (currentStatus.status === 'downloading' || currentStatus.status === 'downloaded') {
     console.log('[更新] 跳过检查：已在下载中或已下载完成')
@@ -52,6 +64,8 @@ export async function checkForUpdates(): Promise<void> {
 
 /** 退出并安装已下载的更新 */
 export function quitAndInstall(): void {
+  if (!updaterEnabled) return
+
   // 移除所有窗口的 close 监听器，避免 preventDefault 阻止退出
   for (const w of BrowserWindow.getAllWindows()) {
     w.removeAllListeners('close')
@@ -78,6 +92,21 @@ export function cleanupUpdater(): void {
  */
 export function initAutoUpdater(mainWindow: BrowserWindow): void {
   win = mainWindow
+
+  if (!hasAppUpdateConfiguration(process.resourcesPath)) {
+    updaterEnabled = false
+    setStatus({
+      status: 'disabled',
+      reason: '当前为本地签名版本，不支持自动更新',
+    })
+    mainWindow.on('closed', () => {
+      win = null
+    })
+    console.log('[更新] 本地签名版本未包含更新配置，已禁用自动更新')
+    return
+  }
+
+  updaterEnabled = true
 
   autoUpdater.logger = {
     info: (...args: unknown[]) => console.log('[更新-updater]', ...args),

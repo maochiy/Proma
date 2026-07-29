@@ -91,6 +91,7 @@ import { promaBuiltinMcpHttpHost } from './lib/builtin-mcp/http-host'
 import { markRunningDelegationsAsInterrupted } from './lib/agent-session-manager'
 import { stopAllGenerations } from './lib/chat-service'
 import { initAutoUpdater, cleanupUpdater } from './lib/updater/auto-updater'
+import { resolveMainWindowIconPath } from './lib/app-icon-path'
 import { startWorkspaceWatcher, stopWorkspaceWatcher } from './lib/workspace-watcher'
 import { startChatToolsWatcher, stopChatToolsWatcher } from './lib/chat-tools-watcher'
 import { getIsQuitting, setQuitting } from './lib/app-lifecycle'
@@ -289,22 +290,6 @@ function showAndFocusMainWindow(): void {
   mainWindow.focus()
 }
 
-/**
- * Get the appropriate app icon path for the current platform
- */
-function getIconPath(): string {
-  // resources 在 build:resources 阶段被复制到 dist/ 下，与 main.cjs 同级
-  const resourcesDir = join(__dirname, 'resources')
-
-  if (process.platform === 'darwin') {
-    return join(resourcesDir, 'icon.icns')
-  } else if (process.platform === 'win32') {
-    return join(resourcesDir, 'icon.ico')
-  } else {
-    return join(resourcesDir, 'icon.png')
-  }
-}
-
 function saveMainWindowState(): void {
   if (!mainWindow || mainWindow.isDestroyed()) return
   const mainWindowState = getPersistableMainWindowState(mainWindow)
@@ -323,7 +308,12 @@ function isDevServerNavigation(url: string): boolean {
 }
 
 function createWindow(): void {
-  const iconPath = getIconPath()
+  const iconPath = resolveMainWindowIconPath({
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    moduleDirectory: __dirname,
+    platform: process.platform,
+  })
   const iconExists = existsSync(iconPath)
 
   if (!iconExists) {

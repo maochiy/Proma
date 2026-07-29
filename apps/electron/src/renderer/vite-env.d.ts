@@ -19,11 +19,12 @@ declare module '*.mp3' {
 
 /** 更新状态（与 updater-types.ts 保持一致） */
 interface UpdateStatus {
-  status: 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'not-available' | 'error'
+  status: 'idle' | 'disabled' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'not-available' | 'error'
   version?: string
   releaseNotes?: string
   progress?: { percent: number; transferred: number; total: number; bytesPerSecond: number }
   error?: string
+  reason?: string
 }
 
 /** 更新 API */

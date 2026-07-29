@@ -17,11 +17,12 @@ export interface DownloadProgress {
 
 /** 更新状态 */
 export interface UpdateStatus {
-  status: 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'not-available' | 'error'
+  status: 'idle' | 'disabled' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'not-available' | 'error'
   version?: string
   releaseNotes?: string
   progress?: DownloadProgress
   error?: string
+  reason?: string
 }
 
 /** 更新状态 atom */
@@ -34,8 +35,8 @@ export const hasUpdateAtom = atom((get) => {
 })
 
 /** updater 是否可用 */
-export const updaterAvailableAtom = atom<boolean>(() => {
-  return !!window.electronAPI?.updater
+export const updaterAvailableAtom = atom<boolean>((get) => {
+  return !!window.electronAPI?.updater && get(updateStatusAtom).status !== 'disabled'
 })
 
 /**
