@@ -458,6 +458,156 @@ describe('Agent Transcript 增量合并', () => {
     ).toBe('proma-user')
   })
 
+  test('Given Runtime 用户消息包含工具引用上下文 When 同步完成 Then 用户原文仍位于对应回复之前', () => {
+    writeAgentSessionJsonl('merge-mentioned-tools-prompt', [
+      JSON.stringify({
+        type: 'user',
+        message: {
+          role: 'user',
+          content: '<mentioned_tools>\n- Skill: open-computer-use\n</mentioned_tools>\n\n请检查审核结果',
+        },
+        uuid: 'runtime-user',
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        uuid: 'assistant-final',
+        message: {
+          id: 'assistant-message',
+          content: [{ type: 'text', text: '审核结果如下' }],
+        },
+        _createdAt: 200,
+      }),
+      JSON.stringify({
+        type: 'user',
+        message: {
+          content: [{ type: 'text', text: '请检查审核结果' }],
+        },
+        parent_tool_use_id: null,
+        _createdAt: 100,
+      }),
+      JSON.stringify({
+        type: 'result',
+        uuid: 'result-1',
+        subtype: 'success',
+        result: '审核结果如下',
+        _createdAt: 200,
+      }),
+    ])
+
+    const merged = manager.mergeAgentSessionSDKMessages(
+      'merge-mentioned-tools-prompt',
+      [
+        {
+          type: 'user',
+          message: {
+            role: 'user',
+            content: '<mentioned_tools>\n- Skill: open-computer-use\n</mentioned_tools>\n\n请检查审核结果',
+          },
+          uuid: 'runtime-user',
+        } as never,
+        {
+          type: 'assistant',
+          uuid: 'assistant-final',
+          message: {
+            id: 'assistant-message',
+            content: [{ type: 'text', text: '审核结果如下' }],
+          },
+          _createdAt: 200,
+        } as never,
+      ],
+    )
+
+    expect(merged.map(message => message.type))
+      .toEqual(['user', 'assistant', 'result'])
+    expect(
+      (merged[0] as unknown as {
+        message: { content: Array<{ text?: string }> }
+      }).message.content[0]?.text,
+    ).toBe('请检查审核结果')
+  })
+
+  test('Given 两轮用户输入内容相同 When 合并增强 Prompt Then 按 Runtime 顺序各保留一次', () => {
+    writeAgentSessionJsonl('merge-repeated-user-prompt', [
+      JSON.stringify({
+        type: 'user',
+        message: { content: [{ type: 'text', text: '继续' }] },
+        uuid: 'proma-user-1',
+        _createdAt: 100,
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        uuid: 'assistant-1',
+        message: {
+          id: 'assistant-message-1',
+          content: [{ type: 'text', text: '第一轮' }],
+        },
+      }),
+      JSON.stringify({
+        type: 'user',
+        message: { content: [{ type: 'text', text: '继续' }] },
+        uuid: 'proma-user-2',
+        _createdAt: 200,
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        uuid: 'assistant-2',
+        message: {
+          id: 'assistant-message-2',
+          content: [{ type: 'text', text: '第二轮' }],
+        },
+      }),
+    ])
+
+    const merged = manager.mergeAgentSessionSDKMessages(
+      'merge-repeated-user-prompt',
+      [
+        {
+          type: 'user',
+          uuid: 'runtime-user-1',
+          message: {
+            role: 'user',
+            content: '<mentioned_tools>\n- Skill: example\n</mentioned_tools>\n\n继续',
+          },
+        } as never,
+        {
+          type: 'assistant',
+          uuid: 'assistant-1',
+          message: {
+            id: 'assistant-message-1',
+            content: [{ type: 'text', text: '第一轮' }],
+          },
+        } as never,
+        {
+          type: 'user',
+          uuid: 'runtime-user-2',
+          message: {
+            role: 'user',
+            content: '<mentioned_tools>\n- Skill: example\n</mentioned_tools>\n\n继续',
+          },
+        } as never,
+        {
+          type: 'assistant',
+          uuid: 'assistant-2',
+          message: {
+            id: 'assistant-message-2',
+            content: [{ type: 'text', text: '第二轮' }],
+          },
+        } as never,
+      ],
+    )
+
+    expect(
+      merged.map(message =>
+        (message as unknown as { uuid?: string }).uuid,
+      ),
+    ).toEqual([
+      'proma-user-1',
+      'assistant-1',
+      'proma-user-2',
+      'assistant-2',
+    ])
+  })
+
   test('Given Runtime Assistant 与桌面拆分消息使用同一 message id When 合并 Then 只保留桌面拆分消息', () => {
     writeAgentSessionJsonl('dedupe-assistant-transcript', [
       JSON.stringify({

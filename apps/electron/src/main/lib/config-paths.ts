@@ -190,6 +190,17 @@ export function getUserProfilePath(): string {
 }
 
 /**
+ * 获取 New API 登录状态文件路径
+ *
+ * 文件只保存登录方式、渠道引用和用户展示信息，不保存账号密码或明文 API Key。
+ *
+ * @returns ~/.proma/new-api-auth.json
+ */
+export function getNewApiAuthPath(): string {
+  return join(getConfigDir(), 'new-api-auth.json')
+}
+
+/**
  * 获取代理配置文件路径
  *
  * @returns ~/.proma/proxy-settings.json

@@ -404,8 +404,22 @@ export interface SDKSystemMessage {
   compact_result?: 'success' | 'failed' | 'noop'
   /** SDK status: 上下文压缩失败原因 */
   compact_error?: string
-  /** Pi 手动压缩后的上下文 token 预估值 */
+  /** CCB 压缩后的上下文 token 估算值 */
   compactionEstimatedTokensAfter?: number
+  /** CCB 压缩元数据 */
+  compact_metadata?: {
+    trigger?: 'manual' | 'auto'
+    pre_tokens?: number
+    post_tokens?: number
+    summary?: string
+    [key: string]: unknown
+  }
+  compactTrigger?: 'manual' | 'auto'
+  compactPreTokens?: number
+  /** CCB 当前模型的自动压缩配置 */
+  autoCompactEnabled?: boolean
+  autoCompactThreshold?: number
+  effectiveContextWindow?: number
   summary?: string
   output_file?: string
   last_tool_name?: string
@@ -668,13 +682,21 @@ export type AgentEvent =
   // Usage 更新
   | { type: 'usage_update'; usage: AgentEventUsage }
   // 上下文压缩
-  | { type: 'compacting' }
+  | { type: 'compacting'; trigger?: 'manual' | 'auto' }
   | {
     type: 'compact_complete'
     status: 'success' | 'noop' | 'failed'
+    trigger?: 'manual' | 'auto'
     summary?: string
     message?: string
+    preTokens?: number
     estimatedTokensAfter?: number
+  }
+  | {
+    type: 'context_compaction_config'
+    autoCompactEnabled: boolean
+    autoCompactThreshold: number
+    effectiveContextWindow: number
   }
   // 权限请求
   | { type: 'permission_request'; request: PermissionRequest }

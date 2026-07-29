@@ -253,7 +253,12 @@ export function RichTextInput({
 
   // Skill Suggestion 配置（/ 触发）
   const skillSuggestion = useMemo(
-    () => createSkillMentionSuggestion(workspaceSlugRef, mentionActiveRef, mentionItemCountRef),
+    () => createSkillMentionSuggestion(
+      workspaceSlugRef,
+      workspaceIdRef,
+      mentionActiveRef,
+      mentionItemCountRef,
+    ),
     [],
   )
 

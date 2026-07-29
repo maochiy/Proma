@@ -1,6 +1,6 @@
 {
   "name": "@proma/electron",
-  "version": "0.15.32",
+  "version": "0.15.36",
   "description": "Proma next gen ai software with general agents - Electron App",
   "main": "dist/main.cjs",
   "author": {
@@ -35,7 +35,9 @@
     "dist:linux": "bun run build && bun run sync:ccb-runtime && electron-builder --linux",
     "dist:visual": "bun run scripts/dist.ts",
     "dist:fast": "bun run scripts/dist.ts --current-arch --dmg",
-    "dist:debug": "bun run scripts/dist.ts --current-arch --verbose"
+    "dist:debug": "bun run scripts/dist.ts --current-arch --verbose",
+    "sign:local-mac": "bun run scripts/sign-local-mac.ts",
+    "dist:local-mac": "bun run scripts/dist.ts --current-arch --dir --no-sign && bun run sign:local-mac"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.93.0",

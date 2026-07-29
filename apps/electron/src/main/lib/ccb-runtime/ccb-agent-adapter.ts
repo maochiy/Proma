@@ -16,6 +16,10 @@ import type {
 import type { CanUseToolOptions, PermissionResult } from '../agent-permission-service'
 import { updateAgentSessionMeta } from '../agent-session-manager'
 import { persistCodexOAuthCredentials } from '../channel-manager'
+import {
+  createContextCompactionConfigMessage,
+  normalizeCcbCompactionMessage,
+} from './ccb-compaction-message'
 import { ccbDesktopRuntimeClient } from './runtime-client'
 import { sanitizeCcbSessionEnvironment } from './runtime-security'
 import { assertCcbRuntimeModelCatalog } from './protocol-validation'
@@ -715,8 +719,20 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
             event.message,
           )
         ) return
-        queue.push(event.message)
+        queue.push(normalizeCcbCompactionMessage(
+          event.message,
+          options.compactRequest === true,
+        ))
         return
+      case 'runtime.progress': {
+        if (event.phase !== 'context.compactionConfig') return
+        const message = createContextCompactionConfigMessage(
+          event.data,
+          options.sessionId,
+        )
+        if (message) queue.push(message)
+        return
+      }
       case 'runtime.executionGraphChanged':
         queue.push({
           type: 'runtime_execution_graph',

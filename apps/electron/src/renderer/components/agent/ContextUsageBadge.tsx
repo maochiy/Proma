@@ -5,7 +5,7 @@
  * - 内部为 16px 圆环，按 displayTokens / displayWindow 比例渲染
  * - hover / click 弹出 Popover，内含 token 明细 + 手动压缩按钮
  * - 压缩中时按钮位置显示 Loader2 旋转图标
- * - 占用接近压缩阈值（窗口 × 0.775 × 80%）时圆环变琥珀色
+ * - 占用接近 CCB 回传的动态压缩阈值时圆环变琥珀色
  * - 无数据时不显示
  */
 
@@ -18,8 +18,6 @@ import { cn } from '@/lib/utils'
 import type { ChannelPlanQuotaResult, ChannelPlanQuotaWindow } from '@proma/shared'
 import { fetchChannelPlanQuota } from '@/lib/channel-plan-quota'
 
-/** 压缩阈值比例（SDK 在 ~77.5% 窗口大小时自动压缩） */
-const COMPACT_THRESHOLD_RATIO = 0.775
 /** 显示警告的阈值（压缩阈值的 80%） */
 const WARNING_RATIO = 0.80
 /** Popover hover 关闭延迟（ms），与 AgentThinkingPopover 一致 */
@@ -33,8 +31,11 @@ interface ContextUsageBadgeProps {
   cacheCreationTokens?: number
   costUsd?: number
   contextWindow?: number
-  /** 当前上下文 token 是否为 Pi 手动压缩后的预估值 */
+  /** 当前上下文 token 是否为 CCB 压缩后的估算值 */
   isEstimated: boolean
+  autoCompactEnabled?: boolean
+  autoCompactThreshold?: number
+  effectiveContextWindow?: number
   isCompacting: boolean
   isProcessing: boolean
   onCompact: () => void
@@ -167,6 +168,9 @@ export function ContextUsageBadge({
   cacheCreationTokens,
   contextWindow,
   isEstimated,
+  autoCompactEnabled,
+  autoCompactThreshold,
+  effectiveContextWindow,
   isCompacting,
   isProcessing,
   onCompact,
@@ -255,11 +259,11 @@ export function ContextUsageBadge({
   // 从未有过 usage 数据 → 不显示
   if (!displayTokens || displayTokens <= 0) return null
 
-  // 警告阈值：基于压缩阈值（contextWindow × 0.775 × 80%）
-  const compactThreshold = displayWindow
-    ? Math.floor(displayWindow * COMPACT_THRESHOLD_RATIO)
-    : undefined
-  const isWarning = compactThreshold
+  // 仅使用 CCB Runtime 回传的真实阈值；未拿到配置时不自行猜测。
+  const compactThreshold = autoCompactEnabled === false
+    ? undefined
+    : autoCompactThreshold
+  const isWarning = compactThreshold && compactThreshold > 0
     ? displayTokens / compactThreshold >= WARNING_RATIO
     : false
 
@@ -335,6 +339,25 @@ export function ContextUsageBadge({
                       label="占用"
                       value={`${percent}%`}
                       emphasized={isWarning}
+                    />
+                  )}
+                  {typeof autoCompactEnabled === 'boolean' && (
+                    <DetailRow
+                      label="自动压缩"
+                      value={autoCompactEnabled ? '已开启' : '已关闭'}
+                    />
+                  )}
+                  {autoCompactEnabled !== false && compactThreshold && compactThreshold > 0 && (
+                    <DetailRow
+                      label="压缩阈值"
+                      value={formatTokens(compactThreshold)}
+                      emphasized={isWarning}
+                    />
+                  )}
+                  {effectiveContextWindow && effectiveContextWindow > 0 && (
+                    <DetailRow
+                      label="可用窗口"
+                      value={formatTokens(effectiveContextWindow)}
                     />
                   )}
                 </>

@@ -32,6 +32,7 @@ import {
   getInactiveSkillsDir,
   getSettingsPath,
   getUserProfilePath,
+  getNewApiAuthPath,
   getChatToolsConfigPath,
 } from './config-paths'
 import { listAgentWorkspaces, getAgentWorkspace, getAllWorkspaceSkills, getWorkspaceMcpConfig } from './agent-workspace-manager'
@@ -597,6 +598,7 @@ function _addPersonalFiles(zip: AdmZip) {
   const files: Array<[string, string, string]> = [
     [getSettingsPath(), 'auth', 'settings.json'],
     [getUserProfilePath(), 'auth', 'user-profile.json'],
+    [getNewApiAuthPath(), 'auth', 'new-api-auth.json'],
     [join(getConfigDir(), 'cloud-auth.json'), 'auth', 'cloud-auth.json'],
   ]
   for (const [src, zipDir, zipName] of files) {
@@ -1116,6 +1118,7 @@ function _importPersonalFiles(tempDir: string) {
   const files: Array<[string, string]> = [
     [join(tempDir, 'auth/settings.json'), getSettingsPath()],
     [join(tempDir, 'auth/user-profile.json'), getUserProfilePath()],
+    [join(tempDir, 'auth/new-api-auth.json'), getNewApiAuthPath()],
     [join(tempDir, 'auth/cloud-auth.json'), join(getConfigDir(), 'cloud-auth.json')],
   ]
   for (const [src, dest] of files) {

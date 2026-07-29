@@ -89,8 +89,27 @@ function getSDKMessageStableKey(message: SDKMessage): string {
 }
 
 export function isCompactionControlHistoryGroup(group: MessageGroup): boolean {
-  if (group.type === 'system') return getSDKCompactStatus(group.message) != null
+  if (group.type === 'system') {
+    return getSDKCompactStatus(group.message) != null
+      || group.message.subtype === 'context_compaction_config'
+  }
   return group.type === 'user' && (extractUserText(group.message) ?? '').trim() === '/compact'
+}
+
+function formatCompactionTokens(tokens: number | undefined): string | undefined {
+  if (!tokens || tokens <= 0) return undefined
+  if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(1)}M`
+  if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(1)}k`
+  return String(tokens)
+}
+
+function getCompactionTokenDetail(
+  preTokens: number | undefined,
+  postTokens: number | undefined,
+): string | undefined {
+  const pre = formatCompactionTokens(preTokens)
+  const post = formatCompactionTokens(postTokens)
+  return pre && post ? `上下文约 ${pre} → ${post} tokens。` : undefined
 }
 
 export function getContextCompactionProgress(
@@ -101,15 +120,16 @@ export function getContextCompactionProgress(
   if (streamCompaction?.status === 'running') {
     return {
       status: 'running',
-      label: '正在整理上下文',
-      detail: '正在生成会话摘要，完成后可继续当前任务。',
+      label: streamCompaction.trigger === 'auto' ? '正在自动整理上下文' : '正在整理上下文',
+      detail: 'CCB 正在生成会话摘要，完成后会继续当前任务。',
     }
   }
   if (streamCompaction?.status === 'success') {
     return {
       status: 'success',
-      label: '上下文已压缩',
-      detail: '会话已整理，可以继续当前任务。',
+      label: streamCompaction.trigger === 'auto' ? '上下文已自动压缩' : '上下文已压缩',
+      detail: getCompactionTokenDetail(streamCompaction.preTokens, streamCompaction.postTokens)
+        ?? '会话已整理，可以继续当前任务。',
       summary: streamCompaction.summary,
     }
   }

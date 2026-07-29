@@ -2547,7 +2547,7 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
         <div className="my-3 h-px w-8 bg-border/70" />
 
         {/* 最近/关键会话入口 */}
-        <div className="flex-1 min-h-0 w-full overflow-y-auto scrollbar-thin">
+        <div className="flex-1 min-h-0 w-full overflow-y-auto scrollbar-none">
           <div className="flex flex-col items-center gap-1.5 pb-2">
             {railRecentItems.map((item) => (
               <RailRecentButton
@@ -2693,7 +2693,7 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
                 置顶
               </div>
               <div
-                className="overflow-y-auto scrollbar-thin"
+                className="overflow-y-auto scrollbar-none"
                 style={{ maxHeight: PINNED_SESSION_MAX_HEIGHT }}
               >
                 <div className="px-2">
@@ -2746,7 +2746,7 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
             </Tooltip>
           </div>
 
-          <div className="flex-1 overflow-y-auto px-2 pb-3 scrollbar-thin min-h-0 titlebar-no-drag">
+          <div className="flex-1 overflow-y-auto px-2 pb-3 scrollbar-none min-h-0 titlebar-no-drag">
             {conversationGroups.map((group) => (
               <div key={group.label} className="mb-1">
                 <div className="ml-[4px] px-1.5 pt-2 pb-1 text-[11px] font-medium text-foreground/40 select-none">
@@ -2781,7 +2781,7 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
                 置顶
               </div>
               <div
-                className="overflow-y-auto scrollbar-thin"
+                className="overflow-y-auto scrollbar-none"
                 style={{ maxHeight: PINNED_SESSION_MAX_HEIGHT }}
               >
                 <div className="px-2">
@@ -2871,7 +2871,7 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
           </div>
 
           {/* 下区：项目分组历史 */}
-          <div className="flex-1 overflow-y-auto px-2 pb-3 scrollbar-thin min-h-0 titlebar-no-drag">
+          <div className="flex-1 overflow-y-auto px-2 pb-3 scrollbar-none min-h-0 titlebar-no-drag">
             <div className="flex flex-col gap-0.5">
               {displayProjectGroups.map((group) => {
                 const isAuto = group.workspace.id === AUTOMATION_GROUP_ID
@@ -2934,7 +2934,7 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
           )}
 
           {/* 归档视图：单列表布局 */}
-          <div className="flex-1 overflow-y-auto px-3 pt-2 pb-3 scrollbar-thin titlebar-no-drag">
+          <div className="flex-1 overflow-y-auto px-3 pt-2 pb-3 scrollbar-none titlebar-no-drag">
             {mode === 'chat' ? (
               /* Chat 归档：对话按日期分组 */
               conversationGroups.map((group) => (

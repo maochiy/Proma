@@ -108,7 +108,7 @@ import {
   allPendingPermissionRequestsAtom,
   allPendingExitPlanRequestsAtom,
 } from '@/atoms/agent-atoms'
-import type { AgentContextStatus } from '@/atoms/agent-atoms'
+import type { AgentContextStatus, AgentStreamState } from '@/atoms/agent-atoms'
 import { settingsOpenAtom } from '@/atoms/settings-tab'
 import { longTextPasteAsAttachmentEnabledAtom } from '@/atoms/ui-preferences'
 import { channelsAtom, thinkingExpandedAtom } from '@/atoms/chat-atoms'
@@ -124,6 +124,7 @@ import { fileToBase64, formatFileNames, getFileParentPath } from '@/lib/file-uti
 import { buildQuotedSelectionBlock } from '@/lib/quoted-selection'
 import { createClipboardPendingFile, createClipboardTextDraft, makeUniqueAttachmentName } from '@/lib/clipboard-text-attachment'
 import { canSwitchAgentProject } from '@/lib/agent-project-switch'
+import { derivePersistedAgentContextUsage } from '@/lib/agent-context-usage'
 import {
   findAgentRuntimeModel,
   normalizeAgentThinkingEffortLevel,
@@ -173,6 +174,25 @@ function resolveRunContextWindow(
   previous: number | undefined,
 ): number | undefined {
   return modelInfo?.contextWindow ?? previous
+}
+
+/** 新 Turn 只重置流式展示字段，保留当前会话的上下文用量和 CCB 压缩配置。 */
+function preserveAgentContextState(
+  previous: AgentStreamState | undefined,
+  contextWindow = previous?.contextWindow,
+): Partial<AgentStreamState> {
+  return {
+    inputTokens: previous?.inputTokens,
+    outputTokens: previous?.outputTokens,
+    cacheReadTokens: previous?.cacheReadTokens,
+    cacheCreationTokens: previous?.cacheCreationTokens,
+    costUsd: previous?.costUsd,
+    contextWindow,
+    contextUsageIsEstimated: previous?.contextUsageIsEstimated,
+    autoCompactEnabled: previous?.autoCompactEnabled,
+    autoCompactThreshold: previous?.autoCompactThreshold,
+    effectiveContextWindow: previous?.effectiveContextWindow,
+  }
 }
 
 interface SDKMessageRecord {
@@ -326,9 +346,37 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   const contextStatus: AgentContextStatus = {
     isCompacting: streamState?.isCompacting ?? false,
     inputTokens: streamState?.inputTokens,
+    outputTokens: streamState?.outputTokens,
+    cacheReadTokens: streamState?.cacheReadTokens,
+    cacheCreationTokens: streamState?.cacheCreationTokens,
+    costUsd: streamState?.costUsd,
     contextWindow: streamState?.contextWindow,
     contextUsageIsEstimated: streamState?.contextUsageIsEstimated,
+    autoCompactEnabled: streamState?.autoCompactEnabled,
+    autoCompactThreshold: streamState?.autoCompactThreshold,
+    effectiveContextWindow: streamState?.effectiveContextWindow,
   }
+
+  const restorePersistedContextUsage = React.useCallback((messages: SDKMessage[]): void => {
+    const restored = derivePersistedAgentContextUsage(messages)
+    if (!restored) return
+    setStreamingStates((prev) => {
+      const current = prev.get(sessionId)
+      if (current?.running) return prev
+      const map = new Map(prev)
+      map.set(sessionId, {
+        running: false,
+        backgroundWaiting: current?.backgroundWaiting,
+        content: '',
+        toolActivities: [],
+        model: current?.model,
+        ...preserveAgentContextState(current),
+        ...restored,
+        contextCompaction: current?.contextCompaction,
+      })
+      return map
+    })
+  }, [sessionId, setStreamingStates])
   const setAgentStreamErrors = useSetAtom(agentStreamErrorsAtom)
   const streamErrors = useAtomValue(agentStreamErrorsAtom)
   const agentError = streamErrors.get(sessionId) ?? null
@@ -895,8 +943,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         toolActivities: [],
         model: agentModelId || undefined,
         startedAt: streamStartedAt,
-        inputTokens: existing?.inputTokens,
-        contextWindow: existing?.contextWindow,
+        ...preserveAgentContextState(existing),
       })
       return map
     })
@@ -1012,11 +1059,12 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       persistedSDKMessagesRef.current = payload.messages
       setPersistedSDKMessages(payload.messages)
       setMessagesLoaded(true)
+      restorePersistedContextUsage(payload.messages)
       setMessagesCache((prev) =>
         setSessionMessagesCache(prev, sessionId, payload.messages),
       )
     })
-  }, [sessionId, setMessagesCache, store])
+  }, [restorePersistedContextUsage, sessionId, setMessagesCache, store])
 
   // 加载当前会话消息
   React.useEffect(() => {
@@ -1033,6 +1081,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       if (cached) {
         setPersistedSDKMessages(cached)
         setMessagesLoaded(true)
+        restorePersistedContextUsage(cached)
       } else {
         setPersistedSDKMessages([])
         setMessagesLoaded(false)
@@ -1050,6 +1099,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
           persistedSDKMessagesRef.current = sdkMsgs
           setPersistedSDKMessages(sdkMsgs)
           setMessagesLoaded(true)
+          restorePersistedContextUsage(sdkMsgs)
           messagesRefreshingRef.current = false
           setMessagesRefreshing(false)
 
@@ -1077,6 +1127,9 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
                 cacheCreationTokens: state.cacheCreationTokens,
                 contextWindow: state.contextWindow,
                 contextUsageIsEstimated: state.contextUsageIsEstimated,
+                autoCompactEnabled: state.autoCompactEnabled,
+                autoCompactThreshold: state.autoCompactThreshold,
+                effectiveContextWindow: state.effectiveContextWindow,
                 model: state.model,
                 contextCompaction: state.contextCompaction,
               })
@@ -1088,6 +1141,9 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
                 content: '',
                 toolActivities: [],
                 contextCompaction: state.contextCompaction,
+                autoCompactEnabled: state.autoCompactEnabled,
+                autoCompactThreshold: state.autoCompactThreshold,
+                effectiveContextWindow: state.effectiveContextWindow,
               })
             } else {
               map.delete(sessionId)
@@ -1113,7 +1169,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         setMessagesRefreshing(false)
       })
     return () => { cancelled = true }
-  }, [sessionId, refreshVersion, setStreamingStates, setLiveMessagesMap, setMessagesCache, store])
+  }, [sessionId, refreshVersion, restorePersistedContextUsage, setStreamingStates, setLiveMessagesMap, setMessagesCache, store])
 
   // 从会话元数据初始化附加目录（仅冷启动水合，后续由 handleAttachFolder/handleDetachDirectory 实时写入）
   React.useEffect(() => {
@@ -1176,10 +1232,9 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
           toolActivities: [],
           model: snapshot.modelId,
           startedAt: streamStartedAt,
-          inputTokens: existing?.inputTokens,
-          contextWindow: resolveRunContextWindow(
-            selectedRuntimeModel,
-            existing?.contextWindow,
+          ...preserveAgentContextState(
+            existing,
+            resolveRunContextWindow(selectedRuntimeModel, existing?.contextWindow),
           ),
         })
         return map
@@ -2141,10 +2196,9 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         toolActivities: [],
         model: agentModelId || undefined,
         startedAt: streamStartedAt,
-        inputTokens: existing?.inputTokens,
-        contextWindow: resolveRunContextWindow(
-          selectedRuntimeModel,
-          existing?.contextWindow,
+        ...preserveAgentContextState(
+          existing,
+          resolveRunContextWindow(selectedRuntimeModel, existing?.contextWindow),
         ),
       })
       return map
@@ -2337,10 +2391,9 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         toolActivities: [],
         model: agentModelId || undefined,
         startedAt: streamStartedAt,
-        inputTokens: existing?.inputTokens,
-        contextWindow: resolveRunContextWindow(
-          selectedRuntimeModel,
-          existing?.contextWindow,
+        ...preserveAgentContextState(
+          existing,
+          resolveRunContextWindow(selectedRuntimeModel, existing?.contextWindow),
         ),
       })
       return map
@@ -2690,6 +2743,9 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
           cacheCreationTokens={contextStatus.cacheCreationTokens}
           contextWindow={contextStatus.contextWindow}
           isEstimated={contextStatus.contextUsageIsEstimated === true}
+          autoCompactEnabled={contextStatus.autoCompactEnabled}
+          autoCompactThreshold={contextStatus.autoCompactThreshold}
+          effectiveContextWindow={contextStatus.effectiveContextWindow}
           isCompacting={contextStatus.isCompacting}
           isProcessing={streaming}
           sessionId={sessionId}
@@ -2712,6 +2768,9 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     contextStatus.cacheReadTokens,
     contextStatus.cacheCreationTokens,
     contextStatus.contextWindow,
+    contextStatus.autoCompactEnabled,
+    contextStatus.autoCompactThreshold,
+    contextStatus.effectiveContextWindow,
     contextStatus.isCompacting,
     streaming,
     handleCompact,

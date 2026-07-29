@@ -18,6 +18,10 @@ describe('context compaction progress overlay state', () => {
       message: { type: 'system', subtype: 'compact_boundary' },
     } as never)).toBe(true)
     expect(isCompactionControlHistoryGroup({
+      type: 'system',
+      message: { type: 'system', subtype: 'context_compaction_config' },
+    } as never)).toBe(true)
+    expect(isCompactionControlHistoryGroup({
       type: 'user',
       message: { type: 'user', message: { content: [{ type: 'text', text: '继续处理当前任务' }] } },
     } as never)).toBe(false)
@@ -54,6 +58,19 @@ describe('context compaction progress overlay state', () => {
       status: 'success',
       label: '上下文已压缩',
       summary: '已完成的工作已整理。',
+    })
+  })
+
+  test('shows automatic compaction source and token reduction', () => {
+    expect(getContextCompactionProgress([], false, {
+      status: 'success',
+      trigger: 'auto',
+      preTokens: 168_000,
+      postTokens: 24_000,
+    })).toMatchObject({
+      status: 'success',
+      label: '上下文已自动压缩',
+      detail: '上下文约 168.0k → 24.0k tokens。',
     })
   })
 

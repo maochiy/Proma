@@ -13,6 +13,7 @@ import { MentionList } from './MentionList'
 import type { MentionListRef } from './MentionList'
 import { createMentionPopup, positionPopup, isSuggestionTriggerPresent } from './mention-popup-utils'
 import type { AgentSessionReferenceSearchResult } from '@proma/shared'
+import { getInvocableSkillItems } from '@/lib/runtime-skill-catalog'
 
 // ===== 泛型工厂 =====
 
@@ -153,6 +154,7 @@ export interface SkillMentionItem {
 
 export function createSkillMentionSuggestion(
   workspaceSlugRef: React.RefObject<string | null>,
+  workspaceIdRef: React.RefObject<string | null>,
   mentionActiveRef: React.MutableRefObject<boolean>,
   mentionItemCountRef: React.MutableRefObject<number>,
 ) {
@@ -162,11 +164,24 @@ export function createSkillMentionSuggestion(
       headerLabel: '调用 skill',
       emptyText: '无匹配 Skill',
       fetchItems: async (slug, q) => {
-        const caps = await window.electronAPI.getWorkspaceCapabilities(slug)
-        return caps.skills
-          .filter((s) => s.enabled)
-          .filter((s) => !q || s.name.toLowerCase().includes(q) || (s.slug ?? '').toLowerCase().includes(q))
-          .map((s) => ({ id: s.slug, name: s.name, description: s.description }))
+        const workspaceId = workspaceIdRef.current
+        const [caps, runtimeCatalog] = await Promise.all([
+          window.electronAPI.getWorkspaceCapabilities(slug),
+          workspaceId
+            ? window.electronAPI.getAgentRuntimeSkillCatalog(workspaceId)
+                .catch((error) => {
+                  console.warn('[技能建议] CCB Skill Catalog 暂不可用，回退到项目技能:', error)
+                  return null
+                })
+            : Promise.resolve(null),
+        ])
+
+        return getInvocableSkillItems(caps.skills, runtimeCatalog)
+          .filter((skill) =>
+            !q
+            || skill.name.toLowerCase().includes(q)
+            || skill.id.toLowerCase().includes(q),
+          )
       },
       keyExtractor: (item) => item.id,
       renderItem: (item) => (

@@ -59,8 +59,11 @@ export function finalizeStreamingActivities(
 
 export interface ContextCompactionState {
   status: 'running' | 'success' | 'noop' | 'failed'
+  trigger?: 'manual' | 'auto'
   summary?: string
   message?: string
+  preTokens?: number
+  postTokens?: number
 }
 
 /** Agent 会话的流式状态 */
@@ -86,8 +89,12 @@ export interface AgentStreamState {
   costUsd?: number
   /** 模型上下文窗口大小 */
   contextWindow?: number
-  /** 当前上下文 token 是 Pi 手动压缩后的预估值 */
+  /** 当前上下文 token 是 CCB 压缩后的估算值 */
   contextUsageIsEstimated?: boolean
+  /** CCB 当前模型的自动压缩配置。 */
+  autoCompactEnabled?: boolean
+  autoCompactThreshold?: number
+  effectiveContextWindow?: number
   /** 当前 thinking block 的 token 估算值（SDK 实时估算，非计费值） */
   thinkingEstimatedTokens?: number
   /** 是否正在压缩上下文 */
@@ -814,12 +821,37 @@ export function applyAgentEvent(
     case 'typed_error':
       // 处理类型化错误（TypedError）
       // 停止运行，清除重试状态
-      return { ...prev, running: false, retrying: undefined }
+      return {
+        ...prev,
+        running: false,
+        retrying: undefined,
+        ...(prev.isCompacting && {
+          isCompacting: false,
+          compactInFlight: false,
+          contextCompaction: {
+            status: 'failed' as const,
+            trigger: prev.contextCompaction?.trigger,
+            message: event.error.message,
+          },
+        }),
+      }
 
     case 'error':
       // 改进：error 事件不再清除 retrying 状态
       // retrying 状态由专用事件控制
-      return { ...prev, running: false }
+      return {
+        ...prev,
+        running: false,
+        ...(prev.isCompacting && {
+          isCompacting: false,
+          compactInFlight: false,
+          contextCompaction: {
+            status: 'failed' as const,
+            trigger: prev.contextCompaction?.trigger,
+            message: event.message,
+          },
+        }),
+      }
 
     case 'usage_update':
       return {
@@ -846,14 +878,17 @@ export function applyAgentEvent(
         ...prev,
         isCompacting: true,
         compactInFlight: true,
-        contextCompaction: { status: 'running' },
+        contextCompaction: { status: 'running', trigger: event.trigger },
       }
 
     case 'compact_complete': {
       const contextCompaction = {
         status: event.status,
+        trigger: event.trigger,
         summary: event.summary,
         message: event.message,
+        preTokens: event.preTokens,
+        postTokens: event.estimatedTokensAfter,
       }
       if (event.estimatedTokensAfter == null) {
         return { ...prev, isCompacting: false, contextCompaction }
@@ -869,6 +904,14 @@ export function applyAgentEvent(
         contextUsageIsEstimated: true,
       }
     }
+
+    case 'context_compaction_config':
+      return {
+        ...prev,
+        autoCompactEnabled: event.autoCompactEnabled,
+        autoCompactThreshold: event.autoCompactThreshold,
+        effectiveContextWindow: event.effectiveContextWindow,
+      }
 
     case 'model_resolved':
       // 不用 SDK 返回的实际模型名覆盖，保持用户选择的 modelId
@@ -954,8 +997,11 @@ export interface AgentContextStatus {
   cacheCreationTokens?: number
   costUsd?: number
   contextWindow?: number
-  /** 当前上下文 token 是否为 Pi 手动压缩后的预估值 */
+  /** 当前上下文 token 是否为 CCB 压缩后的估算值 */
   contextUsageIsEstimated?: boolean
+  autoCompactEnabled?: boolean
+  autoCompactThreshold?: number
+  effectiveContextWindow?: number
 }
 
 /** 当前会话的上下文使用量派生 atom */
@@ -972,6 +1018,9 @@ export const agentContextStatusAtom = atom<AgentContextStatus>((get) => {
     costUsd: state?.costUsd,
     contextWindow: state?.contextWindow,
     contextUsageIsEstimated: state?.contextUsageIsEstimated,
+    autoCompactEnabled: state?.autoCompactEnabled,
+    autoCompactThreshold: state?.autoCompactThreshold,
+    effectiveContextWindow: state?.effectiveContextWindow,
   }
 })
 

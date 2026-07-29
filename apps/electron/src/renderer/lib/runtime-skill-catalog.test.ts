@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import type { RuntimeSkillCatalog, RuntimeSkillInfo } from '@proma/shared'
 import {
   countExternalRuntimeSkills,
+  getInvocableSkillItems,
   getVisibleRuntimeSkills,
   mergeRuntimeSkillCatalog,
 } from './runtime-skill-catalog'
@@ -82,5 +83,78 @@ describe('CCB Skill Catalog 展示', () => {
       runtimeReadOnly: true,
     })
     expect(countExternalRuntimeSkills(runtimeCatalog, promaSkills)).toBe(1)
+  })
+})
+
+describe('新会话 Skill 建议', () => {
+  test('Given Proma 与 CCB Skills When 生成建议 Then 同时展示且同名不重复', () => {
+    const result = getInvocableSkillItems([
+      {
+        slug: 'build-flutter',
+        name: 'build-flutter',
+        description: 'Proma 版本',
+        enabled: true,
+      },
+      {
+        slug: 'proma-only',
+        name: 'Proma Only',
+        enabled: true,
+      },
+    ], catalog([
+      {
+        ...skill('user:build-flutter', 'build-flutter', 'ccb-user'),
+        description: 'CCB 用户级版本',
+      },
+      skill('bundled:debug', 'debug', 'ccb-bundled'),
+    ]))
+
+    expect(result).toEqual([
+      {
+        id: 'proma-only',
+        name: 'Proma Only',
+        description: undefined,
+      },
+      {
+        id: 'build-flutter',
+        name: 'build-flutter',
+        description: 'CCB 用户级版本',
+      },
+      {
+        id: 'debug',
+        name: 'debug',
+        description: undefined,
+      },
+    ])
+  })
+
+  test('Given CCB Skill 不允许用户调用或已被覆盖 When 生成建议 Then 不展示', () => {
+    const hidden = {
+      ...skill('managed:hidden', 'hidden', 'ccb-managed'),
+      userInvocable: false,
+    }
+    const result = getInvocableSkillItems([], catalog([
+      hidden,
+      skill('bundled:active', 'active', 'ccb-bundled'),
+      skill('bundled:shadowed', 'shadowed', 'ccb-bundled', 'bundled:active'),
+    ]))
+
+    expect(result.map((item) => item.id)).toEqual(['active'])
+  })
+
+  test('Given CCB Catalog 暂不可用 When 生成建议 Then 回退展示启用的 Proma Skill', () => {
+    const result = getInvocableSkillItems([
+      {
+        slug: 'enabled-skill',
+        name: 'Enabled Skill',
+        enabled: true,
+      },
+      {
+        slug: 'disabled-skill',
+        name: 'Disabled Skill',
+        enabled: false,
+      },
+    ], null)
+
+    expect(result.map((item) => item.id)).toEqual(['enabled-skill'])
   })
 })

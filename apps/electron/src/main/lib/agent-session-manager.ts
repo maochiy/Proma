@@ -520,6 +520,49 @@ function getUserMessageText(message: SDKMessage): string | undefined {
   return text || undefined
 }
 
+const RUNTIME_USER_CONTEXT_TAGS = [
+  'mentioned_tools',
+  'referenced_sessions',
+] as const
+
+/**
+ * CCB Transcript 保存的是实际提交给 Runtime 的增强 Prompt，而 Proma 本地投影
+ * 保存用户原文。仅剥离 Proma 在消息头部注入的已知上下文块，用于二者匹配；
+ * 展示时仍保留本地原文，避免把工具/会话引用说明显示给用户。
+ */
+function normalizeRuntimeUserMessageText(text: string): string {
+  let normalized = text.trim()
+
+  for (const tag of RUNTIME_USER_CONTEXT_TAGS) {
+    const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const contextBlock = new RegExp(
+      `^<${escapedTag}>[\\s\\S]*?<\\/${escapedTag}>\\s*`,
+    )
+    normalized = normalized.replace(contextBlock, '').trimStart()
+  }
+
+  return normalized.trim()
+}
+
+function areEquivalentUserMessageTexts(
+  runtimeText: string,
+  localText: string,
+): boolean {
+  if (runtimeText === localText) return true
+  return normalizeRuntimeUserMessageText(runtimeText) === localText
+}
+
+function getMessageCreatedAt(message: SDKMessage): number | undefined {
+  const createdAt = (
+    message as unknown as {
+      _createdAt?: unknown
+    }
+  )._createdAt
+  return typeof createdAt === 'number' && Number.isFinite(createdAt)
+    ? createdAt
+    : undefined
+}
+
 function hasDesktopMessageMetadata(message: SDKMessage): boolean {
   return Object.keys(message as unknown as Record<string, unknown>)
     .some(key => key.startsWith('_'))
@@ -590,15 +633,48 @@ export function mergeAgentSessionSDKMessages(
 
     const userText = getUserMessageText(runtimeMessage)
     if (userText) {
-      const matchingIndexes = findLocalIndexes(
-        localMessage => getUserMessageText(localMessage) === userText,
+      const normalizedRuntimeText = normalizeRuntimeUserMessageText(userText)
+      const equivalentIndexes = findLocalIndexes(
+        (localMessage) => {
+          const localText = getUserMessageText(localMessage)
+          return Boolean(
+            localText
+            && areEquivalentUserMessageTexts(userText, localText),
+          )
+        },
       )
-      if (matchingIndexes.length > 0) {
+      if (equivalentIndexes.length > 0) {
+        const runtimeIdentity = getSDKMessageIdentity(runtimeMessage)
+        const identityIndex = equivalentIndexes.find(index =>
+          getSDKMessageIdentity(localMessages[index]!) === runtimeIdentity,
+        )
+        const originalTextIndexes = equivalentIndexes.filter(index =>
+          getUserMessageText(localMessages[index]!) === normalizedRuntimeText,
+        )
         const preferredIndex =
-          matchingIndexes.find(index =>
+          originalTextIndexes.find(index =>
             hasDesktopMessageMetadata(localMessages[index]!),
-          ) ?? matchingIndexes[0]!
-        for (const index of matchingIndexes) consumedLocalIndexes.add(index)
+          ) ?? originalTextIndexes[0]
+          ?? equivalentIndexes.find(index =>
+            hasDesktopMessageMetadata(localMessages[index]!),
+          )
+          ?? identityIndex
+          ?? equivalentIndexes[0]!
+        const enhancedPromptIndex = normalizedRuntimeText !== userText
+          ? equivalentIndexes.find(index =>
+              getUserMessageText(localMessages[index]!) === userText,
+            )
+          : undefined
+
+        // 一个 Runtime user 只消费一个 Proma 原文，避免历史中相同提问被误删。
+        // 若本地还保留了 Runtime 增强 Prompt，则一并消费该副本。
+        consumedLocalIndexes.add(preferredIndex)
+        if (identityIndex !== undefined) {
+          consumedLocalIndexes.add(identityIndex)
+        }
+        if (enhancedPromptIndex !== undefined) {
+          consumedLocalIndexes.add(enhancedPromptIndex)
+        }
         merged.push(localMessages[preferredIndex]!)
         continue
       }
@@ -623,9 +699,43 @@ export function mergeAgentSessionSDKMessages(
     }
   }
 
+  const pendingResults: SDKMessage[] = []
   localMessages.forEach((localMessage, index) => {
-    if (!consumedLocalIndexes.has(index)) merged.push(localMessage)
+    if (consumedLocalIndexes.has(index)) return
+    if (localMessage.type === 'result') {
+      pendingResults.push(localMessage)
+      return
+    }
+    merged.push(localMessage)
   })
+
+  // Runtime Transcript 通常不包含 Proma 的 result 完成元数据。按同一 Turn 的
+  // _createdAt 将其放回最后一条 Runtime 消息之后，不能统一追加到文件尾部。
+  for (const resultMessage of pendingResults) {
+    const resultCreatedAt = getMessageCreatedAt(resultMessage)
+    let insertIndex = -1
+    if (resultCreatedAt !== undefined) {
+      for (let index = merged.length - 1; index >= 0; index--) {
+        if (getMessageCreatedAt(merged[index]!) === resultCreatedAt) {
+          insertIndex = index + 1
+          break
+        }
+      }
+    }
+
+    if (insertIndex < 0) {
+      merged.push(resultMessage)
+    } else {
+      while (
+        insertIndex < merged.length
+        && merged[insertIndex]?.type === 'result'
+        && getMessageCreatedAt(merged[insertIndex]!) === resultCreatedAt
+      ) {
+        insertIndex += 1
+      }
+      merged.splice(insertIndex, 0, resultMessage)
+    }
+  }
 
   const filePath = getAgentSessionMessagesPath(id)
   const content = `${merged

@@ -8,6 +8,12 @@ function normalizeSkillName(value: string): string {
   return value.trim().toLowerCase()
 }
 
+export interface InvocableSkillItem {
+  id: string
+  name: string
+  description?: string
+}
+
 function getPromaSkillNames(
   skills: readonly Pick<SkillMeta, 'slug' | 'name'>[],
 ): Set<string> {
@@ -36,6 +42,58 @@ export function getVisibleRuntimeSkills(
     seenIds.add(skill.id)
     return true
   })
+}
+
+/**
+ * 合并输入框中可以由用户主动调用的 Proma 与 CCB Skills。
+ *
+ * CCB Catalog 是运行时真实能力的权威来源；同名能力存在时优先使用 CCB
+ * 解析后的名称。Catalog 暂不可用时仍回退到 Proma 工作区能力，避免输入框
+ * 因 Runtime 尚未启动或短暂异常而完全没有 Skill。
+ */
+export function getInvocableSkillItems(
+  promaSkills: readonly SkillMeta[],
+  catalog: RuntimeSkillCatalog | null,
+): InvocableSkillItem[] {
+  const runtimeSkills = getVisibleRuntimeSkills(catalog)
+    .filter((skill) => skill.enabled && skill.userInvocable)
+
+  const runtimeNames = new Set<string>()
+  const seenInvocationNames = new Set<string>()
+  const result: InvocableSkillItem[] = []
+
+  for (const skill of runtimeSkills) {
+    runtimeNames.add(normalizeSkillName(skill.name))
+  }
+
+  for (const skill of promaSkills) {
+    if (!skill.enabled) continue
+    const normalizedSlug = normalizeSkillName(skill.slug)
+    const normalizedName = normalizeSkillName(skill.name)
+    if (runtimeNames.has(normalizedSlug) || runtimeNames.has(normalizedName)) continue
+    if (seenInvocationNames.has(normalizedSlug)) continue
+
+    seenInvocationNames.add(normalizedSlug)
+    result.push({
+      id: skill.slug,
+      name: skill.name,
+      description: skill.description,
+    })
+  }
+
+  for (const skill of runtimeSkills) {
+    const normalizedName = normalizeSkillName(skill.name)
+    if (seenInvocationNames.has(normalizedName)) continue
+
+    seenInvocationNames.add(normalizedName)
+    result.push({
+      id: skill.name,
+      name: skill.name,
+      description: skill.description,
+    })
+  }
+
+  return result
 }
 
 /** CCB 自带、用户级、项目级、插件级 Skills 数量，不重复计算 Proma 注册项。 */

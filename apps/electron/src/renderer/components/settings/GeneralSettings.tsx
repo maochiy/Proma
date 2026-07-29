@@ -7,7 +7,7 @@
 
 import * as React from 'react'
 import { useAtom } from 'jotai'
-import { Camera, ImagePlus, Volume2 } from 'lucide-react'
+import { Camera, ImagePlus, LogOut, Server, Volume2 } from 'lucide-react'
 import Picker from '@emoji-mart/react'
 import data from '@emoji-mart/data'
 import {
@@ -26,6 +26,7 @@ import {
 } from '../ui/select'
 import { UserAvatar } from '../chat/UserAvatar'
 import { userProfileAtom } from '@/atoms/user-profile'
+import { newApiAuthAtom } from '@/atoms/new-api-auth'
 import {
   notificationsEnabledAtom,
   notificationSoundEnabledAtom,
@@ -61,6 +62,7 @@ interface EmojiMartEmoji {
 
 export function GeneralSettings(): React.ReactElement {
   const [userProfile, setUserProfile] = useAtom(userProfileAtom)
+  const [newApiAuth, setNewApiAuth] = useAtom(newApiAuthAtom)
   const [notificationsEnabled, setNotificationsEnabled] = useAtom(notificationsEnabledAtom)
   const [notificationSoundEnabled, setNotificationSoundEnabled] = useAtom(notificationSoundEnabledAtom)
   const [notificationSounds, setNotificationSounds] = useAtom(notificationSoundsAtom)
@@ -73,6 +75,7 @@ export function GeneralSettings(): React.ReactElement {
   const [archiveAfterDays, setArchiveAfterDays] = React.useState<number>(7)
   /** Git/PR 推广标识：默认开启 */
   const [gitAttributionEnabled, setGitAttributionEnabled] = React.useState(true)
+  const [loggingOut, setLoggingOut] = React.useState(false)
   const fileInputRef = React.useRef<HTMLInputElement>(null)
 
   // 加载归档天数与 Git/PR 标识设置
@@ -154,8 +157,64 @@ export function GeneralSettings(): React.ReactElement {
     }
   }
 
+  /** 退出 New API 登录，并清理自动生成的渠道配置。 */
+  const handleLogout = async (): Promise<void> => {
+    if (loggingOut) return
+    setLoggingOut(true)
+    try {
+      const auth = await window.electronAPI.logoutNewApi()
+      const restoredProfile = await window.electronAPI.getUserProfile()
+      setNewApiAuth(auth)
+      setUserProfile(restoredProfile)
+    } catch (error) {
+      console.error('[通用设置] 退出 New API 登录失败:', error)
+    } finally {
+      setLoggingOut(false)
+    }
+  }
+
   return (
     <div className="space-y-6">
+      <SettingsSection
+        title="OpenSwitch 账号"
+        description="管理当前 OpenSwitch 登录状态"
+      >
+        <SettingsCard>
+          <div className="flex items-center gap-4 px-4 py-4">
+            <div className="flex size-10 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+              <Server className="size-5" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <p className="truncate text-sm font-medium text-foreground">
+                  {newApiAuth.authenticated ? '已连接 OpenSwitch' : '未登录'}
+                </p>
+                {newApiAuth.method && (
+                  <span className="rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
+                    {newApiAuth.method === 'password' ? '账号登录' : 'API Key'}
+                  </span>
+                )}
+              </div>
+              <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                {userProfile.userName}
+              </p>
+            </div>
+            {newApiAuth.authenticated && (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void handleLogout()}
+                disabled={loggingOut}
+                className="shrink-0 text-destructive hover:text-destructive"
+              >
+                <LogOut className="mr-1.5 size-4" />
+                {loggingOut ? '退出中...' : '退出登录'}
+              </Button>
+            )}
+          </div>
+        </SettingsCard>
+      </SettingsSection>
+
       {/* 用户档案区域 */}
       <SettingsSection
         title="用户档案"

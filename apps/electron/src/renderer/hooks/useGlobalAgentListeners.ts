@@ -279,18 +279,35 @@ function payloadToLegacyEvents(payload: AgentStreamPayload): AgentEvent[] {
 
     case 'system': {
       const sMsg = msg as SDKSystemMessage
+      if (sMsg.subtype === 'context_compaction_config') {
+        if (
+          typeof sMsg.autoCompactEnabled === 'boolean'
+          && typeof sMsg.autoCompactThreshold === 'number'
+          && typeof sMsg.effectiveContextWindow === 'number'
+        ) {
+          return [{
+            type: 'context_compaction_config',
+            autoCompactEnabled: sMsg.autoCompactEnabled,
+            autoCompactThreshold: sMsg.autoCompactThreshold,
+            effectiveContextWindow: sMsg.effectiveContextWindow,
+          }]
+        }
+        return []
+      }
       if (sMsg.subtype === 'compact_boundary') {
         const estimatedTokensAfter = sMsg.compactionEstimatedTokensAfter
         return [{
           type: 'compact_complete',
           status: 'success',
+          trigger: sMsg.compactTrigger,
           summary: sMsg.summary,
+          preTokens: sMsg.compactPreTokens,
           ...(typeof estimatedTokensAfter === 'number' && estimatedTokensAfter > 0 && { estimatedTokensAfter }),
         }]
       }
-      if (sMsg.subtype === 'compacting') return [{ type: 'compacting' }]
+      if (sMsg.subtype === 'compacting') return [{ type: 'compacting', trigger: sMsg.compactTrigger }]
       if (sMsg.subtype === 'status') {
-        if (sMsg.status === 'compacting') return [{ type: 'compacting' }]
+        if (sMsg.status === 'compacting') return [{ type: 'compacting', trigger: sMsg.compactTrigger }]
         if (sMsg.compact_result === 'success' || sMsg.compact_result === 'failed' || sMsg.compact_result === 'noop') {
           return [{
             type: 'compact_complete',

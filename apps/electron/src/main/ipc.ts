@@ -11,9 +11,13 @@ import { existsSync, realpathSync, rmSync, readFileSync, writeFileSync, mkdirSyn
 import { writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { IPC_CHANNELS, CHANNEL_IPC_CHANNELS, CHAT_IPC_CHANNELS, AGENT_IPC_CHANNELS, ENVIRONMENT_IPC_CHANNELS, INSTALLER_IPC_CHANNELS, PROXY_IPC_CHANNELS, GITHUB_RELEASE_IPC_CHANNELS, SYSTEM_PROMPT_IPC_CHANNELS, CHAT_TOOL_IPC_CHANNELS, FEISHU_IPC_CHANNELS, DINGTALK_IPC_CHANNELS, WECHAT_IPC_CHANNELS, AUTOMATION_IPC_CHANNELS, CCB_NATIVE_CHANNEL_ID, isPromaPermissionMode, normalizePathForCompare } from '@proma/shared'
-import { USER_PROFILE_IPC_CHANNELS, SETTINGS_IPC_CHANNELS, SCRATCH_PAD_IPC_CHANNELS, QUICK_TASK_IPC_CHANNELS, VOICE_DICTATION_IPC_CHANNELS, APP_ICON_IPC_CHANNELS, DOCK_BADGE_IPC_CHANNELS, STORAGE_IPC_CHANNELS } from '../types'
+import { USER_PROFILE_IPC_CHANNELS, NEW_API_AUTH_IPC_CHANNELS, SETTINGS_IPC_CHANNELS, SCRATCH_PAD_IPC_CHANNELS, QUICK_TASK_IPC_CHANNELS, VOICE_DICTATION_IPC_CHANNELS, APP_ICON_IPC_CHANNELS, DOCK_BADGE_IPC_CHANNELS, STORAGE_IPC_CHANNELS } from '../types'
 import type {
   QuickTaskSubmitInput,
+  NewApiApiKeyLoginInput,
+  NewApiAuthState,
+  NewApiLoginResult,
+  NewApiPasswordLoginInput,
   VoiceDictationAudioChunkInput,
   VoiceDictationCommitInput,
   VoiceDictationCommitResult,
@@ -162,6 +166,12 @@ import {
 import { extractTextFromAttachment } from './lib/document-parser'
 import { getTutorialContent, createWelcomeConversation } from './lib/tutorial-service'
 import { getUserProfile, updateUserProfile } from './lib/user-profile-service'
+import {
+  checkNewApiAuth,
+  loginNewApiWithApiKey,
+  loginNewApiWithPassword,
+  logoutNewApi,
+} from './lib/new-api-auth-service'
 import { getSettings, updateSettings } from './lib/settings-service'
 import { setBuiltinMcpUserEnabled } from './lib/builtin-mcp/settings'
 import { setDockBadgeCount } from './lib/dock-badge-service'
@@ -1687,6 +1697,36 @@ export function registerIpcHandlers(): void {
     USER_PROFILE_IPC_CHANNELS.UPDATE,
     async (_, updates: Partial<UserProfile>): Promise<UserProfile> => {
       return updateUserProfile(updates)
+    }
+  )
+
+  // ===== New API 登录相关 =====
+
+  ipcMain.handle(
+    NEW_API_AUTH_IPC_CHANNELS.CHECK,
+    async (): Promise<NewApiAuthState> => {
+      return checkNewApiAuth()
+    }
+  )
+
+  ipcMain.handle(
+    NEW_API_AUTH_IPC_CHANNELS.LOGIN_PASSWORD,
+    async (_, input: NewApiPasswordLoginInput): Promise<NewApiLoginResult> => {
+      return loginNewApiWithPassword(input)
+    }
+  )
+
+  ipcMain.handle(
+    NEW_API_AUTH_IPC_CHANNELS.LOGIN_API_KEY,
+    async (_, input: NewApiApiKeyLoginInput): Promise<NewApiLoginResult> => {
+      return loginNewApiWithApiKey(input)
+    }
+  )
+
+  ipcMain.handle(
+    NEW_API_AUTH_IPC_CHANNELS.LOGOUT,
+    async (): Promise<NewApiAuthState> => {
+      return logoutNewApi()
     }
   )
 
