@@ -9,9 +9,9 @@
  */
 
 import * as React from 'react'
-import { useAtom, useSetAtom } from 'jotai'
+import { useAtom } from 'jotai'
 import { Shield, ShieldAlert, Check, X } from 'lucide-react'
-import { allPendingPermissionRequestsAtom, agentStreamingStatesAtom, finalizeStreamingActivities } from '@/atoms/agent-atoms'
+import { allPendingPermissionRequestsAtom } from '@/atoms/agent-atoms'
 import { inputCardClass } from '@/components/ai-elements/input-toolbar-styles'
 import { cn } from '@/lib/utils'
 import type { DangerLevel } from '@proma/shared'
@@ -71,7 +71,6 @@ const PERMISSION_OPTIONS: readonly PermissionOption[] = [
 
 export function PermissionBanner({ sessionId }: PermissionBannerProps): React.ReactElement | null {
   const [allRequests, setAllRequests] = useAtom(allPendingPermissionRequestsAtom)
-  const setStreamingStates = useSetAtom(agentStreamingStatesAtom)
   const requests = allRequests.get(sessionId) ?? []
   const [responding, setResponding] = React.useState(false)
   const [focusedIdx, setFocusedIdx] = React.useState(0)
@@ -120,27 +119,6 @@ export function PermissionBanner({ sessionId }: PermissionBannerProps): React.Re
     return () => document.removeEventListener('keydown', handleKeyDown)
   }, [request?.requestId])
 
-  /** 关闭权限请求 & 终止 Agent */
-  const handleDismiss = (): void => {
-    setStreamingStates((prev) => {
-      const current = prev.get(sessionId)
-      if (!current || !current.running) return prev
-      const map = new Map(prev)
-      map.set(sessionId, {
-        ...current,
-        running: false,
-        ...finalizeStreamingActivities(current.toolActivities),
-      })
-      return map
-    })
-    setAllRequests((prev) => {
-      const map = new Map(prev)
-      map.delete(sessionId)
-      return map
-    })
-    window.electronAPI.stopAgent(sessionId).catch(console.error)
-  }
-
   if (!request) return null
 
   const iconColor = DANGER_ICON_STYLES[request.dangerLevel]
@@ -184,6 +162,11 @@ export function PermissionBanner({ sessionId }: PermissionBannerProps): React.Re
 
   respondRef.current = respondToDecision
 
+  /** 关闭等同于拒绝当前操作，让拒绝结果返回 CCB，由模型决定如何继续。 */
+  const handleDismiss = (): void => {
+    respondToDecision('deny')
+  }
+
   return (
     <div
       className={cn(
@@ -212,7 +195,7 @@ export function PermissionBanner({ sessionId }: PermissionBannerProps): React.Re
             type="button"
             className="size-5 flex items-center justify-center rounded-md text-muted-foreground/50 hover:text-foreground hover:bg-muted/60 transition-colors"
             onClick={handleDismiss}
-            title="关闭并终止 Agent"
+            title="拒绝当前操作"
           >
             <X className="size-3.5" />
           </button>

@@ -151,6 +151,22 @@ function normalizePersistedSDKMessage(parsed: unknown): SDKMessage {
   return parsed as SDKMessage
 }
 
+/**
+ * CCB Transcript 会保留上游自动重试产生的原始 assistant.error。
+ *
+ * Proma 编排层会在重试最终失败时单独生成结构化错误消息，因此这些没有
+ * `error.message` 的 Runtime 原始记录既会重复展示，也只能被 Renderer 识别成
+ * “未知错误”。UI 投影读取和 Transcript 合并时统一过滤，Runtime 自身 Transcript
+ * 不受影响，后续 resume 仍保留完整执行上下文。
+ */
+function isUnstructuredRuntimeAssistantError(message: SDKMessage): boolean {
+  if (message.type !== 'assistant') return false
+  const error = (message as unknown as { error?: unknown }).error
+  if (!error) return false
+  if (typeof error !== 'object') return true
+  return typeof (error as { message?: unknown }).message !== 'string'
+}
+
 function migrateLegacyPermissionMode(index: AgentSessionsIndex): boolean {
   let changed = false
   for (const session of index.sessions) {
@@ -465,7 +481,9 @@ export function getAgentSessionSDKMessages(id: string): SDKMessage[] {
   try {
     const raw = readFileSync(filePath, 'utf-8')
     const lines = raw.split('\n').filter((line) => line.trim())
-    return parseJsonlLenient<unknown>(lines, `读取 SDKMessage (${id})`).map(normalizePersistedSDKMessage)
+    return parseJsonlLenient<unknown>(lines, `读取 SDKMessage (${id})`)
+      .map(normalizePersistedSDKMessage)
+      .filter(message => !isUnstructuredRuntimeAssistantError(message))
   } catch (error) {
     console.error(`[Agent 会话] 读取 SDKMessage 失败 (${id}):`, error)
     return []
@@ -595,7 +613,10 @@ export function mergeAgentSessionSDKMessages(
   runtimeMessages: SDKMessage[],
 ): SDKMessage[] {
   const localMessages = getAgentSessionSDKMessages(id)
-  if (runtimeMessages.length === 0) return localMessages
+  const projectionRuntimeMessages = runtimeMessages.filter(
+    message => !isUnstructuredRuntimeAssistantError(message),
+  )
+  if (projectionRuntimeMessages.length === 0) return localMessages
 
   const consumedLocalIndexes = new Set<number>()
   const merged: SDKMessage[] = []
@@ -610,7 +631,7 @@ export function mergeAgentSessionSDKMessages(
     )
     .map(({ index }) => index)
 
-  for (const runtimeMessage of runtimeMessages) {
+  for (const runtimeMessage of projectionRuntimeMessages) {
     const assistantMessageId = getAssistantMessageId(runtimeMessage)
     if (assistantMessageId) {
       const matchingIndexes = findLocalIndexes(

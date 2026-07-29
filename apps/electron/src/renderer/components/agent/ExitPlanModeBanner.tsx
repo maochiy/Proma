@@ -10,7 +10,7 @@
  */
 
 import * as React from 'react'
-import { useAtom, useSetAtom } from 'jotai'
+import { useAtom } from 'jotai'
 import {
   Check,
   X,
@@ -21,7 +21,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { inputCardClass } from '@/components/ai-elements/input-toolbar-styles'
 import { cn } from '@/lib/utils'
-import { allPendingExitPlanRequestsAtom, agentStreamingStatesAtom, finalizeStreamingActivities } from '@/atoms/agent-atoms'
+import { allPendingExitPlanRequestsAtom } from '@/atoms/agent-atoms'
 import type { ExitPlanModeAction, ExitPlanAllowedPrompt } from '@proma/shared'
 
 /** 选项定义 */
@@ -29,8 +29,8 @@ interface PlanOption {
   action: ExitPlanModeAction
   label: string
   description: string
-  icon: React.ReactNode
-  variant: 'default' | 'secondary' | 'destructive'
+  icon: React.ComponentType<{ className?: string }>
+  destructive?: boolean
 }
 
 const PLAN_OPTIONS: PlanOption[] = [
@@ -38,22 +38,20 @@ const PLAN_OPTIONS: PlanOption[] = [
     action: 'approve_bypass',
     label: '批准并完全自动执行',
     description: '后续工具调用全部自动允许',
-    icon: <Check className="size-3.5" />,
-    variant: 'default',
+    icon: Check,
   },
   {
     action: 'deny',
     label: '拒绝计划',
     description: '直接拒绝，Agent 不会执行计划',
-    icon: <X className="size-3.5" />,
-    variant: 'destructive',
+    icon: X,
+    destructive: true,
   },
   {
     action: 'feedback',
     label: '提供修改意见',
     description: '告诉 Agent 需要调整什么',
-    icon: <MessageSquare className="size-3.5" />,
-    variant: 'secondary',
+    icon: MessageSquare,
   },
 ]
 
@@ -63,7 +61,6 @@ interface ExitPlanModeBannerProps {
 
 export function ExitPlanModeBanner({ sessionId }: ExitPlanModeBannerProps): React.ReactElement | null {
   const [allRequests, setAllRequests] = useAtom(allPendingExitPlanRequestsAtom)
-  const setStreamingStates = useSetAtom(agentStreamingStatesAtom)
   const requests = allRequests.get(sessionId) ?? []
   const [focusedIdx, setFocusedIdx] = React.useState(0)
   const [showFeedback, setShowFeedback] = React.useState(false)
@@ -113,25 +110,9 @@ export function ExitPlanModeBanner({ sessionId }: ExitPlanModeBannerProps): Reac
 
   handleActionRef.current = handleAction
 
-  /** 关闭计划审批 & 终止 Agent */
+  /** 关闭等同于拒绝计划，让 CCB/模型继续处理拒绝结果。 */
   const handleDismiss = (): void => {
-    setStreamingStates((prev) => {
-      const current = prev.get(sessionId)
-      if (!current || !current.running) return prev
-      const map = new Map(prev)
-      map.set(sessionId, {
-        ...current,
-        running: false,
-        ...finalizeStreamingActivities(current.toolActivities),
-      })
-      return map
-    })
-    setAllRequests((prev) => {
-      const map = new Map(prev)
-      map.delete(sessionId)
-      return map
-    })
-    window.electronAPI.stopAgent(sessionId).catch(console.error)
+    void handleAction('deny')
   }
 
   // 键盘导航：只在 requestId 变化时重建 handler，内部通过 ref 读取最新值
@@ -152,7 +133,7 @@ export function ExitPlanModeBanner({ sessionId }: ExitPlanModeBannerProps): Reac
         if (e.key === 'Escape') {
           e.preventDefault()
           setShowFeedback(false)
-          setFocusedIdx(3)
+          setFocusedIdx(2)
         }
         return
       }
@@ -175,7 +156,8 @@ export function ExitPlanModeBanner({ sessionId }: ExitPlanModeBannerProps): Reac
           }
         }
       } else if (e.key >= '1' && e.key <= '3') {
-        const idx = parseInt(e.key) - 1
+        e.preventDefault()
+        const idx = Number(e.key) - 1
         const option = PLAN_OPTIONS[idx]
         if (option) {
           setFocusedIdx(idx)
@@ -202,7 +184,7 @@ export function ExitPlanModeBanner({ sessionId }: ExitPlanModeBannerProps): Reac
       )}
     >
       {/* 头部 */}
-      <div className="px-4 pt-3 pb-2">
+      <div className="px-4 pt-3.5 pb-2">
         <div className="flex items-center gap-2 mb-1">
           <FileText className="size-4 text-primary" />
           <span className="text-sm font-medium text-foreground flex-1">Agent 计划待审批</span>
@@ -210,7 +192,7 @@ export function ExitPlanModeBanner({ sessionId }: ExitPlanModeBannerProps): Reac
             type="button"
             className="size-5 flex items-center justify-center rounded-md text-muted-foreground/50 hover:text-foreground hover:bg-muted/60 transition-colors"
             onClick={handleDismiss}
-            title="关闭并终止 Agent"
+            title="拒绝当前计划"
           >
             <X className="size-3.5" />
           </button>
@@ -225,23 +207,27 @@ export function ExitPlanModeBanner({ sessionId }: ExitPlanModeBannerProps): Reac
         <AllowedPromptsList prompts={request.allowedPrompts} />
       )}
 
-      {/* 选项列表 */}
-      <div className="px-4 pb-2">
+      {/* 与普通权限审批一致的 Codex 风格纵向选项 */}
+      <div className="px-3 pb-2">
         <div className="flex flex-col gap-1">
           {PLAN_OPTIONS.map((option, idx) => {
             const isFocused = focusedIdx === idx
+            const OptionIcon = option.icon
             return (
               <button
                 key={option.action}
                 type="button"
-                className={`
-                  flex items-center gap-2.5 px-3 py-2 rounded-lg text-xs transition-all outline-none text-left
-                  ${option.variant === 'destructive'
-                    ? 'bg-muted/50 text-foreground/80 hover:bg-destructive/10 hover:text-destructive'
-                    : 'bg-muted/50 text-foreground/80 hover:bg-muted'
-                  }
-                  ${isFocused ? 'ring-2 ring-primary/50 ring-offset-1 ring-offset-card' : ''}
-                `}
+                className={cn(
+                  'flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left outline-none transition-colors',
+                  option.destructive
+                    ? 'text-foreground/80 hover:bg-destructive/10 hover:text-destructive'
+                    : 'text-foreground/85 hover:bg-muted/70',
+                  isFocused && (
+                    option.destructive
+                      ? 'bg-destructive/[0.07] text-destructive ring-1 ring-inset ring-destructive/20'
+                      : 'bg-muted/70 text-foreground ring-1 ring-inset ring-foreground/10'
+                  ),
+                )}
                 onClick={() => {
                   if (option.action === 'feedback') {
                     setShowFeedback(true)
@@ -249,16 +235,18 @@ export function ExitPlanModeBanner({ sessionId }: ExitPlanModeBannerProps): Reac
                     void handleAction(option.action)
                   }
                 }}
+                onMouseEnter={() => setFocusedIdx(idx)}
                 disabled={submitting}
               >
-                <span className="text-[10px] shrink-0 text-muted-foreground/50">
+                <span className="w-4 shrink-0 text-center text-[11px] text-muted-foreground/55">
                   {idx + 1}
                 </span>
-                <span className="shrink-0 text-muted-foreground/70">{option.icon}</span>
-                <div className="flex flex-col min-w-0">
-                  <span className="font-medium">{option.label}</span>
+                <OptionIcon className="size-4 shrink-0 opacity-70" />
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span className="text-sm font-medium">{option.label}</span>
                   <span className="text-[11px] text-muted-foreground">{option.description}</span>
-                </div>
+                </span>
+                {isFocused && <Check className="size-4 shrink-0 opacity-70" />}
               </button>
             )
           })}
@@ -267,11 +255,11 @@ export function ExitPlanModeBanner({ sessionId }: ExitPlanModeBannerProps): Reac
 
       {/* 反馈输入框 */}
       {showFeedback && (
-        <div className="px-4 pb-2">
+        <div className="px-3 pb-2">
           <div className="flex gap-2">
             <input
               type="text"
-              className="flex-1 px-3 py-2 rounded-lg text-xs bg-muted/40 focus:bg-muted/60 focus:outline-none focus:ring-2 focus:ring-primary/30 placeholder:text-muted-foreground/40 transition-colors"
+              className="min-w-0 flex-1 rounded-xl bg-muted/45 px-3 py-2.5 text-xs outline-none transition-colors placeholder:text-muted-foreground/40 focus:bg-muted/70 focus:ring-1 focus:ring-inset focus:ring-foreground/10"
               placeholder="输入修改意见..."
               value={feedbackText}
               onChange={(e) => setFeedbackText(e.target.value)}
@@ -302,10 +290,8 @@ export function ExitPlanModeBanner({ sessionId }: ExitPlanModeBannerProps): Reac
       )}
 
       {/* 底部提示 */}
-      <div className="flex items-center px-4 pb-3">
-        <span className="text-[10px] text-muted-foreground/40">
-          点击选择 · ↑↓ Enter 确认 · 1-3 快速选择
-        </span>
+      <div className="px-4 pb-3 text-[10px] text-muted-foreground/45">
+        点击选择 · ↑↓ Enter 确认 · 1-3 快速选择
       </div>
     </div>
   )
@@ -314,7 +300,7 @@ export function ExitPlanModeBanner({ sessionId }: ExitPlanModeBannerProps): Reac
 /** allowedPrompts 展示列表 */
 function AllowedPromptsList({ prompts }: { prompts: ExitPlanAllowedPrompt[] }): React.ReactElement {
   return (
-    <div className="px-4 pb-2">
+    <div className="px-4 pb-3">
       <p className="text-[11px] text-muted-foreground mb-1">计划需要的权限：</p>
       <div className="flex flex-wrap gap-1">
         {prompts.map((p, idx) => (

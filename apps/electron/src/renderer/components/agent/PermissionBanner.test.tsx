@@ -48,4 +48,11 @@ describe('PermissionBanner 审批面板', () => {
     expect(denyIndex).toBeGreaterThan(alwaysAllowIndex)
     expect(html).toContain('flex flex-col gap-1')
   })
+
+  test('关闭面板表示拒绝当前操作而不是终止 Agent', () => {
+    const html = renderPermissionBanner()
+
+    expect(html).toContain('title="拒绝当前操作"')
+    expect(html).not.toContain('关闭并终止 Agent')
+  })
 })

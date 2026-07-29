@@ -128,6 +128,41 @@ describe('Agent 会话 JSONL 读取', () => {
     expect(messages.map((message) => message.type)).toEqual(['user', 'assistant'])
   })
 
+  test('Given CCB 自动重试原始错误已同步到本地 When 读取 Then 不展示为未知错误', () => {
+    writeAgentSessionJsonl('session-with-runtime-retry-error', [
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [{ type: 'text', text: 'API Error: 429 The engine is currently overloaded' }],
+        },
+        error: {
+          status: 429,
+          error: {
+            message: 'The engine is currently overloaded',
+            type: 'EngineOverloadedError',
+          },
+        },
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [{ type: 'text', text: '重试后执行成功' }],
+        },
+      }),
+    ])
+
+    const messages = manager.getAgentSessionSDKMessages(
+      'session-with-runtime-retry-error',
+    )
+
+    expect(messages).toHaveLength(1)
+    expect(
+      (messages[0] as unknown as {
+        message: { content: Array<{ text?: string }> }
+      }).message.content[0]?.text,
+    ).toBe('重试后执行成功')
+  })
+
   test('Given 会话 JSONL 存在损坏行 When 截断 SDKMessage Then 抛错避免重写不完整历史', () => {
     writeAgentSessionJsonl('session-truncate-bad-line', [
       JSON.stringify({ type: 'assistant', uuid: 'assistant-1', message: { content: [{ type: 'text', text: '完成' }] } }),
@@ -357,6 +392,55 @@ describe('Agent 会话元数据', () => {
 })
 
 describe('Agent Transcript 增量合并', () => {
+  test('Given Runtime Transcript 包含自动重试原始错误 When 最终成功 Then 不合并未知错误卡片', () => {
+    writeAgentSessionJsonl('merge-runtime-retry-error', [
+      JSON.stringify({
+        type: 'user',
+        message: { content: [{ type: 'text', text: '执行测试' }] },
+        parent_tool_use_id: null,
+        _createdAt: 100,
+      }),
+    ])
+
+    const merged = manager.mergeAgentSessionSDKMessages(
+      'merge-runtime-retry-error',
+      [
+        {
+          type: 'user',
+          message: { role: 'user', content: '执行测试' },
+          parent_tool_use_id: null,
+          uuid: 'runtime-user',
+        } as never,
+        {
+          type: 'assistant',
+          message: {
+            content: [{ type: 'text', text: 'API Error: 429 The engine is currently overloaded' }],
+          },
+          error: {
+            status: 429,
+            error: {
+              message: 'The engine is currently overloaded',
+              type: 'EngineOverloadedError',
+            },
+          },
+        } as never,
+        {
+          type: 'assistant',
+          message: {
+            content: [{ type: 'text', text: '任务执行成功' }],
+          },
+          parent_tool_use_id: null,
+          uuid: 'assistant-success',
+        } as never,
+      ],
+    )
+
+    expect(merged.some(message =>
+      Boolean((message as unknown as { error?: unknown }).error),
+    )).toBe(false)
+    expect(merged.map(message => message.type)).toEqual(['user', 'assistant'])
+  })
+
   test('Given CCB Transcript 尚未落盘 When 返回空 Transcript Then 保留本地用户消息', () => {
     writeAgentSessionJsonl('lagging-transcript', [
       JSON.stringify({
