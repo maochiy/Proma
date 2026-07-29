@@ -6,19 +6,23 @@
  */
 
 import * as React from 'react'
-import { useAtom, useAtomValue, useSetAtom } from 'jotai'
-import { Check, ChevronDown, Map as MapIcon, Shield, ShieldCheck, Zap } from 'lucide-react'
+import { useAtom, useAtomValue } from 'jotai'
+import { Check, ChevronDown, Shield, ShieldCheck, Zap } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
-import { agentPermissionModeMapAtom, agentDefaultPermissionModeAtom, sessionPersistedPermissionModeAtom, sessionExistsAtom, agentPlanModeSessionsAtom } from '@/atoms/agent-atoms'
-import type { PromaPermissionMode } from '@proma/shared'
-import { PROMA_PERMISSION_MODE_CONFIG, PROMA_PERMISSION_MODE_ORDER } from '@proma/shared'
-import { getDisplayedPermissionMode, updatePlanModeSessionSet } from '@/lib/agent-plan-mode'
+import {
+  agentPermissionModeMapAtom,
+  agentDefaultPermissionModeAtom,
+  sessionPersistedPermissionModeAtom,
+  sessionExistsAtom,
+} from '@/atoms/agent-atoms'
+import type { PromaApprovalMode, PromaPermissionMode } from '@proma/shared'
+import { PROMA_APPROVAL_MODES, PROMA_PERMISSION_MODE_CONFIG } from '@proma/shared'
+import { normalizeApprovalMode } from '@/lib/agent-plan-mode'
 import { cn } from '@/lib/utils'
 
-const MODE_ICONS: Record<PromaPermissionMode, React.ComponentType<{ className?: string }>> = {
+const MODE_ICONS: Record<PromaApprovalMode, React.ComponentType<{ className?: string }>> = {
   default: Shield,
   bypassPermissions: Zap,
-  plan: MapIcon,
 }
 
 interface PermissionModeSelectorProps {
@@ -28,13 +32,9 @@ interface PermissionModeSelectorProps {
 export function PermissionModeSelector({ sessionId }: PermissionModeSelectorProps): React.ReactElement | null {
   const [open, setOpen] = React.useState(false)
   const [modeMap, setModeMap] = useAtom(agentPermissionModeMapAtom)
-  const setPlanModeSessions = useSetAtom(agentPlanModeSessionsAtom)
-  const planModeSessions = useAtomValue(agentPlanModeSessionsAtom)
   const defaultMode = useAtomValue(agentDefaultPermissionModeAtom)
   const persistedSessionMode = useAtomValue(sessionPersistedPermissionModeAtom(sessionId))
-  const mode = modeMap.get(sessionId) ?? persistedSessionMode ?? defaultMode
-  const planModeActive = planModeSessions.has(sessionId)
-  const displayMode = getDisplayedPermissionMode(mode, planModeActive)
+  const mode = normalizeApprovalMode(modeMap.get(sessionId) ?? persistedSessionMode ?? defaultMode)
   const sessionExistsInList = useAtomValue(sessionExistsAtom(sessionId))
 
   // 初始化：如果当前 session 不在 Map 中，按以下优先级读回：
@@ -47,19 +47,18 @@ export function PermissionModeSelector({ sessionId }: PermissionModeSelectorProp
     setModeMap((prev: Map<string, PromaPermissionMode>) => {
       if (prev.has(sessionId)) return prev
       const next = new Map(prev)
-      next.set(sessionId, persistedSessionMode ?? defaultMode)
+      next.set(sessionId, normalizeApprovalMode(persistedSessionMode ?? defaultMode))
       return next
     })
   }, [sessionId, persistedSessionMode, sessionExistsInList, defaultMode, setModeMap])
 
   /** 切换当前会话的权限模式 */
-  const selectMode = React.useCallback(async (nextMode: PromaPermissionMode) => {
-    if (nextMode === displayMode) {
+  const selectMode = React.useCallback(async (nextMode: PromaApprovalMode) => {
+    if (nextMode === mode) {
       setOpen(false)
       return
     }
     const prevMode = mode
-    const prevPlanModeActive = planModeActive
 
     // 乐观更新当前 session 的模式
     setModeMap((prev: Map<string, PromaPermissionMode>) => {
@@ -67,9 +66,6 @@ export function PermissionModeSelector({ sessionId }: PermissionModeSelectorProp
       next.set(sessionId, nextMode)
       return next
     })
-    setPlanModeSessions((prev: Set<string>) =>
-      updatePlanModeSessionSet(prev, sessionId, nextMode === 'plan')
-    )
 
     // 热切换运行中的当前 session；失败时回滚 modeMap 保持 UI/后端一致
     try {
@@ -82,13 +78,10 @@ export function PermissionModeSelector({ sessionId }: PermissionModeSelectorProp
         next.set(sessionId, prevMode)
         return next
       })
-      setPlanModeSessions((prev: Set<string>) =>
-        updatePlanModeSessionSet(prev, sessionId, prevPlanModeActive || prevMode === 'plan')
-      )
     }
-  }, [displayMode, mode, planModeActive, sessionId, setModeMap, setPlanModeSessions])
+  }, [mode, sessionId, setModeMap])
 
-  const config = PROMA_PERMISSION_MODE_CONFIG[displayMode]
+  const config = PROMA_PERMISSION_MODE_CONFIG[mode]
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -118,10 +111,10 @@ export function PermissionModeSelector({ sessionId }: PermissionModeSelectorProp
         <div className="px-2.5 pb-1.5 pt-1 text-[11px] font-medium text-muted-foreground">
           审批模式
         </div>
-        {PROMA_PERMISSION_MODE_ORDER.map(nextMode => {
+        {PROMA_APPROVAL_MODES.map(nextMode => {
           const nextConfig = PROMA_PERMISSION_MODE_CONFIG[nextMode]
           const Icon = MODE_ICONS[nextMode]
-          const selected = nextMode === displayMode
+          const selected = nextMode === mode
           return (
             <button
               key={nextMode}

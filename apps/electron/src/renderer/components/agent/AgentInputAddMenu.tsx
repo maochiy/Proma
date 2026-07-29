@@ -1,11 +1,13 @@
 import * as React from 'react'
-import { FilePlus2, FolderPlus, Plus } from 'lucide-react'
+import { Check, FilePlus2, FolderPlus, Lightbulb, Plus } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
 
 interface AgentInputAddMenuProps {
   onAttachFile: () => void
   onAttachFolder: () => void
+  planModeEnabled: boolean
+  onPlanModeChange: (enabled: boolean) => void
 }
 
 interface AddMenuItemProps {
@@ -13,6 +15,7 @@ interface AddMenuItemProps {
   label: string
   description: string
   onClick: () => void
+  selected?: boolean
 }
 
 function AddMenuItem({
@@ -20,6 +23,7 @@ function AddMenuItem({
   label,
   description,
   onClick,
+  selected = false,
 }: AddMenuItemProps): React.ReactElement {
   return (
     <button
@@ -33,10 +37,11 @@ function AddMenuItem({
       <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted/70 text-foreground/70">
         {icon}
       </span>
-      <span className="min-w-0">
+      <span className="min-w-0 flex-1">
         <span className="block text-sm font-medium text-foreground">{label}</span>
         <span className="block text-xs text-muted-foreground">{description}</span>
       </span>
+      {selected && <Check className="size-4 shrink-0 text-foreground/60" />}
     </button>
   )
 }
@@ -44,6 +49,8 @@ function AddMenuItem({
 export function AgentInputAddMenu({
   onAttachFile,
   onAttachFolder,
+  planModeEnabled,
+  onPlanModeChange,
 }: AgentInputAddMenuProps): React.ReactElement {
   const [open, setOpen] = React.useState(false)
 
@@ -86,6 +93,13 @@ export function AgentInputAddMenu({
           label="附加文件夹"
           description="让 CCB 访问本地文件夹"
           onClick={() => runAction(onAttachFolder)}
+        />
+        <AddMenuItem
+          icon={<Lightbulb className="size-4" />}
+          label="计划"
+          description="先制定计划，不直接执行改动"
+          selected={planModeEnabled}
+          onClick={() => runAction(() => onPlanModeChange(!planModeEnabled))}
         />
       </PopoverContent>
     </Popover>

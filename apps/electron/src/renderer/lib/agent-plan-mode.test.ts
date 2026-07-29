@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'bun:test'
-import { getDisplayedPermissionMode, getPlanModeChangeFromToolName, updatePlanModeSessionSet } from './agent-plan-mode'
+import {
+  getEffectivePermissionMode,
+  getPlanModeChangeFromToolName,
+  normalizeApprovalMode,
+  updatePlanModeSessionSet,
+} from './agent-plan-mode'
 
 describe('Agent 计划阶段状态', () => {
   test('Given EnterPlanMode 工具 When 解析计划状态 Then 标记进入计划阶段', () => {
@@ -40,12 +45,16 @@ describe('Agent 计划阶段状态', () => {
     expect(updatePlanModeSessionSet(prev, 'session-b', false)).toBe(prev)
   })
 
-  test('Given Agent 自己进入计划阶段 When 权限按钮显示模式 Then 优先显示计划模式', () => {
-    expect(getDisplayedPermissionMode('bypassPermissions', true)).toBe('plan')
+  test('Given 独立计划模式已启用 When 构造 CCB 参数 Then 使用 plan', () => {
+    expect(getEffectivePermissionMode('bypassPermissions', true)).toBe('plan')
   })
 
-  test('Given Agent 不在计划阶段 When 权限按钮显示模式 Then 保留真实权限模式', () => {
-    expect(getDisplayedPermissionMode('bypassPermissions', false)).toBe('bypassPermissions')
-    expect(getDisplayedPermissionMode('plan', false)).toBe('plan')
+  test('Given 独立计划模式关闭 When 构造 CCB 参数 Then 恢复原审批模式', () => {
+    expect(getEffectivePermissionMode('bypassPermissions', false)).toBe('bypassPermissions')
+    expect(getEffectivePermissionMode('default', false)).toBe('default')
+  })
+
+  test('Given 历史审批字段为 plan When 显示审批模式 Then 回退到请求批准', () => {
+    expect(normalizeApprovalMode('plan')).toBe('default')
   })
 })

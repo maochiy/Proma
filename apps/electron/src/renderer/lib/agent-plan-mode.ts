@@ -1,4 +1,8 @@
-import type { AgentPlanModeChangeSource, PromaPermissionMode } from '@proma/shared'
+import type {
+  AgentPlanModeChangeSource,
+  PromaApprovalMode,
+  PromaPermissionMode,
+} from '@proma/shared'
 
 export interface PlanModeChange {
   active: boolean
@@ -34,10 +38,15 @@ export function updatePlanModeSessionSet(
   return next
 }
 
-/** 输入区处于计划阶段时，权限按钮也优先展示计划模式图标。 */
-export function getDisplayedPermissionMode(
-  permissionMode: PromaPermissionMode,
-  planModeActive: boolean,
+/** 历史会话若把 plan 存在审批字段中，回退到安全的“请求批准”。 */
+export function normalizeApprovalMode(permissionMode: PromaPermissionMode): PromaApprovalMode {
+  return permissionMode === 'plan' ? 'default' : permissionMode
+}
+
+/** 独立计划开关优先映射为 CCB plan，关闭后恢复原审批模式。 */
+export function getEffectivePermissionMode(
+  approvalMode: PromaPermissionMode,
+  planModeEnabled: boolean,
 ): PromaPermissionMode {
-  return planModeActive ? 'plan' : permissionMode
+  return planModeEnabled ? 'plan' : normalizeApprovalMode(approvalMode)
 }

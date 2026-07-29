@@ -452,7 +452,7 @@ export interface ElectronAPI {
   listAgentSessions: () => Promise<AgentSessionMeta[]>
 
   /** 创建 Agent 会话 */
-  createAgentSession: (title?: string, channelId?: string, workspaceId?: string, modelId?: string) => Promise<AgentSessionMeta>
+  createAgentSession: (title?: string, channelId?: string, workspaceId?: string, modelId?: string, draft?: boolean) => Promise<AgentSessionMeta>
 
   /** 获取 Agent 会话 SDKMessage（Phase 4 新格式） */
   getAgentSessionSDKMessages: (id: string) => Promise<SDKMessage[]>
@@ -692,6 +692,9 @@ export interface ElectronAPI {
 
   /** 热切换指定会话的权限模式（运行中生效，仅影响该 session） */
   updateSessionPermissionMode: (sessionId: string, mode: PromaPermissionMode) => Promise<void>
+
+  /** 启用或关闭独立计划模式（运行中同步到 CCB） */
+  updateSessionPlanMode: (sessionId: string, enabled: boolean) => Promise<void>
 
   // ===== Chat 工具管理 =====
 
@@ -1552,8 +1555,8 @@ const electronAPI: ElectronAPI = {
     return ipcRenderer.invoke(AGENT_IPC_CHANNELS.LIST_SESSIONS)
   },
 
-  createAgentSession: (title?: string, channelId?: string, workspaceId?: string, modelId?: string) => {
-    return ipcRenderer.invoke(AGENT_IPC_CHANNELS.CREATE_SESSION, title, channelId, workspaceId, modelId)
+  createAgentSession: (title?: string, channelId?: string, workspaceId?: string, modelId?: string, draft?: boolean) => {
+    return ipcRenderer.invoke(AGENT_IPC_CHANNELS.CREATE_SESSION, title, channelId, workspaceId, modelId, draft)
   },
 
   getAgentSessionSDKMessages: (id: string) => {
@@ -1908,6 +1911,10 @@ const electronAPI: ElectronAPI = {
 
   updateSessionPermissionMode: (sessionId: string, mode: PromaPermissionMode) => {
     return ipcRenderer.invoke(AGENT_IPC_CHANNELS.UPDATE_SESSION_PERMISSION_MODE, sessionId, mode)
+  },
+
+  updateSessionPlanMode: (sessionId: string, enabled: boolean) => {
+    return ipcRenderer.invoke(AGENT_IPC_CHANNELS.UPDATE_SESSION_PLAN_MODE, sessionId, enabled)
   },
 
   // Chat 工具管理

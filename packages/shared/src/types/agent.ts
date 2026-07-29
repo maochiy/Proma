@@ -790,6 +790,8 @@ export interface AgentSessionMeta {
   runtimeWorkerState?: 'cold' | 'starting' | 'ready' | 'busy' | 'suspended' | 'crashed'
   /** 会话标题 */
   title: string
+  /** 尚未发送首条消息的临时任务，不进入侧边栏历史。 */
+  draft?: boolean
   /** 标题来源；Runtime 目录同步只更新 runtime 来源标题。 */
   titleSource?: 'runtime' | 'generated' | 'user'
   /** 使用的渠道 ID */
@@ -818,6 +820,8 @@ export interface AgentSessionMeta {
   stoppedByUser?: boolean
   /** 该会话当前的权限模式（持久化到磁盘，重启后恢复）。未设置时新会话默认 auto */
   permissionMode?: PromaPermissionMode
+  /** 是否启用独立计划模式；审批模式仍保存在 permissionMode 中。 */
+  planModeEnabled?: boolean
   /** 来源定时任务 ID（该会话由定时任务自动创建/复用时标记，用于侧栏显示钟表图标 + 跳转设置） */
   sourceAutomationId?: string
   /**
@@ -1572,6 +1576,11 @@ export const PROMA_PERMISSION_MODES = ['default', 'bypassPermissions', 'plan'] a
 
 export type PromaPermissionMode = typeof PROMA_PERMISSION_MODES[number]
 
+/** 输入区“审批模式”只包含请求批准与完全自动；计划模式是独立开关。 */
+export const PROMA_APPROVAL_MODES = ['default', 'bypassPermissions'] as const
+
+export type PromaApprovalMode = typeof PROMA_APPROVAL_MODES[number]
+
 export const PROMA_DEFAULT_PERMISSION_MODE: PromaPermissionMode = 'bypassPermissions'
 
 export interface PromaPermissionModeConfig {
@@ -1600,7 +1609,7 @@ export const PROMA_PERMISSION_MODE_CONFIG = {
   },
 } as const satisfies Record<PromaPermissionMode, PromaPermissionModeConfig>
 
-/** 权限模式定义顺序（用于循环切换） */
+/** Runtime 权限模式定义顺序；计划模式入口不使用该数组。 */
 export const PROMA_PERMISSION_MODE_ORDER: readonly PromaPermissionMode[] = PROMA_PERMISSION_MODES
 
 export function isPromaPermissionMode(mode: string): mode is PromaPermissionMode {
@@ -1893,6 +1902,8 @@ export const AGENT_IPC_CHANNELS = {
   PERMISSION_RESPOND: 'agent:permission:respond',
   /** 热切换指定会话的权限模式（运行中生效，不广播到其他会话） */
   UPDATE_SESSION_PERMISSION_MODE: 'agent:update-session-permission-mode',
+  /** 启用或关闭独立计划模式（运行中同步到 CCB） */
+  UPDATE_SESSION_PLAN_MODE: 'agent:update-session-plan-mode',
 
   // AskUserQuestion 交互式问答
   /** AskUser 响应（渲染进程 → 主进程） */

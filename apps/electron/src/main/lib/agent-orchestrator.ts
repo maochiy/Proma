@@ -858,6 +858,11 @@ export class AgentOrchestrator {
 
     const appSettings = getSettings()
     let sessionMeta = getAgentSessionMeta(sessionId)
+    const persistedApprovalMode: PromaPermissionMode = sessionMeta?.permissionMode === 'default'
+      ? 'default'
+      : 'bypassPermissions'
+    const initialPermissionMode: PromaPermissionMode = permissionModeOverride
+      ?? (sessionMeta?.planModeEnabled ? 'plan' : persistedApprovalMode)
     console.log('[Agent 编排] Agent runtime: claude-code-best desktop')
 
     if (channel && !channel.enabled) {
@@ -1017,7 +1022,7 @@ export class AgentOrchestrator {
         workspaceId,
         workspaceSlug,
         agentCwd,
-        permissionMode: permissionModeOverride ?? sessionMeta?.permissionMode ?? PROMA_DEFAULT_PERMISSION_MODE,
+        permissionMode: initialPermissionMode,
         triggeredBy: input.triggeredBy,
         sessionMeta,
       })
@@ -1070,13 +1075,16 @@ export class AgentOrchestrator {
 
       // 12. 读取应用设置并确定权限模式
       // 权限模式只属于当前 session；新会话默认完全自动模式。
-      const initialPermissionMode: PromaPermissionMode = permissionModeOverride
-        ?? PROMA_DEFAULT_PERMISSION_MODE
       // 注册到 Map，支持运行中动态切换
       this.sessionPermissionModes.set(sessionId, initialPermissionMode)
       console.log(`[Agent 编排] 权限模式: ${initialPermissionMode}${permissionModeOverride ? '（外部覆盖）' : ''}`)
 
       const emitPlanModeChanged = (active: boolean, source: 'initial' | 'tool' | 'permission'): void => {
+        try {
+          updateAgentSessionMeta(sessionId, { planModeEnabled: active })
+        } catch (error) {
+          console.warn(`[Agent 编排] 持久化计划模式失败: sessionId=${sessionId}`, error)
+        }
         this.eventBus.emit(sessionId, {
           kind: 'proma_event',
           event: { type: 'plan_mode_changed', sessionId, active, source },

@@ -442,9 +442,9 @@ export function GlobalShortcuts(): null {
       store.set(appModeAtom, data.mode)
       store.set(activeViewAtom, 'conversations')
       if (data.mode === 'agent') {
-        await createAgent()
+        await createAgent({ draft: true })
       } else {
-        await createChat()
+        await createChat({ draft: true })
       }
     })
 

@@ -172,6 +172,12 @@ function migrateLegacyPermissionMode(index: AgentSessionsIndex): boolean {
   for (const session of index.sessions) {
     const rawMode = session.permissionMode as string | undefined
     if (!rawMode) continue
+    if (rawMode === 'plan') {
+      session.permissionMode = 'default'
+      session.planModeEnabled = true
+      changed = true
+      continue
+    }
     const nextMode = migratePermissionMode(rawMode)
     if (nextMode !== rawMode) {
       session.permissionMode = nextMode
@@ -197,7 +203,7 @@ function readIndex(): AgentSessionsIndex {
     const permissionModeMigrated = migrateLegacyPermissionMode(data)
     if (permissionModeMigrated) {
       writeIndex(data)
-      console.log('[Agent 会话] 已迁移历史权限模式 auto → bypassPermissions')
+      console.log('[Agent 会话] 已迁移历史权限模式与独立计划模式')
     }
     return data
   }
@@ -318,6 +324,7 @@ export function createAgentSession(
   channelId?: string,
   workspaceId?: string,
   modelId?: string,
+  draft: boolean = false,
 ): AgentSessionMeta {
   const index = readIndex()
   const now = Date.now()
@@ -325,6 +332,7 @@ export function createAgentSession(
   const meta: AgentSessionMeta = {
     id: randomUUID(),
     title: title || '新 Agent 会话',
+    draft,
     titleSource: title ? 'user' : 'generated',
     channelId,
     modelId,
@@ -855,7 +863,7 @@ export function mergeAgentSessionSDKMessages(
  */
 export function updateAgentSessionMeta(
   id: string,
-  updates: Partial<Pick<AgentSessionMeta, 'title' | 'titleSource' | 'channelId' | 'modelId' | 'runtimeSessionId' | 'runtimeVersion' | 'runtimeArtifactCommit' | 'runtimeProtocolVersion' | 'runtimeLastSequence' | 'runtimeWorkerState' | 'workspaceId' | 'pinned' | 'starred' | 'archived' | 'attachedDirectories' | 'attachedFiles' | 'resumeAtMessageUuid' | 'stoppedByUser' | 'permissionMode' | 'completedButUnconfirmed' | 'sourceAutomationId' | 'automationGraduated' | 'parentSessionId' | 'rootSessionId' | 'sourceDelegationId' | 'delegationRole' | 'delegationStatus' | 'delegationDepth' | 'delegationGoal'>>,
+  updates: Partial<Pick<AgentSessionMeta, 'title' | 'draft' | 'titleSource' | 'channelId' | 'modelId' | 'runtimeSessionId' | 'runtimeVersion' | 'runtimeArtifactCommit' | 'runtimeProtocolVersion' | 'runtimeLastSequence' | 'runtimeWorkerState' | 'workspaceId' | 'pinned' | 'starred' | 'archived' | 'attachedDirectories' | 'attachedFiles' | 'resumeAtMessageUuid' | 'stoppedByUser' | 'permissionMode' | 'planModeEnabled' | 'completedButUnconfirmed' | 'sourceAutomationId' | 'automationGraduated' | 'parentSessionId' | 'rootSessionId' | 'sourceDelegationId' | 'delegationRole' | 'delegationStatus' | 'delegationDepth' | 'delegationGoal'>>,
 ): AgentSessionMeta {
   const index = readIndex()
   const idx = index.sessions.findIndex((s) => s.id === id)
@@ -875,7 +883,10 @@ export function updateAgentSessionMeta(
     && updateKeys.every((key) => key === 'channelId' || key === 'modelId')
   // 非手动归档操作时，若会话已归档则自动恢复为活跃（仅更新 stoppedByUser 或 starred 不触发解归档）
   const isStoppedByUserOnly = updateKeys.every((key) => key === 'stoppedByUser')
-  const preserveFreshness = isStarredOnly || isModelBindingOnly
+  const isRuntimePreferenceOnly =
+    updateKeys.length > 0
+    && updateKeys.every((key) => key === 'permissionMode' || key === 'planModeEnabled')
+  const preserveFreshness = isStarredOnly || isModelBindingOnly || isRuntimePreferenceOnly
   const autoUnarchive =
     existing.archived
     && !('archived' in updates)

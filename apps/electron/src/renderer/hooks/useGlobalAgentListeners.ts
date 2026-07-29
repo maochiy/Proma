@@ -942,13 +942,6 @@ export function useGlobalAgentListeners(): void {
               map.set(sessionId, [...current, event.request])
               return map
             })
-            // 退出 Plan 模式指示状态
-            store.set(agentPlanModeSessionsAtom, (prev: Set<string>) => {
-              if (!prev.has(sessionId)) return prev
-              const next = new Set(prev)
-              next.delete(sessionId)
-              return next
-            })
             // 桌面通知（带提示音 + 会话导航）
             sendBlockingNotification(
               sessionId,
@@ -961,11 +954,17 @@ export function useGlobalAgentListeners(): void {
             store.set(agentPlanModeSessionsAtom, (prev: Set<string>) =>
               updatePlanModeSessionSet(prev, sessionId, true)
             )
+            store.set(agentSessionsAtom, (prev) => prev.map((session) =>
+              session.id === sessionId ? { ...session, planModeEnabled: true } : session
+            ))
           } else if (event.type === 'plan_mode_changed') {
             // 计划阶段变化只影响输入框/横幅状态，不改用户选择的权限模式
             store.set(agentPlanModeSessionsAtom, (prev: Set<string>) =>
               updatePlanModeSessionSet(prev, sessionId, event.active)
             )
+            store.set(agentSessionsAtom, (prev) => prev.map((session) =>
+              session.id === sessionId ? { ...session, planModeEnabled: event.active } : session
+            ))
           } else if (event.type === 'permission_mode_changed') {
             // 权限模式变更（如 Plan 模式退出后切换到完全自动）
             console.log(`[GlobalAgentListeners] 权限模式变更: ${event.mode}`)
@@ -977,6 +976,15 @@ export function useGlobalAgentListeners(): void {
             store.set(agentPlanModeSessionsAtom, (prev: Set<string>) =>
               updatePlanModeSessionSet(prev, sessionId, event.mode === 'plan')
             )
+            store.set(agentSessionsAtom, (prev) => prev.map((session) =>
+              session.id === sessionId
+                ? {
+                    ...session,
+                    permissionMode: event.mode === 'plan' ? session.permissionMode : event.mode,
+                    planModeEnabled: event.mode === 'plan',
+                  }
+                : session
+            ))
           } else if (event.type === 'run_resumed') {
             // 后台任务完成自动唤醒：从"空闲可输入"恢复到"运行中"。
             store.set(agentStreamingStatesAtom, (prev) => {

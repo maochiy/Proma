@@ -439,6 +439,14 @@ export const sessionPersistedPermissionModeAtom = atomFamily((sessionId: string)
   }),
 )
 
+/** 按 sessionId 派生持久化的独立计划模式开关。 */
+export const sessionPersistedPlanModeEnabledAtom = atomFamily((sessionId: string) =>
+  atom((get) => {
+    const sessions = get(agentSessionsAtom)
+    return sessions.find((s) => s.id === sessionId)?.planModeEnabled === true
+  }),
+)
+
 /** 按 sessionId 派生该 session 是否存在于列表中（冷启动判断用） */
 export const sessionExistsAtom = atomFamily((sessionId: string) =>
   atom((get) => {

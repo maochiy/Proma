@@ -69,6 +69,7 @@ import { feishuBotStatesAtom } from './atoms/feishu-atoms'
 import { dingtalkBotStatesAtom } from './atoms/dingtalk-atoms'
 import { currentConversationIdAtom, channelsAtom, channelsLoadedAtom, selectedModelAtom } from './atoms/chat-atoms'
 import { appModeAtom } from './atoms/app-mode'
+import { draftSessionIdsAtom } from './atoms/draft-session-atoms'
 import type { FeishuBotBridgeState, FeishuBridgeState, DingTalkBotBridgeState, DingTalkBridgeState } from '@proma/shared'
 import { CCB_NATIVE_CHANNEL_ID } from '@proma/shared'
 import { Toaster } from './components/ui/sonner'
@@ -363,16 +364,27 @@ function UpdaterInitializer(): null {
 function AutomationInitializer(): null {
   const setAutomations = useSetAtom(automationsAtom)
   const setAgentSessions = useSetAtom(agentSessionsAtom)
+  const setDraftSessionIds = useSetAtom(draftSessionIdsAtom)
 
   useEffect(() => {
     const load = (): void => {
       window.electronAPI.listAutomations().then(setAutomations).catch(console.error)
-      window.electronAPI.listAgentSessions().then(setAgentSessions).catch(console.error)
+      window.electronAPI.listAgentSessions().then((sessions) => {
+        setAgentSessions(sessions)
+        setDraftSessionIds((prev) => {
+          const next = new Set(prev)
+          for (const session of sessions) {
+            if (session.draft) next.add(session.id)
+            else next.delete(session.id)
+          }
+          return next
+        })
+      }).catch(console.error)
     }
     load()
     const unsub = window.electronAPI.onAutomationChanged(load)
     return unsub
-  }, [setAutomations, setAgentSessions])
+  }, [setAutomations, setAgentSessions, setDraftSessionIds])
 
   return null
 }

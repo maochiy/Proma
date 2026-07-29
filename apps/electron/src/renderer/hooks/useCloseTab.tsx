@@ -26,6 +26,7 @@ import {
   unviewedCompletedSessionIdsAtom,
 } from '@/atoms/agent-atoms'
 import { agentSideChatMapAtom } from '@/atoms/chat-atoms'
+import { draftSessionIdsAtom } from '@/atoms/draft-session-atoms'
 import { useSyncActiveTabSideEffects } from '@/hooks/useSyncActiveTabSideEffects'
 
 interface UseCloseTabReturn {
@@ -42,6 +43,7 @@ export function useCloseTab(): UseCloseTabReturn {
   const store = useStore()
   const setUnviewedCompleted = useSetAtom(unviewedCompletedSessionIdsAtom)
   const setAgentSessions = useSetAtom(agentSessionsAtom)
+  const setDraftSessionIds = useSetAtom(draftSessionIdsAtom)
   const setViewStateMap = useSetAtom(sessionViewStateMapAtom)
   const setSideChatMap = useSetAtom(agentSideChatMapAtom)
 
@@ -125,11 +127,24 @@ export function useCloseTab(): UseCloseTabReturn {
       syncActiveTabSideEffects(newActiveTab)
     }
 
-    // 用户主动关闭 idle 的 Agent Tab 时，清除完成提醒状态
+    // 未发送首条消息的临时任务关闭后直接删除，不留下历史会话记录。
     if (closingTab && closingTab.type === 'agent') {
-      clearIdleAgentCompletionNotice(closingTab.sessionId)
+      const isDraft = store.get(draftSessionIdsAtom).has(closingTab.sessionId)
+      if (isDraft) {
+        setDraftSessionIds((prev) => {
+          const next = new Set(prev)
+          next.delete(closingTab.sessionId)
+          return next
+        })
+        setAgentSessions((prev) => prev.filter((session) => session.id !== closingTab.sessionId))
+        window.electronAPI.deleteAgentSession(closingTab.sessionId).catch((error) => {
+          console.error('[关闭标签页] 删除空白临时任务失败:', error)
+        })
+      } else {
+        clearIdleAgentCompletionNotice(closingTab.sessionId)
+      }
     }
-  }, [tabs, activeTabId, setTabs, setActiveTabId, setViewStateMap, setSideChatMap, syncActiveTabSideEffects, clearIdleAgentCompletionNotice])
+  }, [tabs, activeTabId, setTabs, setActiveTabId, setViewStateMap, setSideChatMap, syncActiveTabSideEffects, clearIdleAgentCompletionNotice, setAgentSessions, setDraftSessionIds, store])
 
   const requestClose = React.useCallback((tabId: string) => {
     executeClose(tabId)

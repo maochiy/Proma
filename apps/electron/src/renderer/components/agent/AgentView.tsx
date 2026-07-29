@@ -28,9 +28,9 @@ import { RuntimeTodoHoverProgress } from './RuntimeTodoHoverProgress'
 import { ContextUsageBadge } from './ContextUsageBadge'
 import { PermissionBanner } from './PermissionBanner'
 import { PermissionModeSelector } from './PermissionModeSelector'
+import { PlanModeChip } from './PlanModeChip'
 import { AskUserBanner } from './AskUserBanner'
 import { ExitPlanModeBanner } from './ExitPlanModeBanner'
-import { PlanModeDashedBorder } from './PlanModeDashedBorder'
 import { ModelSelector } from '@/components/chat/ModelSelector'
 import { AttachmentPreviewItem } from '@/components/chat/AttachmentPreviewItem'
 import { QuotedSelectionChip } from '@/components/diff/QuotedSelectionChip'
@@ -107,6 +107,7 @@ import {
   agentPermissionModeMapAtom,
   agentDefaultPermissionModeAtom,
   sessionPersistedPermissionModeAtom,
+  sessionPersistedPlanModeEnabledAtom,
   agentSessionPathMapAtom,
   allPendingAskUserRequestsAtom,
   allPendingPermissionRequestsAtom,
@@ -128,6 +129,7 @@ import { fileToBase64, formatFileNames, getFileParentPath } from '@/lib/file-uti
 import { buildQuotedSelectionBlock } from '@/lib/quoted-selection'
 import { createClipboardPendingFile, createClipboardTextDraft, makeUniqueAttachmentName } from '@/lib/clipboard-text-attachment'
 import { canSwitchAgentProject } from '@/lib/agent-project-switch'
+import { getEffectivePermissionMode } from '@/lib/agent-plan-mode'
 import {
   derivePersistedAgentContextUsage,
   resolveAgentContextPolicy,
@@ -388,12 +390,14 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   const streamErrors = useAtomValue(agentStreamErrorsAtom)
   const agentError = streamErrors.get(sessionId) ?? null
   const planModeSessions = useAtomValue(agentPlanModeSessionsAtom)
-  const isPlanMode = planModeSessions.has(sessionId)
+  const setPlanModeSessions = useSetAtom(agentPlanModeSessionsAtom)
+  const persistedPlanModeEnabled = useAtomValue(sessionPersistedPlanModeEnabledAtom(sessionId))
+  const isPlanMode = planModeSessions.has(sessionId) || persistedPlanModeEnabled
   const permissionModeMap = useAtomValue(agentPermissionModeMapAtom)
   const defaultPermissionMode = useAtomValue(agentDefaultPermissionModeAtom)
   const persistedPermissionMode = useAtomValue(sessionPersistedPermissionModeAtom(sessionId))
   const permissionMode = permissionModeMap.get(sessionId) ?? persistedPermissionMode ?? defaultPermissionMode
-  const isPermissionPlanMode = permissionMode === 'plan'
+  const effectivePermissionMode = getEffectivePermissionMode(permissionMode, isPlanMode)
   const store = useStore()
   const currentQuotedSelection = useAtomValue(currentQuotedSelectionAtom)
   const setQuotedSelectionMap = useSetAtom(quotedSelectionMapAtom)
@@ -440,6 +444,36 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   const setWsAttachedFilesMap = useSetAtom(workspaceAttachedFilesMapAtom)
   const wsAttachedFilesMap = useAtomValue(workspaceAttachedFilesMapAtom)
   const wsAttachedFiles = currentWorkspaceId ? (wsAttachedFilesMap.get(currentWorkspaceId) ?? []) : []
+
+  /** 独立切换计划模式；审批模式保持原值，运行中由 Main 热同步到 CCB。 */
+  const handlePlanModeChange = React.useCallback(async (enabled: boolean): Promise<void> => {
+    const previous = isPlanMode
+    setPlanModeSessions((prev) => {
+      const next = new Set(prev)
+      if (enabled) next.add(sessionId)
+      else next.delete(sessionId)
+      return next
+    })
+    setAgentSessions((prev) => prev.map((session) =>
+      session.id === sessionId ? { ...session, planModeEnabled: enabled } : session
+    ))
+
+    try {
+      await window.electronAPI.updateSessionPlanMode(sessionId, enabled)
+    } catch (error) {
+      console.error('[AgentView] 切换计划模式失败，回滚 UI:', error)
+      setPlanModeSessions((prev) => {
+        const next = new Set(prev)
+        if (previous) next.add(sessionId)
+        else next.delete(sessionId)
+        return next
+      })
+      setAgentSessions((prev) => prev.map((session) =>
+        session.id === sessionId ? { ...session, planModeEnabled: previous } : session
+      ))
+      toast.error('切换计划模式失败')
+    }
+  }, [isPlanMode, sessionId, setAgentSessions, setPlanModeSessions])
 
   // 按 sessionId 切片订阅 drafts/draftHtml：仅本 session 草稿变化才让 AgentView 重渲染。
   // 输入框每次按键都会写整 Map atom，若直接订阅整 Map，AgentView 跟着每键重渲染。
@@ -993,7 +1027,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         workspaceId: currentWorkspaceId || undefined,
         runtimeThinking,
         startedAt: streamStartedAt,
-        permissionModeOverride: permissionMode,
+        permissionModeOverride: effectivePermissionMode,
         ...(additionalDirectoriesForRun.size > 0 && {
           additionalDirectories: Array.from(additionalDirectoriesForRun),
         }),
@@ -1016,7 +1050,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     appendOptimisticPersistedMessage,
     createBaseAdditionalDirectories,
     currentWorkspaceId,
-    permissionMode,
+    effectivePermissionMode,
     runtimeThinking,
     sessionId,
     setStreamingStates,
@@ -1294,7 +1328,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         workspaceId: snapshot.workspaceId,
         runtimeThinking,
         startedAt: streamStartedAt,
-        permissionModeOverride: permissionMode,
+        permissionModeOverride: effectivePermissionMode,
         ...(snapshot.additionalDirectories && snapshot.additionalDirectories.length > 0 && {
           additionalDirectories: snapshot.additionalDirectories,
         }),
@@ -1310,7 +1344,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         })
       })
     })
-  }, [messagesLoaded, pendingPrompt, sessionId, agentChannelId, agentModelId, selectedRuntimeModel, currentWorkspaceId, streaming, setPendingPrompt, setStreamingStates, permissionMode, runtimeThinking, attachedDirs, attachedFileDirectories])
+  }, [messagesLoaded, pendingPrompt, sessionId, agentChannelId, agentModelId, selectedRuntimeModel, currentWorkspaceId, streaming, setPendingPrompt, setStreamingStates, effectivePermissionMode, runtimeThinking, attachedDirs, attachedFileDirectories])
   // ===== 附件处理 =====
 
   /** 为文件生成唯一文件名（避免粘贴多张图片时文件名重复导致覆盖） */
@@ -1927,6 +1961,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     try {
       if (!canSwitchProject) {
         const createdSessionId = await createAgent({
+          draft: true,
           workspaceId: targetWorkspaceId,
           channelId: agentChannelId ?? undefined,
           modelId: agentModelId ?? undefined,
@@ -2002,6 +2037,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
 
       if (!canSwitchProject) {
         const createdSessionId = await createAgent({
+          draft: true,
           workspaceId: workspace.id,
           channelId: agentChannelId ?? undefined,
           modelId: agentModelId ?? undefined,
@@ -2218,6 +2254,11 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       next.delete(sessionId)
       return next
     })
+    setAgentSessions((prev) => prev.map((session) =>
+      session.id === sessionId && session.draft
+        ? { ...session, draft: false }
+        : session
+    ))
 
     // 初始化流式状态（startedAt 由渲染进程生成，传递给主进程原样回传，确保竞态保护使用同一个值）
     const streamStartedAt = Date.now()
@@ -2257,7 +2298,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       workspaceId: currentWorkspaceId || undefined,
       runtimeThinking,
       startedAt: streamStartedAt,
-      permissionModeOverride: permissionMode,
+      permissionModeOverride: effectivePermissionMode,
       ...(additionalDirectoriesForRun.size > 0 && { additionalDirectories: Array.from(additionalDirectoriesForRun) }),
       ...(mentions.mentionedSkills.length > 0 && { mentionedSkills: mentions.mentionedSkills }),
       ...(mentions.mentionedMcpServers.length > 0 && { mentionedMcpServers: mentions.mentionedMcpServers }),
@@ -2282,7 +2323,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         return map
       })
     })
-  }, [inputContent, createBaseAdditionalDirectories, preparePendingFilesForSend, restoreQueuedAttachmentsToPending, sessionId, agentChannelId, agentModelId, selectedRuntimeModel, currentWorkspaceId, runtimeThinking, streaming, backgroundWaiting, suggestion, hasAvailableModel, store, consumeQuotedSelection, setStreamingStates, setAgentStreamErrors, setPromptSuggestions, setInputContent, setLiveMessagesMap, permissionMode, messagesLoaded, referenceableSessionIds, setQueuedMessages, setQuotedSelectionMap, sendPlainTextAgentMessage])
+  }, [inputContent, createBaseAdditionalDirectories, preparePendingFilesForSend, restoreQueuedAttachmentsToPending, sessionId, agentChannelId, agentModelId, selectedRuntimeModel, currentWorkspaceId, runtimeThinking, streaming, backgroundWaiting, suggestion, hasAvailableModel, store, consumeQuotedSelection, setStreamingStates, setAgentStreamErrors, setPromptSuggestions, setInputContent, setLiveMessagesMap, effectivePermissionMode, messagesLoaded, referenceableSessionIds, setQueuedMessages, setQuotedSelectionMap, sendPlainTextAgentMessage, setAgentSessions])
 
   /** 停止生成 */
   const handleStop = React.useCallback((): void => {
@@ -2351,7 +2392,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       workspaceId: currentWorkspaceId || undefined,
       runtimeThinking,
       startedAt: streamStartedAt,
-      permissionModeOverride: permissionMode,
+      permissionModeOverride: effectivePermissionMode,
     }).catch((error) => {
       console.error('[AgentView] /compact 发送失败:', error)
       // 回滚：移除合成用户消息 + 清除 isCompacting flag
@@ -2371,7 +2412,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         return map
       })
     })
-  }, [sessionId, agentChannelId, agentModelId, currentWorkspaceId, runtimeThinking, streaming, setStreamingStates, store, permissionMode])
+  }, [sessionId, agentChannelId, agentModelId, currentWorkspaceId, runtimeThinking, streaming, setStreamingStates, store, effectivePermissionMode])
 
   /** 复制错误信息到剪贴板 */
   const handleCopyError = React.useCallback(async (): Promise<void> => {
@@ -2441,10 +2482,10 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       workspaceId: currentWorkspaceId || undefined,
       runtimeThinking,
       startedAt: streamStartedAt,
-      permissionModeOverride: permissionMode,
+      permissionModeOverride: effectivePermissionMode,
       ...(retryOfErrorUuid && { retryOfErrorUuid }),
     }).catch(console.error)
-  }, [persistedSDKMessages, sessionId, agentChannelId, agentModelId, selectedRuntimeModel, currentWorkspaceId, runtimeThinking, streaming, setAgentStreamErrors, setStreamingStates, setMessagesCache, permissionMode])
+  }, [persistedSDKMessages, sessionId, agentChannelId, agentModelId, selectedRuntimeModel, currentWorkspaceId, runtimeThinking, streaming, setAgentStreamErrors, setStreamingStates, setMessagesCache, effectivePermissionMode])
 
   /** 在新对话继续：创建新会话 + 切换 tab + 使用 &session 引用旧会话 */
   const handleRetryInNewSession = React.useCallback(async (): Promise<void> => {
@@ -2485,12 +2526,12 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         runtimeThinking,
         mentionedSessionIds: [sessionId],
         startedAt: streamStartedAt,
-        permissionModeOverride: permissionMode,
+        permissionModeOverride: effectivePermissionMode,
       }).catch(console.error)
     } catch (error) {
       console.error('[AgentView] 在新会话中重试失败:', error)
     }
-  }, [sessionId, agentChannelId, agentModelId, currentWorkspaceId, runtimeThinking, openSession, setAgentSessions, setStreamingStates, permissionMode])
+  }, [sessionId, agentChannelId, agentModelId, currentWorkspaceId, runtimeThinking, openSession, setAgentSessions, setStreamingStates, effectivePermissionMode])
 
   /** 分叉会话：从指定消息处创建新会话并自动切换 */
   const handleFork = React.useCallback(async (upToMessageUuid: string): Promise<void> => {
@@ -2770,10 +2811,18 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         <AgentInputAddMenu
           onAttachFile={handleOpenFileDialog}
           onAttachFolder={handleAttachFolder}
+          planModeEnabled={isPlanMode}
+          onPlanModeChange={(enabled) => { void handlePlanModeChange(enabled) }}
         />
       ),
     },
     { key: 'permission-mode', node: <PermissionModeSelector sessionId={sessionId} /> },
+    ...(isPlanMode
+      ? [{
+          key: 'plan-mode',
+          node: <PlanModeChip onClose={() => { void handlePlanModeChange(false) }} />,
+        }]
+      : []),
     {
       key: 'context-usage',
       node: (
@@ -2804,6 +2853,8 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     sessionId,
     handleOpenFileDialog,
     handleAttachFolder,
+    handlePlanModeChange,
+    isPlanMode,
     contextStatus.inputTokens,
     contextStatus.outputTokens,
     contextStatus.cacheReadTokens,
@@ -2939,14 +2990,12 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
           <div
             className={cn(
               inputCardClass,
-              (isPlanMode || isPermissionPlanMode) && !isDragOver && 'plan-mode-border',
               isDragOver && 'border-[2px] border-dashed border-[#2ecc71] bg-[#2ecc71]/[0.03]'
             )}
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
           >
-            {(isPlanMode || isPermissionPlanMode) && !isDragOver && <PlanModeDashedBorder />}
             {/* 无 Agent 渠道或无可用模型提示 */}
             {(!agentChannelId || !hasAvailableModel) && (
               <div className="flex items-center gap-2 px-4 py-2 text-sm text-amber-600 dark:text-amber-400">

@@ -2100,11 +2100,13 @@ export function registerIpcHandlers(): void {
   // 创建 Agent 会话
   ipcMain.handle(
     AGENT_IPC_CHANNELS.CREATE_SESSION,
-    async (_, title?: string, channelId?: string, workspaceId?: string, modelId?: string): Promise<AgentSessionMeta> => {
-      const session = createAgentSession(title, channelId, workspaceId, modelId)
-      feishuBridgeManager.ensureSessionMirror(session).catch((error) => {
-        console.error('[飞书 Session 镜像] 新会话建群失败:', error)
-      })
+    async (_, title?: string, channelId?: string, workspaceId?: string, modelId?: string, draft?: boolean): Promise<AgentSessionMeta> => {
+      const session = createAgentSession(title, channelId, workspaceId, modelId, draft === true)
+      if (!session.draft) {
+        feishuBridgeManager.ensureSessionMirror(session).catch((error) => {
+          console.error('[飞书 Session 镜像] 新会话建群失败:', error)
+        })
+      }
       return session
     }
   )
@@ -2666,7 +2668,10 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     AGENT_IPC_CHANNELS.SEND_MESSAGE,
     async (event, input: AgentSendInput): Promise<void> => {
-      const session = getAgentSessionMeta(input.sessionId)
+      const existingSession = getAgentSessionMeta(input.sessionId)
+      const session = existingSession?.draft
+        ? updateAgentSessionMeta(input.sessionId, { draft: false })
+        : existingSession
       if (session) {
         await feishuBridgeManager.startSessionMirrorRun(session).catch((error) => {
           console.error('[飞书 Session 镜像] 流式卡片初始化失败:', error)
@@ -2755,11 +2760,12 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     AGENT_IPC_CHANNELS.UPDATE_SESSION_PERMISSION_MODE,
     async (_, sessionId: string, mode: PromaPermissionMode): Promise<void> => {
-      if (!isPromaPermissionMode(mode)) {
+      if (!isPromaPermissionMode(mode) || mode === 'plan') {
         throw new Error(`无效的权限模式: ${mode}`)
       }
       // 会话不存在时直接抛错（避免 updateAgentSessionMeta 的通用异常被降级为 warn）
-      if (!getAgentSessionMeta(sessionId)) {
+      const sessionMeta = getAgentSessionMeta(sessionId)
+      if (!sessionMeta) {
         throw new Error(`Agent 会话不存在: ${sessionId}`)
       }
       // 持久化到 session meta（重启后可恢复，即使 session 未运行也要写）。
@@ -2771,8 +2777,36 @@ export function registerIpcHandlers(): void {
       }
       // 若 session 正在跑，同步热切换运行时模式
       if (isAgentSessionActive(sessionId)) {
-        await updateAgentPermissionMode(sessionId, mode).catch((err) => {
+        const effectiveMode = sessionMeta.planModeEnabled ? 'plan' : mode
+        await updateAgentPermissionMode(sessionId, effectiveMode).catch((err) => {
           console.warn(`[IPC] 运行中权限模式切换失败: sessionId=${sessionId}`, err)
+          throw err
+        })
+      }
+    }
+  )
+
+  // 独立计划模式开关：持久化 UI 选择，并在运行中同步为 CCB plan/原审批模式。
+  ipcMain.handle(
+    AGENT_IPC_CHANNELS.UPDATE_SESSION_PLAN_MODE,
+    async (_, sessionId: string, enabled: boolean): Promise<void> => {
+      if (typeof enabled !== 'boolean') {
+        throw new Error('计划模式开关必须是布尔值')
+      }
+      const sessionMeta = getAgentSessionMeta(sessionId)
+      if (!sessionMeta) {
+        throw new Error(`Agent 会话不存在: ${sessionId}`)
+      }
+      const approvalMode = sessionMeta.permissionMode === 'default'
+        ? 'default'
+        : 'bypassPermissions'
+      updateAgentSessionMeta(sessionId, {
+        permissionMode: approvalMode,
+        planModeEnabled: enabled,
+      })
+      if (isAgentSessionActive(sessionId)) {
+        await updateAgentPermissionMode(sessionId, enabled ? 'plan' : approvalMode).catch((err) => {
+          console.warn(`[IPC] 运行中计划模式切换失败: sessionId=${sessionId}`, err)
           throw err
         })
       }
@@ -2937,7 +2971,10 @@ export function registerIpcHandlers(): void {
           // 持久化到 session meta，和 cycleMode 路径保持一致（重启后该 session 能恢复）
           if (meta) {
             try {
-              updateAgentSessionMeta(sessionId, { permissionMode: targetMode })
+              updateAgentSessionMeta(sessionId, {
+                permissionMode: targetMode,
+                planModeEnabled: false,
+              })
             } catch (err) {
               console.warn(`[IPC] ExitPlanMode 持久化 session 权限模式失败: sessionId=${sessionId}`, err)
             }

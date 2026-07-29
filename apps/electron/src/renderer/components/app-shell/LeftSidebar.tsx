@@ -820,7 +820,8 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
     setMode('agent')
     setViewMode('active')
     setActiveView('conversations')
-    void createAgent()
+    // 空白任务只保留在当前标签页，首条消息发送后才进入侧边栏会话列表。
+    void createAgent({ draft: true })
   }, [createAgent, setActiveView, setMode, setViewMode])
 
   const handleOpenSettings = React.useCallback((): void => {
@@ -1313,11 +1314,17 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
         agentChannelId || undefined,
         targetWorkspaceId,
         agentModelId || undefined,
+        true,
       )
       if (targetWorkspaceId) {
         setCollapsedWorkspaceIds((prev) => deleteSetEntry(prev, targetWorkspaceId))
       }
       setAgentSessions((prev) => [meta, ...prev])
+      setDraftSessionIds((prev) => {
+        const next = new Set(prev)
+        next.add(meta.id)
+        return next
+      })
       // 从全局默认值初始化 per-session 渠道/模型配置
       if (agentChannelId) {
         setSessionChannelMap((prev) => {
@@ -1339,7 +1346,7 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
     } catch (error) {
       console.error('[侧边栏] 创建 Agent 会话失败:', error)
     }
-  }, [agentChannelId, agentModelId, currentWorkspaceId, openSession, setActiveView, setAgentSessions, setCurrentWorkspaceId, setSessionChannelMap, setSessionModelMap])
+  }, [agentChannelId, agentModelId, currentWorkspaceId, openSession, setActiveView, setAgentSessions, setCurrentWorkspaceId, setDraftSessionIds, setSessionChannelMap, setSessionModelMap])
 
   /** 切换当前项目；点击当前已选中工作区标题时则折叠/展开其会话列表 */
   const handleSelectProject = React.useCallback((workspaceId: string): void => {

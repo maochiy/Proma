@@ -63,6 +63,9 @@ function writeAgentSessionsIndex(sessions: Array<{
   pinned?: boolean
   archived?: boolean
   starred?: boolean
+  permissionMode?: 'default' | 'bypassPermissions' | 'plan'
+  planModeEnabled?: boolean
+  draft?: boolean
 }>): void {
   const dir = join(tempHome, '.proma')
   mkdirSync(dir, { recursive: true })
@@ -175,6 +178,56 @@ describe('Agent 会话 JSONL 读取', () => {
 })
 
 describe('Agent 会话元数据', () => {
+  test('Given 新建空白任务 When 标记为 draft Then 会话保持临时状态直到首条消息', () => {
+    const session = manager.createAgentSession(
+      '空白任务',
+      undefined,
+      'workspace-a',
+      undefined,
+      true,
+    )
+
+    expect(session.draft).toBe(true)
+    expect(manager.getAgentSessionMeta(session.id)?.draft).toBe(true)
+
+    const activated = manager.updateAgentSessionMeta(session.id, { draft: false })
+    expect(activated.draft).toBe(false)
+  })
+
+  test('Given 会话切换审批与计划模式 When 更新元数据 Then 不刷新侧边栏顺序', () => {
+    const session = manager.createAgentSession('计划设置')
+    const originalUpdatedAt = session.updatedAt
+
+    const updated = manager.updateAgentSessionMeta(session.id, {
+      permissionMode: 'default',
+      planModeEnabled: true,
+    })
+
+    expect(updated).toMatchObject({
+      permissionMode: 'default',
+      planModeEnabled: true,
+      updatedAt: originalUpdatedAt,
+    })
+  })
+
+  test('Given 历史会话把 plan 存在审批字段 When 读取索引 Then 拆分为请求批准与独立计划模式', () => {
+    writeAgentSessionsIndex([
+      {
+        id: 'legacy-plan-session',
+        title: '历史计划会话',
+        workspaceId: 'workspace-a',
+        permissionMode: 'plan',
+        createdAt: 1,
+        updatedAt: 1,
+      },
+    ])
+
+    expect(manager.getAgentSessionMeta('legacy-plan-session')).toMatchObject({
+      permissionMode: 'default',
+      planModeEnabled: true,
+    })
+  })
+
   test('Given a session When star state is updated Then it persists without changing freshness or archive state', () => {
     const session = manager.createAgentSession('星标会话')
     const archived = manager.updateAgentSessionMeta(session.id, { archived: true })
