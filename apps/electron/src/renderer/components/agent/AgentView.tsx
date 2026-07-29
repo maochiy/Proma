@@ -1239,7 +1239,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     return () => { cancelled = true }
   }, [sessionId, refreshVersion, restorePersistedContextUsage, setStreamingStates, setLiveMessagesMap, setMessagesCache, store])
 
-  // 从会话元数据初始化附加目录（仅冷启动水合，后续由 handleAttachFolder/handleDetachDirectory 实时写入）
+  // 从会话元数据初始化可访问目录（仅冷启动水合，后续由右侧文件面板实时写入）
   React.useEffect(() => {
     const meta = sessions.find((s) => s.id === sessionId)
     const dirs = meta?.attachedDirectories ?? []
@@ -1657,30 +1657,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     }
   }, [addLargeDialogFilesAsReferences, setPendingFiles])
 
-  /** 附加文件夹（不复制，仅记录路径） */
-  const handleAttachFolder = React.useCallback(async (): Promise<void> => {
-    try {
-      const result = await window.electronAPI.openFolderDialog()
-      if (!result) return
-
-      const updated = await window.electronAPI.attachDirectory({
-        sessionId,
-        directoryPath: result.path,
-      })
-
-      setAttachedDirsMap((prev) => {
-        const map = new Map(prev)
-        map.set(sessionId, updated)
-        return map
-      })
-
-      toast.success(`已附加目录: ${result.name}`)
-    } catch (error) {
-      console.error('[AgentView] 附加文件夹失败:', error)
-      toast.error('附加文件夹失败')
-    }
-  }, [sessionId, setAttachedDirsMap])
-
   /** 移除待发送文件 */
   const handleRemoveFile = React.useCallback((id: string): void => {
     setPendingFiles((prev) => {
@@ -1841,9 +1817,9 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
               return map
             })
             const dirName = dirPath.split('/').pop() || dirPath
-            toast.success(`已附加目录: ${dirName}`)
+            toast.success(`已添加访问目录：${dirName}`)
           } catch (error) {
-            console.error('[AgentView] 拖拽附加文件夹失败:', error)
+            console.error('[AgentView] 拖拽添加访问目录失败:', error)
           }
         }
 
@@ -2810,7 +2786,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       node: (
         <AgentInputAddMenu
           onAttachFile={handleOpenFileDialog}
-          onAttachFolder={handleAttachFolder}
           planModeEnabled={isPlanMode}
           onPlanModeChange={(enabled) => { void handlePlanModeChange(enabled) }}
         />
@@ -2852,7 +2827,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     agentModelId,
     sessionId,
     handleOpenFileDialog,
-    handleAttachFolder,
     handlePlanModeChange,
     isPlanMode,
     contextStatus.inputTokens,

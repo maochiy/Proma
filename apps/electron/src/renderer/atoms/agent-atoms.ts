@@ -1108,9 +1108,9 @@ export const agentSessionDraftHtmlAtomFamily = atomFamily((sessionId: string) =>
 )
 
 /**
- * 会话附加目录 Map — 以 sessionId 为 key
- * 存储每个会话通过"附加文件夹"功能关联的外部目录路径列表。
- * 这些路径作为 SDK additionalDirectories 参数传递。
+ * 会话可访问目录 Map — 以 sessionId 为 key
+ * 存储每个会话通过“添加访问目录”关联的外部目录路径列表。
+ * 这些路径作为 CCB additionalDirectories 参数传递。
  */
 export const agentAttachedDirectoriesMapAtom = atom<Map<string, string[]>>(new Map())
 

@@ -3,7 +3,6 @@
  */
 
 export * from './FileBrowser'
-export * from './FileDropZone'
 export * from './FileTypeIcon'
 export * from './FileSearchBar'
 export * from './tree-row-layout'

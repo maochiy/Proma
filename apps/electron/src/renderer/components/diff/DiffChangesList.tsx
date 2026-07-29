@@ -54,7 +54,7 @@ const SOURCE_CONFIG: Record<string, { color: string; label: string }> = {
   session: { color: 'bg-blue-500/10 text-blue-500', label: '会话文件' },
   workspace: { color: 'bg-purple-500/10 text-purple-500', label: '工作区' },
   both: { color: 'bg-cyan-500/10 text-cyan-500', label: '会话+工作区文件' },
-  none: { color: 'bg-muted text-muted-foreground', label: '附加目录文件' },
+  none: { color: 'bg-muted text-muted-foreground', label: '访问目录文件' },
 }
 
 export const DiffChangesList = React.memo(function DiffChangesList({
@@ -217,7 +217,7 @@ export const DiffChangesList = React.memo(function DiffChangesList({
   const shouldShowWorktreeSelector = Boolean(workspaceSlug || (worktreeRepoPaths?.length ?? 0) > 0)
 
   return (
-    <div className="flex flex-col h-full overflow-y-auto">
+    <div className="scrollbar-none flex h-full flex-col overflow-y-auto">
       {/* Worktree 分支选择器 — 空 diff / 非 Git 空态也保留，避免无法切到会话 worktree */}
       {shouldShowWorktreeSelector && (
         <WorktreeSelector

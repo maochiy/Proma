@@ -98,7 +98,7 @@ export function RuntimeExecutionPanel({
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col overflow-y-auto p-3">
+    <div className="scrollbar-none flex h-full min-h-0 flex-col overflow-y-auto p-3">
       <div className="mb-3 flex items-center justify-between">
         <div>
           <h3 className="text-xs font-semibold">CCB 执行状态</h3>

@@ -1,11 +1,10 @@
 import * as React from 'react'
-import { Check, FilePlus2, FolderPlus, Lightbulb, Plus } from 'lucide-react'
+import { Check, FilePlus2, Lightbulb, Plus } from 'lucide-react'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
 
 interface AgentInputAddMenuProps {
   onAttachFile: () => void
-  onAttachFolder: () => void
   planModeEnabled: boolean
   onPlanModeChange: (enabled: boolean) => void
 }
@@ -48,7 +47,6 @@ function AddMenuItem({
 
 export function AgentInputAddMenu({
   onAttachFile,
-  onAttachFolder,
   planModeEnabled,
   onPlanModeChange,
 }: AgentInputAddMenuProps): React.ReactElement {
@@ -87,12 +85,6 @@ export function AgentInputAddMenu({
           label="添加附件"
           description="选择文件或图片随消息发送"
           onClick={() => runAction(onAttachFile)}
-        />
-        <AddMenuItem
-          icon={<FolderPlus className="size-4" />}
-          label="附加文件夹"
-          description="让 CCB 访问本地文件夹"
-          onClick={() => runAction(onAttachFolder)}
         />
         <AddMenuItem
           icon={<Lightbulb className="size-4" />}
