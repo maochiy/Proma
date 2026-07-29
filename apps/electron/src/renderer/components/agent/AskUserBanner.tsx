@@ -11,7 +11,9 @@ import { Send, X } from 'lucide-react'
 import Markdown, { defaultUrlTransform } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { Button } from '@/components/ui/button'
+import { inputCardClass } from '@/components/ai-elements/input-toolbar-styles'
 import { SpeechButton } from '@/components/ai-elements/speech-button'
+import { cn } from '@/lib/utils'
 import {
   VOICE_DICTATION_INSERT_EVENT,
   getLastFocusedVoiceInputId,
@@ -277,7 +279,12 @@ export function AskUserBanner({ sessionId }: AskUserBannerProps): React.ReactEle
   }
 
   return (
-    <div className="ask-user-banner mx-4 mb-3 rounded-xl bg-card shadow-lg overflow-hidden animate-in slide-in-from-bottom-2 duration-200">
+    <div
+      className={cn(
+        inputCardClass,
+        'ask-user-banner w-full overflow-hidden bg-card animate-in slide-in-from-bottom-2 duration-200',
+      )}
+    >
       {/* 头部 + Tab 栏 */}
       <div className="px-4 pt-3 pb-2">
         <div className="flex items-center justify-between mb-2">

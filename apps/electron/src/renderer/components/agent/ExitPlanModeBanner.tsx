@@ -19,6 +19,8 @@ import {
   FileText,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { inputCardClass } from '@/components/ai-elements/input-toolbar-styles'
+import { cn } from '@/lib/utils'
 import { allPendingExitPlanRequestsAtom, agentStreamingStatesAtom, finalizeStreamingActivities } from '@/atoms/agent-atoms'
 import type { ExitPlanModeAction, ExitPlanAllowedPrompt } from '@proma/shared'
 
@@ -193,7 +195,12 @@ export function ExitPlanModeBanner({ sessionId }: ExitPlanModeBannerProps): Reac
   if (!request) return null
 
   return (
-    <div className="mx-4 mb-3 rounded-xl bg-card shadow-lg overflow-hidden animate-in slide-in-from-bottom-2 duration-200">
+    <div
+      className={cn(
+        inputCardClass,
+        'w-full overflow-hidden bg-card animate-in slide-in-from-bottom-2 duration-200',
+      )}
+    >
       {/* 头部 */}
       <div className="px-4 pt-3 pb-2">
         <div className="flex items-center gap-2 mb-1">

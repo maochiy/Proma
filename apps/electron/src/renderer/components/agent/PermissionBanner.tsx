@@ -11,8 +11,9 @@
 import * as React from 'react'
 import { useAtom, useSetAtom } from 'jotai'
 import { Shield, ShieldAlert, Check, X } from 'lucide-react'
-import { Button } from '@/components/ui/button'
 import { allPendingPermissionRequestsAtom, agentStreamingStatesAtom, finalizeStreamingActivities } from '@/atoms/agent-atoms'
+import { inputCardClass } from '@/components/ai-elements/input-toolbar-styles'
+import { cn } from '@/lib/utils'
 import type { DangerLevel } from '@proma/shared'
 
 /** 危险等级对应的图标颜色 */
@@ -36,16 +37,55 @@ interface PermissionBannerProps {
   sessionId: string
 }
 
+type PermissionDecision = 'allow_once' | 'allow_session' | 'deny'
+
+interface PermissionOption {
+  decision: PermissionDecision
+  label: string
+  description: string
+  icon: React.ComponentType<{ className?: string }>
+  destructive?: boolean
+}
+
+const PERMISSION_OPTIONS: readonly PermissionOption[] = [
+  {
+    decision: 'allow_once',
+    label: '允许',
+    description: '仅允许执行本次操作',
+    icon: Check,
+  },
+  {
+    decision: 'allow_session',
+    label: '本次会话总是允许',
+    description: '本次会话中后续相同操作不再询问',
+    icon: Shield,
+  },
+  {
+    decision: 'deny',
+    label: '拒绝',
+    description: '拒绝本次操作并让 Agent 继续处理',
+    icon: X,
+    destructive: true,
+  },
+]
+
 export function PermissionBanner({ sessionId }: PermissionBannerProps): React.ReactElement | null {
   const [allRequests, setAllRequests] = useAtom(allPendingPermissionRequestsAtom)
   const setStreamingStates = useSetAtom(agentStreamingStatesAtom)
   const requests = allRequests.get(sessionId) ?? []
   const [responding, setResponding] = React.useState(false)
-  const respondRef = React.useRef<(behavior: 'allow' | 'deny', alwaysAllow?: boolean) => void>()
+  const [focusedIdx, setFocusedIdx] = React.useState(0)
+  const focusedIdxRef = React.useRef(focusedIdx)
+  const respondRef = React.useRef<((decision: PermissionDecision) => void) | null>(null)
 
   const request = requests[0] ?? null
+  focusedIdxRef.current = focusedIdx
 
-  // Enter 键快捷允许
+  React.useEffect(() => {
+    setFocusedIdx(0)
+  }, [request?.requestId])
+
+  // 键盘操作与 Codex 交互一致：上下选择、Enter 确认、数字键快速选择。
   React.useEffect(() => {
     if (!request) return
     const handleKeyDown = (e: KeyboardEvent): void => {
@@ -54,9 +94,26 @@ export function PermissionBanner({ sessionId }: PermissionBannerProps): React.Re
         e.target instanceof HTMLTextAreaElement ||
         (e.target instanceof HTMLElement && e.target.isContentEditable)
       ) return
-      if (e.key === 'Enter') {
+
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
         e.preventDefault()
-        respondRef.current?.('allow')
+        const optionCount = PERMISSION_OPTIONS.length
+        const nextIdx = e.key === 'ArrowDown'
+          ? (focusedIdxRef.current + 1) % optionCount
+          : (focusedIdxRef.current - 1 + optionCount) % optionCount
+        setFocusedIdx(nextIdx)
+      } else if (e.key === 'Enter' && !e.isComposing) {
+        e.preventDefault()
+        const option = PERMISSION_OPTIONS[focusedIdxRef.current]
+        if (option) respondRef.current?.(option.decision)
+      } else if (e.key >= '1' && e.key <= '3') {
+        e.preventDefault()
+        const optionIdx = Number(e.key) - 1
+        const option = PERMISSION_OPTIONS[optionIdx]
+        if (option) {
+          setFocusedIdx(optionIdx)
+          respondRef.current?.(option.decision)
+        }
       }
     }
     document.addEventListener('keydown', handleKeyDown)
@@ -117,14 +174,25 @@ export function PermissionBanner({ sessionId }: PermissionBannerProps): React.Re
     }
   }
 
-  respondRef.current = respond
+  const respondToDecision = (decision: PermissionDecision): void => {
+    if (decision === 'deny') {
+      void respond('deny')
+      return
+    }
+    void respond('allow', decision === 'allow_session')
+  }
+
+  respondRef.current = respondToDecision
 
   return (
     <div
-      className="mx-4 mb-3 rounded-xl bg-card shadow-lg overflow-hidden animate-in slide-in-from-bottom-2 duration-200"
+      className={cn(
+        inputCardClass,
+        'w-full overflow-hidden bg-card animate-in slide-in-from-bottom-2 duration-200',
+      )}
     >
       {/* 头部 */}
-      <div className="flex items-center justify-between px-3 py-2">
+      <div className="flex items-center justify-between px-4 pt-3.5 pb-2">
         <div className="flex items-center gap-2">
           <IconComponent className={`size-4 ${iconColor}`} />
           <span className="text-sm font-medium">
@@ -152,7 +220,7 @@ export function PermissionBanner({ sessionId }: PermissionBannerProps): React.Re
       </div>
 
       {/* 命令/操作内容 */}
-      <div className="px-3 pb-2 space-y-1.5">
+      <div className="px-4 pb-3 space-y-1.5">
         {/* SDK 可读标题（优先展示，描述操作意图） */}
         {request.sdkTitle && (
           <p className="text-xs text-foreground">{request.sdkTitle}</p>
@@ -163,11 +231,11 @@ export function PermissionBanner({ sessionId }: PermissionBannerProps): React.Re
         )}
         {/* Bash 命令：始终展示代码块 */}
         {request.command ? (
-          <pre className="text-xs font-mono bg-background/50 rounded px-2 py-1.5 overflow-x-auto whitespace-pre-wrap break-all max-h-[120px] overflow-y-auto">
+          <pre className="max-h-[180px] overflow-x-auto overflow-y-auto whitespace-pre-wrap break-all rounded-lg bg-muted/45 px-3 py-2 text-xs font-mono">
             {request.command}
           </pre>
         ) : !request.sdkTitle && Object.keys(request.toolInput).length > 0 ? (
-          <pre className="text-xs font-mono bg-background/50 rounded px-2 py-1.5 overflow-x-auto whitespace-pre-wrap break-all max-h-[120px] overflow-y-auto">
+          <pre className="max-h-[180px] overflow-x-auto overflow-y-auto whitespace-pre-wrap break-all rounded-lg bg-muted/45 px-3 py-2 text-xs font-mono">
             {JSON.stringify(request.toolInput, null, 2)}
           </pre>
         ) : !request.sdkTitle ? (
@@ -177,42 +245,48 @@ export function PermissionBanner({ sessionId }: PermissionBannerProps): React.Re
         ) : null}
       </div>
 
-      {/* 操作按钮 */}
-      <div className="flex items-center justify-end gap-1.5 px-3 pb-2.5">
-        <span className="text-[10px] text-muted-foreground/40 mr-auto">
-          Enter 允许
-        </span>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => respond('deny')}
-          disabled={responding}
-          className="h-7 px-3 text-xs text-muted-foreground hover:text-destructive"
-        >
-          <X className="size-3 mr-1" />
-          拒绝
-        </Button>
+      {/* Codex 风格纵向审批操作 */}
+      <div className="px-3 pb-2">
+        <div className="flex flex-col gap-1">
+          {PERMISSION_OPTIONS.map((option, idx) => {
+            const isFocused = focusedIdx === idx
+            const OptionIcon = option.icon
+            return (
+              <button
+                key={option.decision}
+                type="button"
+                className={cn(
+                  'flex w-full items-center gap-3 rounded-xl px-3 py-2.5 text-left outline-none transition-colors',
+                  option.destructive
+                    ? 'text-foreground/80 hover:bg-destructive/10 hover:text-destructive'
+                    : 'text-foreground/85 hover:bg-muted/70',
+                  isFocused && (
+                    option.destructive
+                      ? 'bg-destructive/[0.07] text-destructive ring-1 ring-inset ring-destructive/20'
+                      : 'bg-muted/70 text-foreground ring-1 ring-inset ring-foreground/10'
+                  ),
+                )}
+                onClick={() => respondToDecision(option.decision)}
+                onMouseEnter={() => setFocusedIdx(idx)}
+                disabled={responding}
+              >
+                <span className="w-4 shrink-0 text-center text-[11px] text-muted-foreground/55">
+                  {idx + 1}
+                </span>
+                <OptionIcon className="size-4 shrink-0 opacity-70" />
+                <span className="flex min-w-0 flex-1 flex-col">
+                  <span className="text-sm font-medium">{option.label}</span>
+                  <span className="text-[11px] text-muted-foreground">{option.description}</span>
+                </span>
+                {isFocused && <Check className="size-4 shrink-0 opacity-70" />}
+              </button>
+            )
+          })}
+        </div>
+      </div>
 
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => respond('allow', true)}
-          disabled={responding}
-          className="h-7 px-3 text-xs"
-        >
-          本次会话总是允许
-        </Button>
-
-        <Button
-          variant="default"
-          size="sm"
-          onClick={() => respond('allow')}
-          disabled={responding}
-          className="h-7 px-3 text-xs"
-        >
-          <Check className="size-3 mr-1" />
-          允许
-        </Button>
+      <div className="px-4 pb-3 text-[10px] text-muted-foreground/45">
+        点击选择 · ↑↓ Enter 确认 · 1-3 快速选择
       </div>
     </div>
   )

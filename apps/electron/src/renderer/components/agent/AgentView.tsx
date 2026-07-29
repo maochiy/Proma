@@ -45,6 +45,10 @@ import {
   inputToolbarDisabledButtonClass,
   inputToolbarSendButtonClass,
 } from '@/components/ai-elements/input-toolbar-styles'
+import {
+  getActiveAgentInteractionPanel,
+  shouldReplaceAgentComposer,
+} from '@/lib/agent-interaction-panel'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import {
@@ -2598,10 +2602,17 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   const allAskUserRequests = useAtomValue(allPendingAskUserRequestsAtom)
   const allPermissionRequests = useAtomValue(allPendingPermissionRequestsAtom)
   const allExitPlanRequests = useAtomValue(allPendingExitPlanRequestsAtom)
-  const hasBannerOverlay =
-    (allAskUserRequests.get(sessionId)?.length ?? 0) > 0 ||
-    (allExitPlanRequests.get(sessionId)?.length ?? 0) > 0
-  const hasBlockingRequests = hasBannerOverlay || (allPermissionRequests.get(sessionId)?.length ?? 0) > 0
+  const permissionRequestCount = allPermissionRequests.get(sessionId)?.length ?? 0
+  const askUserRequestCount = allAskUserRequests.get(sessionId)?.length ?? 0
+  const exitPlanRequestCount = allExitPlanRequests.get(sessionId)?.length ?? 0
+  const interactionRequestCounts = {
+    permission: permissionRequestCount,
+    askUser: askUserRequestCount,
+    exitPlan: exitPlanRequestCount,
+  }
+  const activeInteractionPanel = getActiveAgentInteractionPanel(interactionRequestCounts)
+  const hasInteractionPanel = shouldReplaceAgentComposer(interactionRequestCounts)
+  const hasBlockingRequests = hasInteractionPanel
   const canSendQueuedNow = messagesLoaded && (streaming || !messagesRefreshing) && !!agentChannelId && hasAvailableModel && !hasBlockingRequests
   const autoSendingQueuedRef = React.useRef(false)
   const queuedSendInFlightRef = React.useRef(false)
@@ -2903,18 +2914,19 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
           onCompact={handleCompact}
         />
 
-        {/* 权限请求横幅 */}
-        <PermissionBanner sessionId={sessionId} />
+        {/* 交互面板与输入框共用同一宽度；出现时完整替换输入区域，高度随内容自适应。 */}
+        {hasInteractionPanel && (
+          <div
+            className={cn(inputAreaContainerClass, 'flex flex-col gap-2')}
+            data-agent-interaction-panel
+          >
+            {activeInteractionPanel === 'permission' && <PermissionBanner sessionId={sessionId} />}
+            {activeInteractionPanel === 'askUser' && <AskUserBanner sessionId={sessionId} />}
+            {activeInteractionPanel === 'exitPlan' && <ExitPlanModeBanner sessionId={sessionId} />}
+          </div>
+        )}
 
-        {/* AskUserQuestion 交互式问答横幅 */}
-        <AskUserBanner sessionId={sessionId} />
-
-
-        {/* ExitPlanMode 计划审批横幅 */}
-        <ExitPlanModeBanner sessionId={sessionId} />
-
-        {/* 输入区域 — 交互横幅显示时隐藏，由横幅替代 */}
-        {!hasBannerOverlay && (
+        {!hasInteractionPanel && (
         <div className={inputAreaContainerClass} data-input-mode="agent">
           <AgentProjectPicker
             workspaces={workspaces}
