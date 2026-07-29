@@ -582,6 +582,46 @@ export function assertCcbRuntimeModelCatalog(
     assertBoolean(model.supportsFastMode, `${path}.supportsFastMode`)
     assertBoolean(model.supportsAutoMode, `${path}.supportsAutoMode`)
   }
+
+  assertRecord(
+    value.contextPolicy,
+    'CCB Runtime model catalog.contextPolicy',
+  )
+  assertBoolean(
+    value.contextPolicy.autoCompactEnabled,
+    'CCB Runtime model catalog.contextPolicy.autoCompactEnabled',
+  )
+  if (!Array.isArray(value.contextPolicy.models)) {
+    throw new Error(
+      'CCB Runtime model catalog.contextPolicy.models 必须是数组',
+    )
+  }
+  for (const [index, policy] of value.contextPolicy.models.entries()) {
+    const path = `CCB Runtime model catalog.contextPolicy.models.${index}`
+    assertRecord(policy, path)
+    assertString(policy.model, `${path}.model`)
+    for (const field of [
+      'contextWindow',
+      'effectiveContextWindow',
+      'autoCompactThreshold',
+    ] as const) {
+      assertFiniteNumber(policy[field], `${path}.${field}`)
+      if (!Number.isInteger(policy[field]) || policy[field] <= 0) {
+        throw new Error(`${path}.${field} 必须是正整数`)
+      }
+    }
+    const contextWindow = policy.contextWindow as number
+    const effectiveContextWindow = policy.effectiveContextWindow as number
+    const autoCompactThreshold = policy.autoCompactThreshold as number
+    if (effectiveContextWindow > contextWindow) {
+      throw new Error(`${path}.effectiveContextWindow 不能超过 contextWindow`)
+    }
+    if (autoCompactThreshold > effectiveContextWindow) {
+      throw new Error(
+        `${path}.autoCompactThreshold 不能超过 effectiveContextWindow`,
+      )
+    }
+  }
 }
 
 export function assertCcbRuntimeSkillCatalog(

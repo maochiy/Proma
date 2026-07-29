@@ -104,11 +104,26 @@ export interface AgentRuntimeModelInfo {
   supportsAutoMode: boolean
 }
 
+/** CCB 根据全局压缩配置和指定模型计算出的上下文策略。 */
+export interface AgentRuntimeContextPolicy {
+  model: string
+  contextWindow: number
+  effectiveContextWindow: number
+  autoCompactThreshold: number
+}
+
+/** 自动压缩开关是全局配置；窗口和 token 阈值按模型计算。 */
+export interface AgentRuntimeContextPolicyCatalog {
+  autoCompactEnabled: boolean
+  models: AgentRuntimeContextPolicy[]
+}
+
 /** 指定 Proma Channel 在 CCB 中解析出的模型目录。 */
 export interface AgentRuntimeModelCatalog {
   channelId: string
   defaultModel?: string
   models: AgentRuntimeModelInfo[]
+  contextPolicy: AgentRuntimeContextPolicyCatalog
   runtimeVersion?: string
   runtimeArtifactCommit?: string
 }

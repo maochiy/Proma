@@ -251,7 +251,9 @@ export function ContextUsageBadge({
   const stable = stableRef.current
   const hasCurrent = inputTokens != null && inputTokens > 0
   const displayTokens = hasCurrent ? inputTokens : stable?.inputTokens
-  const displayWindow = hasCurrent ? contextWindow : stable?.contextWindow
+  const displayWindow =
+    effectiveContextWindow
+    ?? (hasCurrent ? contextWindow : stable?.contextWindow)
   const displayOutput = hasCurrent ? outputTokens : stable?.outputTokens
   const displayCacheRead = hasCurrent ? cacheReadTokens : stable?.cacheReadTokens
   const displayCacheCreation = hasCurrent ? cacheCreationTokens : stable?.cacheCreationTokens
@@ -315,55 +317,53 @@ export function ContextUsageBadge({
         onOpenAutoFocus={(e) => e.preventDefault()}
       >
         <div className="flex flex-col gap-1.5">
-          {isEstimated ? (
+          {displayOutput ? <DetailRow label="输出" value={displayOutput.toLocaleString()} /> : null}
+          {displayCacheCreation ? <DetailRow label="缓存写入" value={displayCacheCreation.toLocaleString()} /> : null}
+          {displayCacheRead ? <DetailRow label="缓存读取" value={displayCacheRead.toLocaleString()} /> : null}
+
+          {displayWindow ? (
+            <>
+              <DetailRow
+                label={isEstimated ? '上下文（估算）' : '上下文'}
+                value={`${formatTokens(displayTokens)} / ${formatTokens(displayWindow)}`}
+                emphasized
+              />
+              {percent != null && (
+                <DetailRow
+                  label="占用"
+                  value={`${percent}%`}
+                  emphasized={isWarning}
+                />
+              )}
+            </>
+          ) : (
             <DetailRow
-              label="压缩后"
-              value={`预估 ${formatTokens(displayTokens)} tokens${percent != null ? `（${percent}%）` : ''}`}
+              label={isEstimated ? '上下文（估算）' : '上下文'}
+              value={`${formatTokens(displayTokens)} tokens`}
               emphasized
             />
-          ) : (
-            <>
-              {displayOutput ? <DetailRow label="输出" value={displayOutput.toLocaleString()} /> : null}
-              {displayCacheCreation ? <DetailRow label="缓存写入" value={displayCacheCreation.toLocaleString()} /> : null}
-              {displayCacheRead ? <DetailRow label="缓存读取" value={displayCacheRead.toLocaleString()} /> : null}
-
-              {displayWindow ? (
-                <>
-                  <DetailRow
-                    label="上下文"
-                    value={`${formatTokens(displayTokens)} / ${formatTokens(displayWindow)}`}
-                    emphasized
-                  />
-                  {percent != null && (
-                    <DetailRow
-                      label="占用"
-                      value={`${percent}%`}
-                      emphasized={isWarning}
-                    />
-                  )}
-                  {typeof autoCompactEnabled === 'boolean' && (
-                    <DetailRow
-                      label="自动压缩"
-                      value={autoCompactEnabled ? '已开启' : '已关闭'}
-                    />
-                  )}
-                  {autoCompactEnabled !== false && compactThreshold && compactThreshold > 0 && (
-                    <DetailRow
-                      label="压缩阈值"
-                      value={formatTokens(compactThreshold)}
-                      emphasized={isWarning}
-                    />
-                  )}
-                  {effectiveContextWindow && effectiveContextWindow > 0 && (
-                    <DetailRow
-                      label="可用窗口"
-                      value={formatTokens(effectiveContextWindow)}
-                    />
-                  )}
-                </>
-              ) : null}
-            </>
           )}
+          <DetailRow
+            label="自动压缩"
+            value={typeof autoCompactEnabled === 'boolean'
+              ? autoCompactEnabled ? '已开启' : '已关闭'
+              : '待同步'}
+          />
+          <DetailRow
+            label="压缩阈值"
+            value={autoCompactEnabled === false
+              ? '未启用'
+              : compactThreshold && compactThreshold > 0
+                ? formatTokens(compactThreshold)
+                : '待同步'}
+            emphasized={isWarning}
+          />
+          <DetailRow
+            label="可用窗口"
+            value={effectiveContextWindow && effectiveContextWindow > 0
+              ? formatTokens(effectiveContextWindow)
+              : '待同步'}
+          />
 
           {shouldShowPlanQuota ? (
             <>

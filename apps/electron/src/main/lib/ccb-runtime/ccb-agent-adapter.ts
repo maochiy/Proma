@@ -79,6 +79,7 @@ interface ActiveTurn {
   resolve: () => void
   reject: (error: Error) => void
   settled: boolean
+  compactRequested: boolean
   pendingResult?: SDKMessage
   interactionControllers: Set<AbortController>
 }
@@ -453,6 +454,7 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
       resolve: resolveTurn,
       reject: rejectTurn,
       settled: false,
+      compactRequested: options.compactRequest === true,
       interactionControllers: new Set(),
     }
     this.active.set(sessionId, active)
@@ -889,7 +891,12 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
         return
       }
       const result = resolveCompletedTurnResult(active)
-      if (result) active.queue.push(result)
+      if (result) {
+        active.queue.push(normalizeCcbCompactionMessage(
+          result,
+          active.compactRequested,
+        ))
+      }
       active.queue.finish()
       active.resolve()
     })

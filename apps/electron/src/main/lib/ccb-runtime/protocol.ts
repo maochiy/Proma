@@ -11,9 +11,9 @@ import type {
   ThinkingEffortLevel,
 } from '@proma/shared'
 
-export const CCB_PROTOCOL_VERSION = 5
-export const EXPECTED_CCB_RUNTIME_VERSION = '2.8.19'
-export const EXPECTED_CCB_RUNTIME_COMMIT = '67d3b57d3f380bd056a8227adf97340b2efd8dad'
+export const CCB_PROTOCOL_VERSION = 6
+export const EXPECTED_CCB_RUNTIME_VERSION = '2.8.20'
+export const EXPECTED_CCB_RUNTIME_COMMIT = 'bce2730f8833c8e12d83a230fe656ffc64858ccc'
 
 export type CcbPermissionMode =
   | 'default'

@@ -1,4 +1,8 @@
-import type { SDKMessage } from '@proma/shared'
+import type {
+  AgentRuntimeContextPolicy,
+  AgentRuntimeModelCatalog,
+  SDKMessage,
+} from '@proma/shared'
 
 export interface RestoredAgentContextUsage {
   inputTokens: number
@@ -7,6 +11,31 @@ export interface RestoredAgentContextUsage {
   cacheCreationTokens?: number
   contextWindow?: number
   contextUsageIsEstimated: boolean
+  autoCompactEnabled?: boolean
+  autoCompactThreshold?: number
+  effectiveContextWindow?: number
+}
+
+type ContextUsageSnapshotSource = 'result' | 'assistant' | 'compact'
+
+interface ContextUsageSnapshot {
+  value: RestoredAgentContextUsage
+  source: ContextUsageSnapshotSource
+  createdAt?: number
+  index: number
+}
+
+/** 按 CCB 规范化后的模型 ID 从轻量 Context Policy 目录读取策略。 */
+export function resolveAgentContextPolicy(
+  catalog: AgentRuntimeModelCatalog | undefined,
+  modelId: string | null | undefined,
+): AgentRuntimeContextPolicy | undefined {
+  if (!catalog || !modelId) return undefined
+  const normalizedModelId = modelId.replace(/\[1m\]$/i, '')
+  return catalog.contextPolicy.models.find(
+    policy =>
+      policy.model === modelId || policy.model === normalizedModelId,
+  )
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
@@ -48,6 +77,40 @@ function readContextWindow(value: unknown): number | undefined {
   return contextWindow
 }
 
+function sourcePriority(source: ContextUsageSnapshotSource): number {
+  switch (source) {
+    case 'compact':
+      return 3
+    case 'assistant':
+      return 2
+    case 'result':
+      return 1
+  }
+}
+
+function shouldReplaceSnapshot(
+  current: ContextUsageSnapshot | undefined,
+  candidate: ContextUsageSnapshot,
+): boolean {
+  if (!current) return true
+
+  if (candidate.createdAt != null || current.createdAt != null) {
+    if (candidate.createdAt == null) return false
+    if (current.createdAt == null) return true
+    if (candidate.createdAt !== current.createdAt) {
+      return candidate.createdAt > current.createdAt
+    }
+
+    const candidatePriority = sourcePriority(candidate.source)
+    const currentPriority = sourcePriority(current.source)
+    if (candidatePriority !== currentPriority) {
+      return candidatePriority > currentPriority
+    }
+  }
+
+  return candidate.index > current.index
+}
+
 /**
  * 从 Proma 本地 SDKMessage 投影恢复最近一次上下文用量。
  *
@@ -57,28 +120,52 @@ function readContextWindow(value: unknown): number | undefined {
 export function derivePersistedAgentContextUsage(
   messages: SDKMessage[],
 ): RestoredAgentContextUsage | undefined {
-  let restored: RestoredAgentContextUsage | undefined
+  let snapshot: ContextUsageSnapshot | undefined
   let contextWindow: number | undefined
+  let autoCompactEnabled: boolean | undefined
+  let autoCompactThreshold: number | undefined
+  let effectiveContextWindow: number | undefined
   let hasAssistantUsageInTurn = false
   let compactResultPending = false
 
-  for (const message of messages) {
+  for (const [index, message] of messages.entries()) {
     const record = asRecord(message)
     if (!record) continue
+    const createdAt = numberValue(record._createdAt)
 
     if (record.type === 'user' && record.parent_tool_use_id == null) {
       hasAssistantUsageInTurn = false
       continue
     }
 
+    if (record.type === 'system' && record.subtype === 'context_compaction_config') {
+      const restoredThreshold = numberValue(record.autoCompactThreshold)
+      const restoredEffectiveWindow = numberValue(record.effectiveContextWindow)
+      if (
+        typeof record.autoCompactEnabled === 'boolean'
+        && restoredThreshold != null
+        && restoredEffectiveWindow != null
+      ) {
+        autoCompactEnabled = record.autoCompactEnabled
+        autoCompactThreshold = restoredThreshold
+        effectiveContextWindow = restoredEffectiveWindow
+      }
+      continue
+    }
+
     if (record.type === 'assistant' && record.parent_tool_use_id == null) {
       const usage = readUsage(asRecord(record.message)?.usage)
       if (!usage || usage.inputTokens <= 0) continue
-      restored = {
-        ...usage,
-        contextWindow,
-        contextUsageIsEstimated: false,
+      const candidate: ContextUsageSnapshot = {
+        value: {
+          ...usage,
+          contextUsageIsEstimated: false,
+        },
+        source: 'assistant',
+        createdAt,
+        index,
       }
+      if (shouldReplaceSnapshot(snapshot, candidate)) snapshot = candidate
       hasAssistantUsageInTurn = true
       compactResultPending = false
       continue
@@ -90,11 +177,16 @@ export function derivePersistedAgentContextUsage(
         numberValue(record.compactionEstimatedTokensAfter)
         ?? numberValue(metadata?.post_tokens)
       if (postTokens != null && postTokens > 0) {
-        restored = {
-          inputTokens: postTokens,
-          contextWindow,
-          contextUsageIsEstimated: true,
+        const candidate: ContextUsageSnapshot = {
+          value: {
+            inputTokens: postTokens,
+            contextUsageIsEstimated: true,
+          },
+          source: 'compact',
+          createdAt,
+          index,
         }
+        if (shouldReplaceSnapshot(snapshot, candidate)) snapshot = candidate
       }
       compactResultPending = true
       hasAssistantUsageInTurn = false
@@ -106,7 +198,6 @@ export function derivePersistedAgentContextUsage(
     const reportedWindow = readContextWindow(record.modelUsage)
     if (reportedWindow != null) {
       contextWindow = Math.max(contextWindow ?? 0, reportedWindow)
-      if (restored) restored = { ...restored, contextWindow }
     }
 
     const isCompactionResult =
@@ -119,14 +210,26 @@ export function derivePersistedAgentContextUsage(
 
     const usage = readUsage(record.usage)
     if (usage && usage.inputTokens > 0) {
-      restored = {
-        ...usage,
-        contextWindow,
-        contextUsageIsEstimated: false,
+      const candidate: ContextUsageSnapshot = {
+        value: {
+          ...usage,
+          contextUsageIsEstimated: false,
+        },
+        source: 'result',
+        createdAt,
+        index,
       }
+      if (shouldReplaceSnapshot(snapshot, candidate)) snapshot = candidate
     }
     hasAssistantUsageInTurn = false
   }
 
-  return restored
+  if (!snapshot) return undefined
+  return {
+    ...snapshot.value,
+    contextWindow,
+    ...(autoCompactEnabled !== undefined && { autoCompactEnabled }),
+    ...(autoCompactThreshold !== undefined && { autoCompactThreshold }),
+    ...(effectiveContextWindow !== undefined && { effectiveContextWindow }),
+  }
 }

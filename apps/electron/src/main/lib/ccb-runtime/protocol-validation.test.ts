@@ -167,8 +167,38 @@ describe('Proma CCB Runtime protocol validation', () => {
             supportsAutoMode: false,
           },
         ],
+        contextPolicy: {
+          autoCompactEnabled: true,
+          models: [
+            {
+              model: 'reasoner-a',
+              contextWindow: 200_000,
+              effectiveContextWindow: 180_000,
+              autoCompactThreshold: 167_000,
+            },
+          ],
+        },
       }),
     ).not.toThrow()
+  })
+
+  test('拒绝超过可用窗口的自动压缩阈值', () => {
+    expect(() =>
+      assertCcbRuntimeModelCatalog({
+        models: [],
+        contextPolicy: {
+          autoCompactEnabled: true,
+          models: [
+            {
+              model: 'reasoner-a',
+              contextWindow: 200_000,
+              effectiveContextWindow: 180_000,
+              autoCompactThreshold: 190_000,
+            },
+          ],
+        },
+      }),
+    ).toThrow('autoCompactThreshold 不能超过 effectiveContextWindow')
   })
 
   test('校验带 Proma Skills 目录的 CCB Skill Catalog 命令', () => {

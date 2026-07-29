@@ -124,7 +124,10 @@ import { fileToBase64, formatFileNames, getFileParentPath } from '@/lib/file-uti
 import { buildQuotedSelectionBlock } from '@/lib/quoted-selection'
 import { createClipboardPendingFile, createClipboardTextDraft, makeUniqueAttachmentName } from '@/lib/clipboard-text-attachment'
 import { canSwitchAgentProject } from '@/lib/agent-project-switch'
-import { derivePersistedAgentContextUsage } from '@/lib/agent-context-usage'
+import {
+  derivePersistedAgentContextUsage,
+  resolveAgentContextPolicy,
+} from '@/lib/agent-context-usage'
 import {
   findAgentRuntimeModel,
   normalizeAgentThinkingEffortLevel,
@@ -343,7 +346,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     }
   }, [sessionId, sessionMetaChannelId, sessionMetaModelId, hasSessionMeta, defaultChannelId, defaultModelId, setSessionChannelMap, setSessionModelMap])
 
-  const contextStatus: AgentContextStatus = {
+  const sessionContextStatus: AgentContextStatus = {
     isCompacting: streamState?.isCompacting ?? false,
     inputTokens: streamState?.inputTokens,
     outputTokens: streamState?.outputTokens,
@@ -608,6 +611,33 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     },
     [agentChannelId, agentModelId, currentWorkspaceId, runtimeModelCatalogs],
   )
+  const selectedRuntimeCatalog = React.useMemo(
+    () =>
+      runtimeModelCatalogs.get(
+        getAgentRuntimeModelCatalogKey(currentWorkspaceId, agentChannelId),
+      ),
+    [agentChannelId, currentWorkspaceId, runtimeModelCatalogs],
+  )
+  const selectedContextPolicy = React.useMemo(
+    () => resolveAgentContextPolicy(selectedRuntimeCatalog, agentModelId),
+    [agentModelId, selectedRuntimeCatalog],
+  )
+  const contextStatus: AgentContextStatus = {
+    ...sessionContextStatus,
+    contextWindow:
+      selectedContextPolicy?.contextWindow
+      ?? sessionContextStatus.contextWindow
+      ?? selectedRuntimeModel?.contextWindow,
+    autoCompactEnabled:
+      selectedRuntimeCatalog?.contextPolicy.autoCompactEnabled
+      ?? sessionContextStatus.autoCompactEnabled,
+    autoCompactThreshold:
+      selectedContextPolicy?.autoCompactThreshold
+      ?? sessionContextStatus.autoCompactThreshold,
+    effectiveContextWindow:
+      selectedContextPolicy?.effectiveContextWindow
+      ?? sessionContextStatus.effectiveContextWindow,
+  }
   const thinkingEffortCapability = React.useMemo(
     () => resolveAgentThinkingEffortCapability(selectedRuntimeModel),
     [selectedRuntimeModel],

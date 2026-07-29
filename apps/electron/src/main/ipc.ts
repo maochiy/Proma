@@ -132,6 +132,7 @@ import { registerPromaFilePath } from './lib/local-file-protocol'
 import { registerUpdaterIpc } from './lib/updater/updater-ipc'
 import {
   listChannels,
+  getChannelById,
   createChannel,
   updateChannel,
   deleteChannel,
@@ -900,6 +901,22 @@ function synchronizeEnabledChannelWithCcb(channel: Channel): void {
       ),
   )
   clearAgentRuntimeModelCatalogCache()
+}
+
+async function synchronizeNewApiLoginResult(
+  result: NewApiLoginResult,
+): Promise<NewApiLoginResult> {
+  const channelId = result.auth.channelId
+  if (!channelId) return result
+  const channel = getChannelById(channelId)
+  if (!channel) return result
+
+  synchronizeEnabledChannelWithCcb(channel)
+  clearAgentRuntimeModelCatalogCache(channelId)
+  clearAgentRuntimeModelCatalogCache(CCB_NATIVE_CHANNEL_ID)
+  await invalidateAgentRuntimeConfiguration(channelId)
+  await invalidateAgentRuntimeConfiguration(CCB_NATIVE_CHANNEL_ID)
+  return result
 }
 
 let agentCatalogBackgroundSync: Promise<void> | undefined
@@ -1712,21 +1729,51 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     NEW_API_AUTH_IPC_CHANNELS.LOGIN_PASSWORD,
     async (_, input: NewApiPasswordLoginInput): Promise<NewApiLoginResult> => {
-      return loginNewApiWithPassword(input)
+      return synchronizeNewApiLoginResult(
+        await loginNewApiWithPassword(input),
+      )
     }
   )
 
   ipcMain.handle(
     NEW_API_AUTH_IPC_CHANNELS.LOGIN_API_KEY,
     async (_, input: NewApiApiKeyLoginInput): Promise<NewApiLoginResult> => {
-      return loginNewApiWithApiKey(input)
+      return synchronizeNewApiLoginResult(
+        await loginNewApiWithApiKey(input),
+      )
     }
   )
 
   ipcMain.handle(
     NEW_API_AUTH_IPC_CHANNELS.LOGOUT,
     async (): Promise<NewApiAuthState> => {
-      return logoutNewApi()
+      const enabledChannelIdsBeforeLogout = listChannels()
+        .filter(channel => channel.enabled)
+        .map(channel => channel.id)
+      const result = logoutNewApi()
+      const enabledChannelsAfterLogout = listChannels()
+        .filter(channel => channel.enabled)
+      const restoredChannel = enabledChannelsAfterLogout[0]
+      if (restoredChannel) {
+        try {
+          synchronizeEnabledChannelWithCcb(restoredChannel)
+        } catch (error) {
+          console.warn(
+            `[New API 登录] 退出后恢复 CCB 模型配置失败，渠道=${restoredChannel.id}:`,
+            error,
+          )
+        }
+      }
+      const affectedChannelIds = new Set([
+        ...enabledChannelIdsBeforeLogout,
+        ...enabledChannelsAfterLogout.map(channel => channel.id),
+        CCB_NATIVE_CHANNEL_ID,
+      ])
+      for (const channelId of affectedChannelIds) {
+        clearAgentRuntimeModelCatalogCache(channelId)
+        await invalidateAgentRuntimeConfiguration(channelId)
+      }
+      return result
     }
   )
 

@@ -26,8 +26,8 @@ import { getNewApiAuthPath } from './config-paths'
 import {
   createChannel,
   decryptApiKey,
-  deleteChannel,
   getChannelById,
+  listChannels,
   updateChannel,
 } from './channel-manager'
 import { getSettings, updateSettings } from './settings-service'
@@ -40,6 +40,10 @@ import {
   NewApiClient,
   NewApiRequestError,
 } from './new-api-client'
+import {
+  resolveManagedChannelModelUpdate,
+  resolveRestoredManagedChannelId,
+} from './new-api-channel-provision'
 
 const AUTH_CONFIG_VERSION = 1
 const CCB_API_KEY_MARKER = 'ccb'
@@ -54,6 +58,7 @@ interface NewApiAuthConfig {
   previousAgentChannelId?: string
   previousAgentChannelIds?: string[]
   previousAgentModelId?: string
+  signedOut?: boolean
   updatedAt: number
 }
 
@@ -140,23 +145,40 @@ function resolveDefaultModelId(models: ChannelModel[]): string | undefined {
 
 function upsertManagedChannel(
   apiKey: string,
-  models: ChannelModel[],
+  remoteModels: ChannelModel[],
   previousChannelId?: string,
 ): Channel {
   const existing = previousChannelId ? getChannelById(previousChannelId) : undefined
-  const input = {
-    name: 'OpenSwitch',
-    provider: 'openai' as const,
-    baseUrl: NEW_API_OPENAI_BASE_URL,
-    apiKey,
-    models,
-    enabled: true,
+  let credentialMatches = false
+  if (existing) {
+    try {
+      credentialMatches = decryptApiKey(existing.id) === apiKey
+    } catch {
+      credentialMatches = false
+    }
   }
+  const modelUpdate = resolveManagedChannelModelUpdate(
+    existing,
+    remoteModels,
+    credentialMatches,
+  )
 
   if (existing) {
-    return updateChannel(existing.id, input)
+    return updateChannel(existing.id, {
+      ...(!credentialMatches ? { apiKey } : {}),
+      enabled: true,
+      ...(modelUpdate ?? {}),
+    })
   }
-  return createChannel(input)
+  return createChannel({
+    name: 'OpenSwitch',
+    provider: 'openai',
+    baseUrl: NEW_API_OPENAI_BASE_URL,
+    apiKey,
+    models: modelUpdate?.models ?? remoteModels,
+    defaultModelId: modelUpdate?.defaultModelId,
+    enabled: true,
+  })
 }
 
 async function provisionChannel(input: ProvisionChannelInput): Promise<NewApiLoginResult> {
@@ -169,9 +191,13 @@ async function provisionChannel(input: ProvisionChannelInput): Promise<NewApiLog
   const previous = readAuthConfig()
   const currentSettings = getSettings()
   const previousProfile = previous?.previousProfile ?? getUserProfile()
-  const models = toChannelModels(remoteModels)
-  const channel = upsertManagedChannel(input.apiKey, models, previous?.channelId)
-  const defaultModelId = resolveDefaultModelId(models)
+  const channel = upsertManagedChannel(
+    input.apiKey,
+    toChannelModels(remoteModels),
+    previous?.channelId,
+  )
+  const defaultModelId =
+    channel.defaultModelId ?? resolveDefaultModelId(channel.models)
   const profile = updateUserProfile(input.profile)
 
   updateSettings({
@@ -186,6 +212,7 @@ async function provisionChannel(input: ProvisionChannelInput): Promise<NewApiLog
     channelId: channel.id,
     profile,
     ...(defaultModelId ? { defaultModelId } : {}),
+    signedOut: false,
     previousProfile,
     ...(previous?.previousAgentChannelId ?? currentSettings.agentChannelId
       ? { previousAgentChannelId: previous?.previousAgentChannelId ?? currentSettings.agentChannelId }
@@ -201,7 +228,7 @@ async function provisionChannel(input: ProvisionChannelInput): Promise<NewApiLog
   writeAuthConfig(config)
 
   console.log(
-    `[New API 登录] 登录成功，方式=${input.method}，渠道=${channel.id}，模型数=${models.length}`,
+    `[New API 登录] 登录成功，方式=${input.method}，渠道=${channel.id}，模型数=${channel.models.length}`,
   )
   return {
     auth: authenticatedState(config),
@@ -217,6 +244,7 @@ async function provisionChannel(input: ProvisionChannelInput): Promise<NewApiLog
 export async function checkNewApiAuth(): Promise<NewApiAuthState> {
   const config = readAuthConfig()
   if (!config) return unauthenticatedState()
+  if (config.signedOut) return unauthenticatedState()
 
   const channel = getChannelById(config.channelId)
   if (!channel) {
@@ -238,13 +266,19 @@ export async function checkNewApiAuth(): Promise<NewApiAuthState> {
       return authenticatedState(config, '当前 API Key 暂无可用模型')
     }
 
-    const models = toChannelModels(remoteModels)
-    const updatedChannel = updateChannel(channel.id, {
-      models,
-    })
+    const updatedChannel = channel.models.length > 0
+      ? channel
+      : updateChannel(channel.id, {
+          models: toChannelModels(remoteModels),
+        })
+    const defaultModelId =
+      updatedChannel.defaultModelId
+      ?? resolveDefaultModelId(updatedChannel.models)
     const updatedConfig: NewApiAuthConfig = {
       ...config,
       channelId: updatedChannel.id,
+      ...(defaultModelId ? { defaultModelId } : {}),
+      signedOut: false,
       updatedAt: Date.now(),
     }
     writeAuthConfig(updatedConfig)
@@ -307,17 +341,42 @@ export async function loginNewApiWithApiKey(
   })
 }
 
-/** 退出登录，同时移除自动生成的模型渠道和本地用户展示信息。 */
+/** 退出登录，但保留本地模型配置，便于使用同一 API Key 再登录后继续使用。 */
 export function logoutNewApi(): NewApiAuthState {
   const config = readAuthConfig()
-  if (config?.channelId && getChannelById(config.channelId)) {
-    deleteChannel(config.channelId)
+  const restoredChannelId = resolveRestoredManagedChannelId(
+    listChannels(),
+    config?.channelId,
+    config?.previousAgentChannelId,
+    config?.previousAgentChannelIds,
+  )
+  let restoredChannel: Channel | undefined
+  if (config?.channelId) {
+    const channel = getChannelById(config.channelId)
+    if (channel?.enabled) {
+      updateChannel(channel.id, { enabled: false })
+    }
+    if (restoredChannelId) {
+      restoredChannel = updateChannel(restoredChannelId, { enabled: true })
+    }
+    writeAuthConfig({
+      ...config,
+      signedOut: true,
+      updatedAt: Date.now(),
+    })
+  } else {
+    clearAuthConfig()
   }
-  clearAuthConfig()
+  const restoredModelId =
+    restoredChannel?.models.some(model =>
+      model.enabled && model.id === config?.previousAgentModelId
+    )
+      ? config?.previousAgentModelId
+      : restoredChannel?.defaultModelId ?? config?.previousAgentModelId
   updateSettings({
-    agentChannelId: config?.previousAgentChannelId ?? CCB_NATIVE_CHANNEL_ID,
-    agentChannelIds: config?.previousAgentChannelIds ?? [],
-    agentModelId: config?.previousAgentModelId,
+    agentChannelId: restoredChannelId ?? CCB_NATIVE_CHANNEL_ID,
+    agentChannelIds: restoredChannelId ? [restoredChannelId] : [],
+    agentModelId: restoredModelId,
   })
   updateUserProfile(config?.previousProfile ?? {
     userName: DEFAULT_USER_NAME,

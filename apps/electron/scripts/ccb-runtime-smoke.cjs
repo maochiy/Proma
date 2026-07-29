@@ -109,10 +109,20 @@ app.whenReady().then(async () => {
       payload.responseTo === 'smoke-model-catalog'
     ) {
       const model = payload.result?.models?.[0]
+      const contextPolicy = payload.result?.contextPolicy
+      const modelContextPolicy = contextPolicy?.models?.[0]
       if (
         payload.result?.defaultModel !== 'claude-sonnet-4-6'
         || model?.value !== 'claude-sonnet-4-6'
         || model?.contextWindow !== 1_000_000
+        || typeof contextPolicy?.autoCompactEnabled !== 'boolean'
+        || modelContextPolicy?.model !== 'claude-sonnet-4-6'
+        || modelContextPolicy?.contextWindow !== 1_000_000
+        || !(modelContextPolicy?.effectiveContextWindow > 0)
+        || !(
+          modelContextPolicy?.autoCompactThreshold
+          <= modelContextPolicy?.effectiveContextWindow
+        )
       ) {
         fail(`模型目录解析异常: ${JSON.stringify(payload.result)}`)
         return

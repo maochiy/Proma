@@ -18,5 +18,7 @@ export function getSDKCompactStatus(message: SDKSystemMessage): SDKCompactStatus
 }
 
 export function isPersistableSDKSystemMessage(message: SDKSystemMessage): boolean {
-  return message.subtype === 'permission_denied' || getSDKCompactStatus(message) != null
+  return message.subtype === 'permission_denied'
+    || message.subtype === 'context_compaction_config'
+    || getSDKCompactStatus(message) != null
 }

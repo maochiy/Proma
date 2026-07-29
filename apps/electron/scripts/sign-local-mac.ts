@@ -15,6 +15,10 @@ import {
   EXPECTED_CCB_RUNTIME_VERSION,
 } from '../src/main/lib/ccb-runtime/protocol'
 import { refreshSignedRuntimeManifest } from './local-mac-signing'
+import {
+  ensureLocalCodeSigningIdentity,
+  type LocalCodeSigningIdentity,
+} from './local-code-signing-identity'
 
 const appDir = resolve(import.meta.dir, '..')
 const defaultAppPath = join(appDir, 'out', `mac-${process.arch}`, 'Proma.app')
@@ -73,21 +77,32 @@ function isMachO(filePath: string): boolean {
   return run('/usr/bin/file', ['-b', filePath]).includes('Mach-O')
 }
 
-function signFile(filePath: string): void {
+function signFile(
+  filePath: string,
+  identity: LocalCodeSigningIdentity,
+): void {
   run('/usr/bin/codesign', [
     '--force',
+    '--keychain',
+    identity.keychainPath,
     '--sign',
-    '-',
+    identity.name,
     '--timestamp=none',
     filePath,
   ])
 }
 
-function signBundle(bundlePath: string, withEntitlements: boolean): void {
+function signBundle(
+  bundlePath: string,
+  withEntitlements: boolean,
+  identity: LocalCodeSigningIdentity,
+): void {
   run('/usr/bin/codesign', [
     '--force',
+    '--keychain',
+    identity.keychainPath,
     '--sign',
-    '-',
+    identity.name,
     '--timestamp=none',
     ...(withEntitlements
       ? ['--entitlements', entitlementsPath]
@@ -106,13 +121,15 @@ function main(): void {
   if (!existsSync(runtimeRoot)) {
     throw new Error(`App 中缺少 CCB Runtime: ${runtimeRoot}`)
   }
+  const identity = ensureLocalCodeSigningIdentity()
+  console.log(`[本地签名] 使用固定身份: ${identity.name}`)
 
   console.log(`[本地签名] 清理扩展属性: ${appPath}`)
   run('/usr/bin/xattr', ['-cr', appPath])
 
   console.log('[本地签名] 签名全部 Mach-O 文件')
   for (const filePath of collectPaths(join(appPath, 'Contents'))) {
-    if (isMachO(filePath)) signFile(filePath)
+    if (isMachO(filePath)) signFile(filePath, identity)
   }
 
   console.log('[本地签名] 签名 Framework')
@@ -120,7 +137,7 @@ function main(): void {
     join(appPath, 'Contents'),
     '.framework',
   )) {
-    signBundle(frameworkPath, false)
+    signBundle(frameworkPath, false, identity)
   }
 
   console.log('[本地签名] 签名 Helper App')
@@ -128,7 +145,7 @@ function main(): void {
     join(appPath, 'Contents'),
     '.app',
   )) {
-    signBundle(helperPath, true)
+    signBundle(helperPath, true, identity)
   }
 
   const changedRuntimeFiles = refreshSignedRuntimeManifest(runtimeRoot)
@@ -148,7 +165,7 @@ function main(): void {
 
   // 主 App 必须最后签，且不能使用 --deep 再次改写已写入 Manifest 的 Runtime 文件。
   console.log('[本地签名] 签名主 App')
-  signBundle(appPath, true)
+  signBundle(appPath, true, identity)
   run('/usr/bin/codesign', [
     '--verify',
     '--deep',

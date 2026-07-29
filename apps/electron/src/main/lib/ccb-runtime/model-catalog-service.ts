@@ -217,6 +217,7 @@ async function loadAgentRuntimeModelCatalog(
     channelId: resultChannelId,
     defaultModel: result.defaultModel,
     models: result.models,
+    contextPolicy: result.contextPolicy,
     runtimeVersion: runtime?.runtimeVersion,
     runtimeArtifactCommit: runtime?.gitCommit,
   }
