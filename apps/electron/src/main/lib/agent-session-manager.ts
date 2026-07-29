@@ -571,14 +571,24 @@ function areEquivalentUserMessageTexts(
 }
 
 function getMessageCreatedAt(message: SDKMessage): number | undefined {
-  const createdAt = (
-    message as unknown as {
-      _createdAt?: unknown
-    }
-  )._createdAt
-  return typeof createdAt === 'number' && Number.isFinite(createdAt)
-    ? createdAt
-    : undefined
+  const record = message as unknown as {
+    _createdAt?: unknown
+    timestamp?: unknown
+  }
+  if (
+    typeof record._createdAt === 'number'
+    && Number.isFinite(record._createdAt)
+  ) {
+    return record._createdAt
+  }
+  if (typeof record.timestamp === 'number' && Number.isFinite(record.timestamp)) {
+    return record.timestamp
+  }
+  if (typeof record.timestamp === 'string') {
+    const timestamp = Date.parse(record.timestamp)
+    if (Number.isFinite(timestamp)) return timestamp
+  }
+  return undefined
 }
 
 function hasDesktopMessageMetadata(message: SDKMessage): boolean {
@@ -602,6 +612,35 @@ function mergeRuntimeMessageWithLocalMetadata(
 }
 
 /**
+ * 将 Runtime 尚未覆盖的 Proma 本地消息放回原时间位置。
+ *
+ * CCB Transcript 是执行顺序来源，但 Proma JSONL 还可能含有刚发送、被并发守卫
+ * 拒绝或仅桌面端持久化的消息。不能把这些消息统一追加到末尾，否则后台同步会让
+ * 旧用户消息突然移动到最新回复之后，看起来像回复消失。
+ */
+function insertLocalMessageByCreatedAt(
+  messages: SDKMessage[],
+  localMessage: SDKMessage,
+): void {
+  const createdAt = getMessageCreatedAt(localMessage)
+  if (createdAt === undefined) {
+    messages.push(localMessage)
+    return
+  }
+
+  const firstLaterIndex = messages.findIndex((message) => {
+    const messageCreatedAt = getMessageCreatedAt(message)
+    return messageCreatedAt !== undefined && messageCreatedAt > createdAt
+  })
+
+  if (firstLaterIndex < 0) {
+    messages.push(localMessage)
+    return
+  }
+  messages.splice(firstLaterIndex, 0, localMessage)
+}
+
+/**
  * 将 CCB Transcript 合并进 Proma JSONL UI 投影。
  *
  * Runtime Transcript 负责补齐执行消息，但不能删除本地尚未落入 Transcript 的
@@ -620,6 +659,7 @@ export function mergeAgentSessionSDKMessages(
 
   const consumedLocalIndexes = new Set<number>()
   const merged: SDKMessage[] = []
+  let lastMatchedLocalCreatedAt: number | undefined
 
   const findLocalIndexes = (
     predicate: (message: SDKMessage) => boolean,
@@ -648,6 +688,17 @@ export function mergeAgentSessionSDKMessages(
         merged.push(
           ...preferredIndexes.map(index => localMessages[index]!),
         )
+        const matchedCreatedAt = preferredIndexes
+          .map(index => getMessageCreatedAt(localMessages[index]!))
+          .filter((createdAt): createdAt is number => createdAt !== undefined)
+          .reduce<number | undefined>(
+            (latest, createdAt) =>
+              latest === undefined ? createdAt : Math.max(latest, createdAt),
+            undefined,
+          )
+        if (matchedCreatedAt !== undefined) {
+          lastMatchedLocalCreatedAt = matchedCreatedAt
+        }
         continue
       }
     }
@@ -665,24 +716,41 @@ export function mergeAgentSessionSDKMessages(
         },
       )
       if (equivalentIndexes.length > 0) {
+        const chronologicalIndexes = [...equivalentIndexes].sort((a, b) => {
+          const aCreatedAt = getMessageCreatedAt(localMessages[a]!)
+          const bCreatedAt = getMessageCreatedAt(localMessages[b]!)
+          if (aCreatedAt === undefined && bCreatedAt === undefined) return a - b
+          if (aCreatedAt === undefined) return 1
+          if (bCreatedAt === undefined) return -1
+          return aCreatedAt - bCreatedAt || a - b
+        })
+        const localCreatedAtFloor = lastMatchedLocalCreatedAt
+        const eligibleIndexes = localCreatedAtFloor === undefined
+          ? chronologicalIndexes
+          : chronologicalIndexes.filter((index) => {
+              const createdAt = getMessageCreatedAt(localMessages[index]!)
+              return createdAt === undefined || createdAt >= localCreatedAtFloor
+            })
+        const candidateIndexes =
+          eligibleIndexes.length > 0 ? eligibleIndexes : chronologicalIndexes
         const runtimeIdentity = getSDKMessageIdentity(runtimeMessage)
-        const identityIndex = equivalentIndexes.find(index =>
+        const identityIndex = candidateIndexes.find(index =>
           getSDKMessageIdentity(localMessages[index]!) === runtimeIdentity,
         )
-        const originalTextIndexes = equivalentIndexes.filter(index =>
+        const originalTextIndexes = candidateIndexes.filter(index =>
           getUserMessageText(localMessages[index]!) === normalizedRuntimeText,
         )
         const preferredIndex =
           originalTextIndexes.find(index =>
             hasDesktopMessageMetadata(localMessages[index]!),
           ) ?? originalTextIndexes[0]
-          ?? equivalentIndexes.find(index =>
+          ?? candidateIndexes.find(index =>
             hasDesktopMessageMetadata(localMessages[index]!),
           )
           ?? identityIndex
-          ?? equivalentIndexes[0]!
+          ?? candidateIndexes[0]!
         const enhancedPromptIndex = normalizedRuntimeText !== userText
-          ? equivalentIndexes.find(index =>
+          ? candidateIndexes.find(index =>
               getUserMessageText(localMessages[index]!) === userText,
             )
           : undefined
@@ -697,6 +765,10 @@ export function mergeAgentSessionSDKMessages(
           consumedLocalIndexes.add(enhancedPromptIndex)
         }
         merged.push(localMessages[preferredIndex]!)
+        const matchedCreatedAt = getMessageCreatedAt(localMessages[preferredIndex]!)
+        if (matchedCreatedAt !== undefined) {
+          lastMatchedLocalCreatedAt = matchedCreatedAt
+        }
         continue
       }
     }
@@ -715,8 +787,16 @@ export function mergeAgentSessionSDKMessages(
           localMessages[matchingIndex]!,
         ),
       )
+      const matchedCreatedAt = getMessageCreatedAt(localMessages[matchingIndex]!)
+      if (matchedCreatedAt !== undefined) {
+        lastMatchedLocalCreatedAt = matchedCreatedAt
+      }
     } else {
       merged.push(runtimeMessage)
+      const runtimeCreatedAt = getMessageCreatedAt(runtimeMessage)
+      if (runtimeCreatedAt !== undefined) {
+        lastMatchedLocalCreatedAt = runtimeCreatedAt
+      }
     }
   }
 
@@ -727,7 +807,7 @@ export function mergeAgentSessionSDKMessages(
       pendingResults.push(localMessage)
       return
     }
-    merged.push(localMessage)
+    insertLocalMessageByCreatedAt(merged, localMessage)
   })
 
   // Runtime Transcript 通常不包含 Proma 的 result 完成元数据。按同一 Turn 的

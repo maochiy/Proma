@@ -692,6 +692,206 @@ describe('Agent Transcript 增量合并', () => {
     ])
   })
 
+  test('Given 相同文本曾在运行中重复发送 When 后续再次正常发送 Then 不得把旧重复消息匹配到新 Turn', () => {
+    writeAgentSessionJsonl('merge-repeated-prompt-with-rejected-send', [
+      JSON.stringify({
+        type: 'user',
+        message: { content: [{ type: 'text', text: '计划审批测试' }] },
+        uuid: 'proma-user-1',
+        _createdAt: 100,
+      }),
+      JSON.stringify({
+        type: 'user',
+        message: { content: [{ type: 'text', text: '计划审批测试' }] },
+        uuid: 'rejected-duplicate-user',
+        _createdAt: 110,
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        uuid: 'assistant-1',
+        message: {
+          id: 'assistant-message-1',
+          content: [{ type: 'text', text: '第一次计划被拒绝后的回复' }],
+        },
+        _createdAt: 200,
+      }),
+      JSON.stringify({
+        type: 'result',
+        uuid: 'result-1',
+        subtype: 'success',
+        _createdAt: 200,
+      }),
+      JSON.stringify({
+        type: 'user',
+        message: { content: [{ type: 'text', text: '计划审批测试' }] },
+        uuid: 'proma-user-2',
+        _createdAt: 500,
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        uuid: 'assistant-2',
+        message: {
+          id: 'assistant-message-2',
+          content: [{ type: 'text', text: '第二次计划回复' }],
+        },
+        _createdAt: 600,
+      }),
+      JSON.stringify({
+        type: 'result',
+        uuid: 'result-2',
+        subtype: 'success',
+        _createdAt: 600,
+      }),
+    ])
+
+    const merged = manager.mergeAgentSessionSDKMessages(
+      'merge-repeated-prompt-with-rejected-send',
+      [
+        {
+          type: 'user',
+          uuid: 'runtime-user-1',
+          timestamp: new Date(120).toISOString(),
+          message: { role: 'user', content: '计划审批测试' },
+        } as never,
+        {
+          type: 'assistant',
+          uuid: 'runtime-assistant-1',
+          message: {
+            id: 'assistant-message-1',
+            content: [{ type: 'text', text: '第一次计划被拒绝后的回复' }],
+          },
+        } as never,
+        {
+          type: 'user',
+          uuid: 'runtime-user-2',
+          timestamp: new Date(520).toISOString(),
+          message: { role: 'user', content: '计划审批测试' },
+        } as never,
+        {
+          type: 'assistant',
+          uuid: 'runtime-assistant-2',
+          message: {
+            id: 'assistant-message-2',
+            content: [{ type: 'text', text: '第二次计划回复' }],
+          },
+        } as never,
+      ],
+    )
+
+    expect(
+      merged.map(message =>
+        (message as unknown as { uuid?: string }).uuid,
+      ),
+    ).toEqual([
+      'proma-user-1',
+      'rejected-duplicate-user',
+      'assistant-1',
+      'result-1',
+      'proma-user-2',
+      'assistant-2',
+      'result-2',
+    ])
+  })
+
+  test('Given 本地完成元数据已被旧同步打乱 When 再次合并 Then 按 Turn 时间恢复消息顺序', () => {
+    writeAgentSessionJsonl('merge-out-of-order-results', [
+      JSON.stringify({
+        type: 'user',
+        uuid: 'user-1',
+        message: { content: [{ type: 'text', text: '第一轮' }] },
+        _createdAt: 100,
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        uuid: 'assistant-1',
+        message: {
+          id: 'assistant-message-1',
+          content: [{ type: 'text', text: '第一轮回复' }],
+        },
+        _createdAt: 200,
+      }),
+      JSON.stringify({
+        type: 'user',
+        uuid: 'user-2',
+        message: { content: [{ type: 'text', text: '第二轮' }] },
+        _createdAt: 300,
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        uuid: 'assistant-2',
+        message: {
+          id: 'assistant-message-2',
+          content: [{ type: 'text', text: '第二轮回复' }],
+        },
+        _createdAt: 400,
+      }),
+      JSON.stringify({
+        type: 'result',
+        uuid: 'result-2',
+        subtype: 'success',
+        _createdAt: 400,
+      }),
+      JSON.stringify({
+        type: 'system',
+        subtype: 'context_compaction_config',
+        uuid: 'context-config-1',
+        _createdAt: 200,
+      }),
+      JSON.stringify({
+        type: 'result',
+        uuid: 'result-1',
+        subtype: 'success',
+        _createdAt: 200,
+      }),
+    ])
+
+    const merged = manager.mergeAgentSessionSDKMessages(
+      'merge-out-of-order-results',
+      [
+        {
+          type: 'user',
+          uuid: 'runtime-user-1',
+          message: { role: 'user', content: '第一轮' },
+        } as never,
+        {
+          type: 'assistant',
+          uuid: 'runtime-assistant-1',
+          message: {
+            id: 'assistant-message-1',
+            content: [{ type: 'text', text: '第一轮回复' }],
+          },
+        } as never,
+        {
+          type: 'user',
+          uuid: 'runtime-user-2',
+          message: { role: 'user', content: '第二轮' },
+        } as never,
+        {
+          type: 'assistant',
+          uuid: 'runtime-assistant-2',
+          message: {
+            id: 'assistant-message-2',
+            content: [{ type: 'text', text: '第二轮回复' }],
+          },
+        } as never,
+      ],
+    )
+
+    expect(
+      merged.map(message =>
+        (message as unknown as { uuid?: string }).uuid,
+      ),
+    ).toEqual([
+      'user-1',
+      'assistant-1',
+      'context-config-1',
+      'result-1',
+      'user-2',
+      'assistant-2',
+      'result-2',
+    ])
+  })
+
   test('Given Runtime Assistant 与桌面拆分消息使用同一 message id When 合并 Then 只保留桌面拆分消息', () => {
     writeAgentSessionJsonl('dedupe-assistant-transcript', [
       JSON.stringify({
