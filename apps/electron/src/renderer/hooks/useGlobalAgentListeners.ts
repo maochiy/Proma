@@ -69,6 +69,7 @@ import {
   notifyAgentCompletion,
 } from '@/lib/agent-completion-presence'
 import { getPlanModeChangeFromToolName, updatePlanModeSessionSet } from '@/lib/agent-plan-mode'
+import { upsertAgentLiveMessage } from '@/lib/agent-live-message'
 
 /** 触发右侧文件浏览器自动定位的写入类工具集合 */
 const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Update'])
@@ -700,30 +701,9 @@ export function useGlobalAgentListeners(): void {
             store.set(liveMessagesMapAtom, (prev) => {
               const map = new Map(prev)
               const current = map.get(sessionId) ?? []
-
-              // UUID 去重 / partial upsert：
-              // - 队列用户消息已被乐观注入，SDK 再次推送时跳过
-              // - Pi message_update 使用稳定 uuid 标记 _partial，最终 message_end 用同一 uuid 替换
-              const incomingUuid = msgRecord.uuid as string | undefined
-              if (incomingUuid) {
-                const existingIndex = current.findIndex((m) => (m as Record<string, unknown>).uuid === incomingUuid)
-                if (existingIndex >= 0) {
-                  const existing = current[existingIndex] as Record<string, unknown>
-                  const incomingIsPartial = msgRecord._partial === true
-                  const existingIsPartial = existing._partial === true
-
-                  if (incomingIsPartial || existingIsPartial) {
-                    const next = [...current]
-                    next[existingIndex] = payload.message
-                    map.set(sessionId, next)
-                    return map
-                  }
-
-                  return prev
-                }
-              }
-
-              map.set(sessionId, [...current, payload.message])
+              const next = upsertAgentLiveMessage(current, payload.message)
+              if (next === current) return prev
+              map.set(sessionId, next)
               return map
             })
           }

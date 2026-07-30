@@ -62,6 +62,7 @@ import { settingsOpenAtom, settingsTabAtom } from '@/atoms/settings-tab'
 import { useOpenPreview } from '@/components/diff/preview-opener'
 import { getFileParentPath } from '@/lib/file-utils'
 import { parseQuotedSelectionRefs } from '@/lib/quoted-selection'
+import { getAssistantModelMessageId } from '@/lib/agent-live-message'
 import type { ParsedQuotedSelectionRef } from '@/lib/quoted-selection'
 import type {
   SDKMessage,
@@ -1333,8 +1334,11 @@ export function getGroupId(group: MessageGroup): string {
     }
     return messageIdCache.get(group.identityMessage)!
   }
-  // assistant-turn：取首条 assistant 消息的 uuid
+  // assistant-turn：优先使用模型 message ID。partial 与 final 的 Runtime UUID 不同，
+  // 但模型 message ID 相同，可避免终态替换时 React key 改变导致折叠状态重置。
   const first = group.assistantMessages[0]
+  const modelMessageId = first ? getAssistantModelMessageId(first) : undefined
+  if (modelMessageId) return `assistant-message-${modelMessageId}`
   if (first?.uuid) return first.uuid
   const stableKey = first ? (first as unknown as Record<string, unknown>)._promaStableKey : undefined
   if (typeof stableKey === 'string') return stableKey

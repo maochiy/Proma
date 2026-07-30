@@ -1536,7 +1536,7 @@ export class AgentOrchestrator {
             const msg = iterResult.value
             const isPartialMessage = isPartialSDKMessage(msg)
             // isVisibleRunMessage 已抽到独立模块，不含 partial 判断；
-            // pi runtime 的流式 partial 消息不应计入可见消息数，故在此显式排除。
+            // 运行时的流式 partial 消息不应计入可见消息数，故在此显式排除。
             if (!isPartialMessage && isVisibleRunMessage(msg)) {
               visibleRunMessageCount += 1
             }

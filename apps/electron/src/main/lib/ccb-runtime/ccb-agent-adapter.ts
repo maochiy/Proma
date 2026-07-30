@@ -20,6 +20,12 @@ import {
   createContextCompactionConfigMessage,
   normalizeCcbCompactionMessage,
 } from './ccb-compaction-message'
+import {
+  annotateCcbFinalAssistantMessage,
+  applyCcbPartialAssistantEvent,
+  createCcbPartialAssistantState,
+  type CcbPartialAssistantState,
+} from './ccb-partial-assistant'
 import { ccbDesktopRuntimeClient } from './runtime-client'
 import { sanitizeCcbSessionEnvironment } from './runtime-security'
 import { assertCcbRuntimeModelCatalog } from './protocol-validation'
@@ -84,6 +90,7 @@ interface ActiveTurn {
   compactRequested: boolean
   pendingResult?: SDKMessage
   interactionControllers: Set<AbortController>
+  partialAssistantState: CcbPartialAssistantState
 }
 
 interface SessionRuntimeConfig {
@@ -472,6 +479,7 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
       settled: false,
       compactRequested: options.compactRequest === true,
       interactionControllers: new Set(),
+      partialAssistantState: createCcbPartialAssistantState(),
     }
     this.active.set(sessionId, active)
     const unsubscribe = ccbDesktopRuntimeClient.subscribe(sessionId, envelope => {
@@ -717,10 +725,35 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
             event.message,
           )
         ) return
-        queue.push(normalizeCcbCompactionMessage(
-          event.message,
-          options.compactRequest === true,
-        ))
+        {
+          const normalizedMessage = normalizeCcbCompactionMessage(
+            event.message,
+            options.compactRequest === true,
+          )
+          if (normalizedMessage.type === 'stream_event') {
+            const active = this.active.get(options.sessionId)
+            if (!active) return
+            const update = applyCcbPartialAssistantEvent(
+              active.partialAssistantState,
+              normalizedMessage,
+            )
+            active.partialAssistantState = update.state
+            if (update.message) queue.push(update.message)
+            return
+          }
+          if (normalizedMessage.type === 'assistant') {
+            const active = this.active.get(options.sessionId)
+            if (!active) return
+            const update = annotateCcbFinalAssistantMessage(
+              active.partialAssistantState,
+              normalizedMessage,
+            )
+            active.partialAssistantState = update.state
+            if (update.message) queue.push(update.message)
+            return
+          }
+          queue.push(normalizedMessage)
+        }
         return
       case 'runtime.progress': {
         if (event.phase !== 'context.compactionConfig') return
