@@ -2,12 +2,21 @@
 
 set -uo pipefail
 
-readonly MAX_ATTEMPTS=3
+readonly MAX_ATTEMPTS=5
+readonly NETWORK_CONCURRENCY="${BUN_INSTALL_NETWORK_CONCURRENCY:-8}"
+
+# Bun 1.3.14 的 streaming install 在网络响应被提前截断时，
+# 可能直接将不完整 tarball 交给解压器。关闭 streaming 并降低并发，
+# 避免 GitHub Hosted Runner 上随机出现 Fail extracting tarball。
+export BUN_FEATURE_FLAG_DISABLE_STREAMING_INSTALL=1
 
 for attempt in $(seq 1 "${MAX_ATTEMPTS}"); do
   echo "开始执行 bun install（第 ${attempt}/${MAX_ATTEMPTS} 次）"
 
-  if bun install --frozen-lockfile; then
+  if bun install \
+    --frozen-lockfile \
+    --network-concurrency="${NETWORK_CONCURRENCY}" \
+    --no-progress; then
     echo "✅ bun install 成功"
     exit 0
   fi

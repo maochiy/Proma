@@ -81,7 +81,8 @@ jobs:
       - name: 安装 Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          # 1.3.13/1.3.14 存在 flaky network 下 tarball streaming 解压回归。
+          bun-version: 1.3.12
 
       - name: 安装 Node.js
         uses: actions/setup-node@v4
@@ -178,7 +179,7 @@ jobs:
       - name: 安装 Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.3.12
 
       - name: 安装 Node.js
         uses: actions/setup-node@v4
@@ -405,7 +406,7 @@ jobs:
       - name: 安装 Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.3.12
 
       - name: 安装 Node.js
         uses: actions/setup-node@v4
