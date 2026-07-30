@@ -27,15 +27,15 @@ function channel(id: string, enabled: boolean): Channel {
   }
 }
 
-describe('模型配置至少保留一个启用模型', () => {
-  test('Given 只剩一个启用模型 When 尝试停用或删除 Then 应阻止操作并由界面提示', () => {
+describe('模型启用状态判定', () => {
+  test('Given 只剩一个启用模型 When 判定是否为最后一个启用项 Then 返回 true', () => {
     expect(isLastEnabledChannelModel([
       model('claude-opus', true),
       model('claude-sonnet', false),
     ], 'claude-opus')).toBe(true)
   })
 
-  test('Given 存在多个启用模型 When 停用其中一个 Then 允许操作', () => {
+  test('Given 存在多个启用模型 When 判定其中一个 Then 不是最后一个启用项', () => {
     expect(isLastEnabledChannelModel([
       model('claude-opus', true),
       model('claude-sonnet', true),
@@ -43,15 +43,15 @@ describe('模型配置至少保留一个启用模型', () => {
   })
 })
 
-describe('Proma 至少保留一个启用的模型配置', () => {
-  test('Given 只有一个启用配置 When 尝试禁用 Then 应阻止操作并提示用户', () => {
+describe('模型配置启用状态判定', () => {
+  test('Given 只有一个启用配置 When 判定是否为最后一个启用配置 Then 返回 true', () => {
     expect(isLastEnabledChannelConfiguration([
       channel('primary', true),
       channel('backup', false),
     ], 'primary')).toBe(true)
   })
 
-  test('Given 存在另一个启用配置 When 禁用当前配置 Then 允许操作', () => {
+  test('Given 存在另一个启用配置 When 判定当前配置 Then 不是最后一个启用配置', () => {
     expect(isLastEnabledChannelConfiguration([
       channel('primary', true),
       channel('backup', true),

@@ -32,6 +32,8 @@ export class CcbDesktopRuntimeClient {
   private starting?: Promise<void>
   private readonly pending = new Map<string, PendingRequest>()
   private readonly listeners = new Map<string, Set<EventListener>>()
+  private readonly globalListeners = new Set<EventListener>()
+  private hostDiedHandler?: (error: Error) => void
   private readonly sequencer = new CcbSessionEventSequencer(
     envelope => this.processEnvelope(envelope),
     (sessionId, expectedSequence, nextAvailableSequence) => {
@@ -61,6 +63,25 @@ export class CcbDesktopRuntimeClient {
       set.delete(listener)
       if (set.size === 0) this.listeners.delete(sessionId)
     }
+  }
+
+  /**
+   * 订阅所有带 sessionId 的 Runtime 事件。
+   * 用于在 Turn 间隙接收 Worker 回收 / 崩溃等生命周期通知。
+   */
+  subscribeAll(listener: EventListener): () => void {
+    this.globalListeners.add(listener)
+    return () => {
+      this.globalListeners.delete(listener)
+    }
+  }
+
+  /**
+   * Host 进程异常退出时的全局回调。
+   * 用于清空“本地仍认为 Worker 开着”的过期状态，保证下次发送走 resume 恢复。
+   */
+  setHostDiedHandler(handler: ((error: Error) => void) | undefined): void {
+    this.hostDiedHandler = handler
   }
 
   getRuntimeInfo():
@@ -213,10 +234,17 @@ export class CcbDesktopRuntimeClient {
         else pending.reject(new Error(payload.error.message))
       }
     }
+    this.dispatchEnvelope(envelope)
+  }
+
+  private dispatchEnvelope(envelope: CcbRuntimeEnvelope<CcbRuntimeEvent>): void {
     if (envelope.sessionId) {
       for (const listener of this.listeners.get(envelope.sessionId) ?? []) {
         listener(envelope)
       }
+    }
+    for (const listener of this.globalListeners) {
+      listener(envelope)
     }
   }
 
@@ -241,7 +269,8 @@ export class CcbDesktopRuntimeClient {
    */
   private notifyRuntimeFailure(error: Error, exitCode: number): void {
     const timestamp = Date.now()
-    for (const [sessionId, listeners] of this.listeners) {
+    const sessionIds = new Set<string>(this.listeners.keys())
+    for (const sessionId of sessionIds) {
       const envelope: CcbRuntimeEnvelope<CcbRuntimeEvent> = {
         protocolVersion: CCB_PROTOCOL_VERSION,
         requestId: randomUUID(),
@@ -254,19 +283,26 @@ export class CcbDesktopRuntimeClient {
           recoverable: false,
         },
       }
-      for (const listener of listeners) {
-        try {
-          listener(envelope)
-        } catch (listenerError) {
-          console.error(
-            `[CCB Runtime] 处理 Host 崩溃事件失败: ${redactSensitiveLogText(
-              listenerError instanceof Error
-                ? listenerError.message
-                : String(listenerError),
-            )}; 原因: ${redactSensitiveLogText(error.message)}`,
-          )
-        }
+      try {
+        this.dispatchEnvelope(envelope)
+      } catch (listenerError) {
+        console.error(
+          `[CCB Runtime] 处理 Host 崩溃事件失败: ${redactSensitiveLogText(
+            listenerError instanceof Error
+              ? listenerError.message
+              : String(listenerError),
+          )}; 原因: ${redactSensitiveLogText(error.message)}`,
+        )
       }
+    }
+    try {
+      this.hostDiedHandler?.(error)
+    } catch (handlerError) {
+      console.error(
+        `[CCB Runtime] Host 退出回调失败: ${redactSensitiveLogText(
+          handlerError instanceof Error ? handlerError.message : String(handlerError),
+        )}`,
+      )
     }
   }
 }

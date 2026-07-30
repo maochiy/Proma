@@ -71,7 +71,6 @@ import { currentConversationIdAtom, channelsAtom, channelsLoadedAtom, selectedMo
 import { appModeAtom } from './atoms/app-mode'
 import { draftSessionIdsAtom } from './atoms/draft-session-atoms'
 import type { FeishuBotBridgeState, FeishuBridgeState, DingTalkBotBridgeState, DingTalkBridgeState } from '@proma/shared'
-import { CCB_NATIVE_CHANNEL_ID } from '@proma/shared'
 import { Toaster } from './components/ui/sonner'
 import { toast } from 'sonner'
 import { diffCapabilities } from '@proma/shared'
@@ -221,10 +220,8 @@ function AgentSettingsInitializer(): null {
         : []
       setAgentChannelIds(agentChannelIds)
 
-      const selectedChannelId =
-        settings.agentChannelId === CCB_NATIVE_CHANNEL_ID
-          ? CCB_NATIVE_CHANNEL_ID
-          : preferredPromaChannelId ?? CCB_NATIVE_CHANNEL_ID
+      // App 只使用已启用的 Proma 渠道；CLI 共用配置不作为会话模型来源。
+      const selectedChannelId = preferredPromaChannelId ?? null
 
       const updates: Parameters<typeof window.electronAPI.updateSettings>[0] = {}
       const storedAgentChannelIds = settings.agentChannelIds ?? []
@@ -232,19 +229,19 @@ function AgentSettingsInitializer(): null {
         || agentChannelIds.some((id, index) => id !== storedAgentChannelIds[index])
       if (whitelistChanged) updates.agentChannelIds = agentChannelIds
 
-      // CCB 原生配置也是合法的全局模型配置来源；Proma 配置最多启用一个。
       setAgentChannelId(selectedChannelId)
       if (
-        settings.agentModelId
+        selectedChannelId
+        && settings.agentModelId
         && settings.agentChannelId === selectedChannelId
       ) {
-        if (settings.agentModelId) setAgentModelId(settings.agentModelId)
+        setAgentModelId(settings.agentModelId)
       } else {
         setAgentModelId(null)
         updates.agentModelId = undefined
       }
-      if (settings.agentChannelId !== selectedChannelId) {
-        updates.agentChannelId = selectedChannelId
+      if (settings.agentChannelId !== (selectedChannelId ?? undefined)) {
+        updates.agentChannelId = selectedChannelId ?? undefined
       }
 
       if (Object.keys(updates).length > 0) {

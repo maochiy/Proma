@@ -7,7 +7,6 @@ import type {
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { cn } from '@/lib/utils'
-import { RuntimeModelCapabilitySummary } from '@/components/agent/RuntimeModelCapabilitySummary'
 
 export interface CcbConfiguredModelEditorValue {
   id: string
@@ -97,12 +96,6 @@ export function CcbConfiguredModelEditor({
         onChange={effortLevels => onChange({ effortLevels })}
       />
 
-      {runtimeModel && (
-        <div className="rounded-lg bg-muted/35 px-3 py-2.5">
-          <p className="mb-1.5 text-xs font-medium">CCB 当前解析结果</p>
-          <RuntimeModelCapabilitySummary model={runtimeModel} />
-        </div>
-      )}
     </div>
   )
 }

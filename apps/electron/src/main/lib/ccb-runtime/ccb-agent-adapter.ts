@@ -35,6 +35,7 @@ import {
   releaseTurnBeforeNotify,
   resolveCompletedTurnResult,
 } from './turn-lifecycle'
+import { shouldRecoverSessionWorker } from './session-worker-recovery'
 import type {
   CcbInteractionResponse,
   CcbPermissionMode,
@@ -44,6 +45,7 @@ import type {
 } from './protocol'
 
 export interface CcbAgentQueryOptions extends AgentQueryInput {
+
   channelId?: string
   env?: Record<string, string | undefined>
   providerConfiguration?: AgentRuntimeProviderConfiguration
@@ -184,6 +186,17 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
   private readonly sessionRuntimeConfigs = new Map<string, SessionRuntimeConfig>()
   private readonly lastSequences = new Map<string, number>()
   private readonly invalidatedSessions = new Set<string>()
+  private readonly unsubscribeLifecycle: () => void
+
+  constructor() {
+    // Turn 间隙也要接收 Worker 回收/崩溃通知，避免误判“Session 仍开着”而跳过 resume。
+    this.unsubscribeLifecycle = ccbDesktopRuntimeClient.subscribeAll(envelope => {
+      this.handleLifecycleEvent(envelope)
+    })
+    ccbDesktopRuntimeClient.setHostDiedHandler(() => {
+      this.forgetAllOpenedSessions('crashed')
+    })
+  }
 
   query(input: AgentQueryInput): AsyncIterable<SDKMessage> {
     const options = input as CcbAgentQueryOptions
@@ -366,6 +379,9 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
   }
 
   dispose(): void {
+    this.unsubscribeLifecycle()
+    ccbDesktopRuntimeClient.setHostDiedHandler(undefined)
+    this.forgetAllOpenedSessions('cold')
     void ccbDesktopRuntimeClient.shutdown()
   }
 
@@ -492,27 +508,7 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
       if (!options.providerConfiguration && options.model) {
         options.onModelResolved?.(options.model)
       }
-      try {
-        await ccbDesktopRuntimeClient.request(
-          options.compactRequest
-            ? { type: 'session.compact' }
-            : { type: 'turn.start', prompt: options.prompt },
-          sessionId,
-          30_000,
-        )
-      } catch (error) {
-        if (!String(error).includes('Session 尚未打开')) throw error
-        this.openedSessions.delete(sessionId)
-        this.sessionRuntimeConfigs.delete(sessionId)
-        await this.ensureSession(options, true)
-        await ccbDesktopRuntimeClient.request(
-          options.compactRequest
-            ? { type: 'session.compact' }
-            : { type: 'turn.start', prompt: options.prompt },
-          sessionId,
-          30_000,
-        )
-      }
+      await this.startTurnOrRecover(options)
       await completion
     } catch (error) {
       this.settleTurn(
@@ -754,9 +750,11 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
         this.settleTurn(options.sessionId, new Error(event.error.message))
         return
       case 'worker.crashed':
-        this.openedSessions.delete(options.sessionId)
-        this.sessionRuntimeConfigs.delete(options.sessionId)
-        this.lastSequences.delete(options.sessionId)
+        // 生命周期监听也会处理本地 Worker 句柄；这里额外结束当前 Turn。
+        this.forgetOpenedSession(options.sessionId, {
+          workerState: 'crashed',
+          clearSequence: true,
+        })
         this.settleTurn(
           options.sessionId,
           new Error('CCB Runtime Worker 异常退出，未重放进行中的工具调用'),
@@ -774,23 +772,10 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
         }
         return
       case 'session.stateChanged':
-        if (
-          event.state === 'suspended' ||
-          event.state === 'crashed' ||
-          event.state === 'closed'
-        ) {
-          this.openedSessions.delete(options.sessionId)
-          this.sessionRuntimeConfigs.delete(options.sessionId)
+        // 常驻生命周期监听会统一更新 meta / openedSessions；Turn 内仅同步序号。
+        if (envelope.sequence !== undefined) {
+          this.lastSequences.set(options.sessionId, envelope.sequence)
         }
-        updateAgentSessionMeta(options.sessionId, {
-          runtimeWorkerState: event.state === 'closed' ? 'cold' : event.state,
-          ...(event.runtimeSessionId && {
-            runtimeSessionId: event.runtimeSessionId,
-          }),
-          ...(envelope.sequence !== undefined && {
-            runtimeLastSequence: envelope.sequence,
-          }),
-        })
         return
       case 'interaction.permissionRequested':
         await this.resolvePermission(options, event.request.interactionId, event.request.toolName, event.request.input)
@@ -848,6 +833,147 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
       { type: 'interaction.resolve', interactionId, response },
       options.sessionId,
     )
+  }
+
+  /**
+   * 仅丢弃本地 Worker 句柄，不清理 runtimeSessionId / 会话上下文。
+   * 下次 ensureSession 会用已有 runtimeSessionId 自动 resume 恢复。
+   */
+  private forgetOpenedSession(
+    sessionId: string,
+    options: {
+      workerState?: 'cold' | 'starting' | 'ready' | 'busy' | 'suspended' | 'crashed'
+      runtimeSessionId?: string
+      sequence?: number
+      clearSequence?: boolean
+      log?: boolean
+    } = {},
+  ): void {
+    const hadOpened = this.openedSessions.delete(sessionId)
+    this.sessionRuntimeConfigs.delete(sessionId)
+    if (options.clearSequence) {
+      this.lastSequences.delete(sessionId)
+    }
+    try {
+      updateAgentSessionMeta(sessionId, {
+        ...(options.workerState ? { runtimeWorkerState: options.workerState } : {}),
+        // 注意：不要在这里写 runtimeSessionId: undefined。
+        // 回收/崩溃后必须保留 runtimeSessionId，才能 resume 恢复而不是清空上下文。
+        ...(options.runtimeSessionId
+          ? { runtimeSessionId: options.runtimeSessionId }
+          : {}),
+        ...(options.sequence !== undefined
+          ? { runtimeLastSequence: options.sequence }
+          : {}),
+      })
+    } catch {
+      // 会话可能已从索引删除
+    }
+    if (options.log !== false && hadOpened) {
+      console.log(
+        `[CCB Runtime] Session Worker 已不可用，下次发送将 resume 恢复: session=${sessionId}, state=${options.workerState ?? 'unknown'}`,
+      )
+    }
+  }
+
+  private forgetAllOpenedSessions(
+    workerState: 'cold' | 'crashed' | 'suspended',
+  ): void {
+    for (const sessionId of [...this.openedSessions.keys()]) {
+      this.forgetOpenedSession(sessionId, { workerState, clearSequence: true })
+    }
+  }
+
+  /** Turn 间隙常驻处理：Worker 回收/崩溃通知 → 标记本地句柄失效，保留可 resume 的 runtimeSessionId。 */
+  private handleLifecycleEvent(
+    envelope: CcbRuntimeEnvelope<CcbRuntimeEvent>,
+  ): void {
+    const sessionId = envelope.sessionId
+    if (!sessionId) return
+    const event = envelope.payload
+
+    if (event.type === 'session.stateChanged') {
+      if (envelope.sequence !== undefined) {
+        this.lastSequences.set(sessionId, envelope.sequence)
+      }
+      if (
+        event.state === 'suspended'
+        || event.state === 'crashed'
+        || event.state === 'closed'
+      ) {
+        this.forgetOpenedSession(sessionId, {
+          workerState: event.state === 'closed' ? 'cold' : event.state,
+          runtimeSessionId: event.runtimeSessionId,
+          sequence: envelope.sequence,
+        })
+        return
+      }
+      try {
+        updateAgentSessionMeta(sessionId, {
+          runtimeWorkerState: event.state,
+          ...(event.runtimeSessionId
+            ? { runtimeSessionId: event.runtimeSessionId }
+            : {}),
+          ...(envelope.sequence !== undefined
+            ? { runtimeLastSequence: envelope.sequence }
+            : {}),
+        })
+      } catch {
+        // 会话可能已删除
+      }
+      return
+    }
+
+    if (event.type === 'worker.crashed') {
+      this.forgetOpenedSession(sessionId, {
+        workerState: 'crashed',
+        sequence: envelope.sequence,
+        clearSequence: true,
+      })
+    }
+  }
+
+  /**
+   * 启动 Turn；若 Worker 已被回收/未打开，强制 resume 恢复后重试。
+   * 恢复路径只重建 Worker，不清理会话上下文。
+   */
+  private async startTurnOrRecover(options: CcbAgentQueryOptions): Promise<void> {
+    const { sessionId } = options
+    const payload = options.compactRequest
+      ? ({ type: 'session.compact' } as const)
+      : ({ type: 'turn.start', prompt: options.prompt } as const)
+
+    try {
+      await ccbDesktopRuntimeClient.request(payload, sessionId, 30_000)
+      return
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (!shouldRecoverSessionWorker(message)) throw error
+
+      console.warn(
+        `[CCB Runtime] Turn 启动失败，尝试 resume 恢复: session=${sessionId}, reason=${message}`,
+      )
+      this.forgetOpenedSession(sessionId, {
+        workerState: 'suspended',
+        log: false,
+      })
+      await this.ensureSession(options, true)
+
+      try {
+        await ccbDesktopRuntimeClient.request(payload, sessionId, 30_000)
+      } catch (retryError) {
+        const retryMessage =
+          retryError instanceof Error ? retryError.message : String(retryError)
+        // 若恢复前 Host 队列里已有同一次 turn.start，resume 后可能已自动跑起来。
+        if (retryMessage.includes('当前 Session 已有运行中的 Turn')) {
+          console.warn(
+            `[CCB Runtime] 恢复后检测到 Turn 已在运行，改为等待完成: session=${sessionId}`,
+          )
+          return
+        }
+        throw retryError
+      }
+    }
   }
 
   private settleTurn(sessionId: string, error?: Error): void {

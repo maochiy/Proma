@@ -886,7 +886,17 @@ export function updateAgentSessionMeta(
   const isRuntimePreferenceOnly =
     updateKeys.length > 0
     && updateKeys.every((key) => key === 'permissionMode' || key === 'planModeEnabled')
-  const preserveFreshness = isStarredOnly || isModelBindingOnly || isRuntimePreferenceOnly
+  // Worker 状态/序号同步不应改变侧栏新鲜度，否则空闲回收会把会话顶到前面。
+  const isRuntimeWorkerTelemetryOnly =
+    updateKeys.length > 0
+    && updateKeys.every(
+      (key) => key === 'runtimeWorkerState' || key === 'runtimeLastSequence',
+    )
+  const preserveFreshness =
+    isStarredOnly
+    || isModelBindingOnly
+    || isRuntimePreferenceOnly
+    || isRuntimeWorkerTelemetryOnly
   const autoUnarchive =
     existing.archived
     && !('archived' in updates)

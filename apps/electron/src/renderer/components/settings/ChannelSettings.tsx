@@ -1,26 +1,24 @@
 /**
  * ChannelSettings - 渠道配置页
  *
- * 管理所有渠道的添加、编辑、删除与启用状态，并标识 CCB Runtime 可用性。
+ * 管理 App 侧渠道的添加、编辑、删除与启用状态。
+ * CLI 共用配置（~/.claude/settings.json）不在此展示；App 登录会单独创建模型配置。
  */
 
 import * as React from 'react'
 import { useAtom, useSetAtom } from 'jotai'
-import { Cpu, Pencil, Plus, Trash2 } from 'lucide-react'
+import { Pencil, Plus, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 import { Button } from '@/components/ui/button'
-import { Badge } from '@/components/ui/badge'
 import { Switch } from '@/components/ui/switch'
 import {
-  CCB_NATIVE_CHANNEL_ID,
   PROVIDER_LABELS,
   isAgentCompatibleProvider,
 } from '@proma/shared'
-import type { CcbNativeModelConfiguration, Channel } from '@proma/shared'
+import type { Channel } from '@proma/shared'
 import { getChannelLogo } from '@/lib/model-logo'
 import { getEnabledAgentChannelIds } from '@/lib/agent-channel-selection'
 import { resolveAgentSessionModelBinding } from '@/lib/agent-model-configuration'
-import { isLastEnabledChannelConfiguration } from '@/lib/channel-model-selection'
 import {
   agentChannelIdAtom,
   agentModelIdAtom,
@@ -42,10 +40,9 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { ChannelForm } from './ChannelForm'
-import { CcbNativeModelForm } from './CcbNativeModelForm'
 
 /** 组件视图模式 */
-type ViewMode = 'list' | 'create' | 'edit' | 'edit-ccb'
+type ViewMode = 'list' | 'create' | 'edit'
 
 export function ChannelSettings(): React.ReactElement {
   const [channels, setChannels] = React.useState<Channel[]>([])
@@ -63,10 +60,6 @@ export function ChannelSettings(): React.ReactElement {
   const setAgentSessions = useSetAtom(agentSessionsAtom)
   const [deleteTarget, setDeleteTarget] = React.useState<Channel | null>(null)
   const [deleting, setDeleting] = React.useState(false)
-  const [nativeConfiguration, setNativeConfiguration] =
-    React.useState<CcbNativeModelConfiguration | null>(null)
-  const [nativeConfigurationLoading, setNativeConfigurationLoading] =
-    React.useState(true)
   const agentChannelIdsRef = React.useRef(agentChannelIds)
   const agentChannelIdRef = React.useRef(agentChannelId)
 
@@ -129,29 +122,11 @@ export function ChannelSettings(): React.ReactElement {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [setGlobalChannels])
 
   React.useEffect(() => {
-    loadChannels()
+    void loadChannels()
   }, [loadChannels])
-
-  const loadNativeConfiguration = React.useCallback(async (): Promise<void> => {
-    setNativeConfigurationLoading(true)
-    try {
-      setNativeConfiguration(
-        await window.electronAPI.getCcbNativeModelConfiguration(),
-      )
-    } catch (error) {
-      console.error('[模型配置] 读取 CCB 原生配置失败:', error)
-      setNativeConfiguration(null)
-    } finally {
-      setNativeConfigurationLoading(false)
-    }
-  }, [])
-
-  React.useEffect(() => {
-    void loadNativeConfiguration()
-  }, [loadNativeConfiguration])
 
   // CCB 一次只支持一个 Provider。Proma 可以保存多个预设，但启用状态必须互斥。
   React.useEffect(() => {
@@ -180,7 +155,8 @@ export function ChannelSettings(): React.ReactElement {
       })
     }
 
-    const selectedId = exclusiveIds[0] ?? CCB_NATIVE_CHANNEL_ID
+    // 无 App 渠道时运行时仍回退 CLI 配置，但 UI 不再单独展示该条目
+    const selectedId = exclusiveIds[0] ?? null
     const selectionChanged = agentChannelIdRef.current !== selectedId
     if (selectionChanged) {
       agentChannelIdRef.current = selectedId
@@ -190,7 +166,7 @@ export function ChannelSettings(): React.ReactElement {
     if (!unchanged || selectionChanged) {
       window.electronAPI.updateSettings({
         agentChannelIds: exclusiveIds,
-        agentChannelId: selectedId,
+        agentChannelId: selectedId ?? undefined,
         ...(selectionChanged ? { agentModelId: undefined } : {}),
       }).catch(console.error)
     }
@@ -233,22 +209,16 @@ export function ChannelSettings(): React.ReactElement {
     if (agentChannelIdRef.current === channel.id) {
       agentChannelIdsRef.current = []
       setAgentChannelIds([])
-      agentChannelIdRef.current = CCB_NATIVE_CHANNEL_ID
-      setAgentChannelId(CCB_NATIVE_CHANNEL_ID)
+      agentChannelIdRef.current = null
+      setAgentChannelId(null)
       setAgentModelId(null)
       await window.electronAPI.updateSettings({
         agentChannelIds: [],
-        agentChannelId: CCB_NATIVE_CHANNEL_ID,
+        agentChannelId: undefined,
         agentModelId: undefined,
       }).catch(console.error)
-      await synchronizeSessionsToChannel(
-        CCB_NATIVE_CHANNEL_ID,
-        nativeConfiguration?.models.map(model => model.id) ?? [],
-        nativeConfiguration?.defaultModel,
-      )
     }
   }, [
-    nativeConfiguration,
     setAgentChannelIds,
     setAgentChannelId,
     setAgentModelId,
@@ -271,19 +241,14 @@ export function ChannelSettings(): React.ReactElement {
       if (agentChannelId === target.id) {
         agentChannelIdsRef.current = []
         setAgentChannelIds([])
-        agentChannelIdRef.current = CCB_NATIVE_CHANNEL_ID
-        setAgentChannelId(CCB_NATIVE_CHANNEL_ID)
+        agentChannelIdRef.current = null
+        setAgentChannelId(null)
         setAgentModelId(null)
         await window.electronAPI.updateSettings({
           agentChannelIds: [],
-          agentChannelId: CCB_NATIVE_CHANNEL_ID,
+          agentChannelId: undefined,
           agentModelId: undefined,
         })
-        await synchronizeSessionsToChannel(
-          CCB_NATIVE_CHANNEL_ID,
-          nativeConfiguration?.models.map(model => model.id) ?? [],
-          nativeConfiguration?.defaultModel,
-        )
       }
 
       await loadChannels()
@@ -302,12 +267,8 @@ export function ChannelSettings(): React.ReactElement {
     }
   }
 
-  /** 切换渠道启用状态 */
+  /** 切换渠道启用状态；允许全部关闭，会话侧再提示无可用模型。 */
   const handleToggle = async (channel: Channel): Promise<void> => {
-    if (isLastEnabledChannelConfiguration(channels, channel.id)) {
-      toast.warning('至少需要保留一个启用的模型配置')
-      return
-    }
     try {
       const savedChannel = await window.electronAPI.updateChannel(channel.id, { enabled: !channel.enabled })
       await syncAgentChannelEligibility(
@@ -320,36 +281,6 @@ export function ChannelSettings(): React.ReactElement {
     } catch (error) {
       console.error('[渠道设置] 切换渠道状态失败:', error)
       toast.error('切换模型配置失败，请重试')
-    }
-  }
-
-  const handleActivateNativeConfiguration = async (): Promise<void> => {
-    try {
-      await Promise.all(
-        channels
-          .filter(channel => channel.enabled)
-          .map(channel => window.electronAPI.updateChannel(channel.id, { enabled: false })),
-      )
-      agentChannelIdsRef.current = []
-      setAgentChannelIds([])
-      agentChannelIdRef.current = CCB_NATIVE_CHANNEL_ID
-      setAgentChannelId(CCB_NATIVE_CHANNEL_ID)
-      setAgentModelId(null)
-      await window.electronAPI.updateSettings({
-        agentChannelIds: [],
-        agentChannelId: CCB_NATIVE_CHANNEL_ID,
-        agentModelId: undefined,
-      })
-      await synchronizeSessionsToChannel(
-        CCB_NATIVE_CHANNEL_ID,
-        nativeConfiguration?.models.map(model => model.id) ?? [],
-        nativeConfiguration?.defaultModel,
-      )
-      await loadChannels()
-      invalidateRendererModelCatalogs()
-    } catch (error) {
-      console.error('[模型配置] 启用 CCB 原生配置失败:', error)
-      toast.error('启用内置模型配置失败，请重试')
     }
   }
 
@@ -368,35 +299,10 @@ export function ChannelSettings(): React.ReactElement {
     invalidateRendererModelCatalogs()
   }
 
-  const handleNativeFormSaved = async (): Promise<void> => {
-    setViewMode('list')
-    await loadNativeConfiguration()
-    if (agentChannelIdRef.current === CCB_NATIVE_CHANNEL_ID) {
-      const configuration =
-        await window.electronAPI.getCcbNativeModelConfiguration()
-      await synchronizeSessionsToChannel(
-        CCB_NATIVE_CHANNEL_ID,
-        configuration.models.map(model => model.id),
-        configuration.defaultModel,
-      )
-    }
-    invalidateRendererModelCatalogs()
-  }
-
   /** 取消表单 */
   const handleFormCancel = (): void => {
     setViewMode('list')
     setEditingChannel(null)
-  }
-
-  // 表单视图
-  if (viewMode === 'edit-ccb') {
-    return (
-      <CcbNativeModelForm
-        onSaved={handleNativeFormSaved}
-        onCancel={handleFormCancel}
-      />
-    )
   }
 
   if (viewMode === 'create' || viewMode === 'edit') {
@@ -410,12 +316,12 @@ export function ChannelSettings(): React.ReactElement {
     )
   }
 
-  // 列表视图
+  // 列表视图：仅展示 App 创建/登录生成的模型配置
   return (
     <div className="space-y-8">
       <SettingsSection
         title="模型配置"
-        description="可保存多个供应商配置，但 CCB 同一时间只会启用其中一个。CCB 原生配置与 CLI 共用。"
+        description="可保存多个供应商配置，但 CCB 同一时间只会启用其中一个。"
         action={
           <Button size="sm" onClick={() => setViewMode('create')}>
             <Plus size={16} />
@@ -423,20 +329,16 @@ export function ChannelSettings(): React.ReactElement {
           </Button>
         }
       >
-        {loading && nativeConfigurationLoading ? (
+        {loading ? (
           <div className="py-8 text-center text-sm text-muted-foreground">加载中...</div>
+        ) : channels.length === 0 ? (
+          <SettingsCard>
+            <div className="px-4 py-8 text-center text-sm text-muted-foreground">
+              暂无模型配置。登录账号或点击「添加配置」创建。
+            </div>
+          </SettingsCard>
         ) : (
           <SettingsCard>
-            <NativeConfigurationRow
-              configuration={nativeConfiguration}
-              loading={nativeConfigurationLoading}
-              active={
-                agentChannelId === CCB_NATIVE_CHANNEL_ID
-                || (!agentChannelId && channels.every(channel => !channel.enabled))
-              }
-              onEdit={() => setViewMode('edit-ccb')}
-              onActivate={() => void handleActivateNativeConfiguration()}
-            />
             {channels.map((channel) => (
               <ChannelRow
                 key={channel.id}
@@ -494,81 +396,6 @@ export function ChannelSettings(): React.ReactElement {
 
 // ===== 配置行子组件 =====
 
-interface NativeConfigurationRowProps {
-  configuration: CcbNativeModelConfiguration | null
-  loading: boolean
-  active: boolean
-  onEdit: () => void
-  onActivate: () => void
-}
-
-function NativeConfigurationRow({
-  configuration,
-  loading,
-  active,
-  onEdit,
-  onActivate,
-}: NativeConfigurationRowProps): React.ReactElement {
-  const providerLabel = configuration
-    ? PROVIDER_LABELS[
-        configuration.modelType === 'gemini'
-          ? 'google'
-          : configuration.modelType === 'grok'
-            ? 'openai'
-            : configuration.modelType
-      ]
-    : '配置读取失败'
-  const description = loading
-    ? '正在读取 ~/.claude/settings.json'
-    : [
-        providerLabel,
-        configuration ? `${configuration.models.length} 个模型` : undefined,
-        configuration?.defaultModel
-          ? `默认 ${configuration.defaultModel}`
-          : undefined,
-      ].filter(Boolean).join(' · ')
-
-  return (
-    <SettingsRow
-      label="Claude Code Best"
-      icon={
-        <div className="flex size-8 items-center justify-center rounded-lg bg-primary/10 text-primary">
-          <Cpu size={16} />
-        </div>
-      }
-      description={
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <span>{description}</span>
-          <Badge
-            variant="outline"
-            className="px-1.5 py-0 text-[10px] font-medium leading-5"
-          >
-            CLI 共用
-          </Badge>
-        </div>
-      }
-      className="group"
-    >
-      <div className="flex items-center gap-2">
-        <button
-          onClick={onEdit}
-          className="rounded-md p-1.5 text-muted-foreground opacity-0 transition-colors hover:bg-muted/50 hover:text-foreground group-hover:opacity-100"
-          title="编辑 CCB 原生配置"
-        >
-          <Pencil size={14} />
-        </button>
-        <Switch
-          checked={active}
-          onCheckedChange={checked => {
-            if (checked) onActivate()
-          }}
-          aria-label="启用 CCB 原生配置"
-        />
-      </div>
-    </SettingsRow>
-  )
-}
-
 interface ChannelRowProps {
   channel: Channel
   active: boolean
@@ -597,16 +424,10 @@ function ChannelRow({
     <SettingsRow
       label={channel.name}
       icon={<img src={getChannelLogo(channel)} alt="" className="w-8 h-8 rounded" />}
-      description={
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <span>{description}</span>
-          <CcbRuntimeChip provider={channel.provider} />
-        </div>
-      }
+      description={description}
       className="group"
     >
       <div className="flex items-center gap-2">
-        {/* 操作按钮 */}
         <button
           onClick={onEdit}
           className="p-1.5 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors opacity-0 group-hover:opacity-100"
@@ -622,7 +443,6 @@ function ChannelRow({
           <Trash2 size={14} />
         </button>
 
-        {/* 启用/关闭开关 */}
         <Switch
           checked={active}
           onCheckedChange={onToggle}
@@ -630,21 +450,5 @@ function ChannelRow({
         />
       </div>
     </SettingsRow>
-  )
-}
-
-function CcbRuntimeChip({ provider }: Pick<Channel, 'provider'>): React.ReactElement | null {
-  if (!isAgentCompatibleProvider(provider)) return null
-
-  return (
-    <div className="inline-flex items-center gap-1" aria-label="支持 CCB Desktop Runtime">
-      <Badge
-        variant="outline"
-        className="px-1.5 py-0 text-[10px] font-medium leading-5"
-        title="Claude Code Best Desktop Runtime"
-      >
-        CCB
-      </Badge>
-    </div>
   )
 }

@@ -179,7 +179,7 @@ export function CcbNativeModelForm({
         .getAgentRuntimeModelCatalog(CCB_NATIVE_CHANNEL_ID)
         .catch(() => null)
       setRuntimeCatalog(catalog)
-      toast.success('CCB 模型配置已保存，CLI 与桌面端会共同使用')
+      toast.success('CCB 模型配置已保存')
       onSaved()
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'CCB 模型配置保存失败')
@@ -264,7 +264,7 @@ export function CcbNativeModelForm({
           />
           <SettingsSelect
             label="默认模型"
-            description="CCB CLI 和新建桌面会话默认使用的模型"
+            description="新建桌面会话默认使用的模型"
             value={defaultModel}
             onValueChange={setDefaultModel}
             options={defaultModelOptions}

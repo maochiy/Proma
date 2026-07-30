@@ -7,6 +7,7 @@ import {
   createSessionRuntimeConfigCommand,
   resolveCcbPermissionMode,
 } from './runtime-config'
+import { shouldRecoverSessionWorker } from './session-worker-recovery'
 
 const tempDirs: string[] = []
 
@@ -99,5 +100,20 @@ describe('CCB Session 审批模式桥接', () => {
 
   test('Given 未指定审批模式 When 构造 CCB Session 配置 Then 保持完全自动默认值', () => {
     expect(resolveCcbPermissionMode(undefined)).toBe('bypassPermissions')
+  })
+})
+
+
+describe('CCB Session Worker 自动恢复判定', () => {
+  test('Given Worker 被回收导致 turn.start 超时 When 判定恢复策略 Then 应 resume 而不是清空上下文', () => {
+    expect(shouldRecoverSessionWorker('CCB Runtime 请求超时: turn.start')).toBe(true)
+    expect(shouldRecoverSessionWorker('Error: CCB Runtime 请求超时: session.compact')).toBe(true)
+    expect(shouldRecoverSessionWorker('Session 尚未打开')).toBe(true)
+  })
+
+  test('Given 普通业务错误 When 判定恢复策略 Then 不得误触发 resume', () => {
+    expect(shouldRecoverSessionWorker('当前 Session 已有运行中的 Turn')).toBe(false)
+    expect(shouldRecoverSessionWorker('API 错误 (429): rate limited')).toBe(false)
+    expect(shouldRecoverSessionWorker('CCB Runtime 请求超时: turn.stop')).toBe(false)
   })
 })

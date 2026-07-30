@@ -73,13 +73,11 @@ import {
   SettingsSelect,
   SettingsToggle,
 } from './primitives'
-import { RuntimeModelCapabilitySummary } from '@/components/agent/RuntimeModelCapabilitySummary'
 import { findAgentRuntimeModel } from '@/lib/agent-thinking-effort'
 import {
   CcbConfiguredModelEditor,
   type CcbConfiguredModelEditorValue,
 } from './CcbConfiguredModelEditor'
-import { isLastEnabledChannelModel } from '@/lib/channel-model-selection'
 
 interface ChannelFormProps {
   /** 编辑模式下传入已有渠道，创建模式传 null */
@@ -585,21 +583,13 @@ export function ChannelForm({
     }
   }
 
-  /** 删除模型 */
+  /** 删除模型；允许清空已启用模型，会话侧再提示无可用模型。 */
   const handleRemoveModel = (modelId: string): void => {
-    if (isLastEnabledChannelModel(models, modelId)) {
-      toast.warning('至少需要保留一个启用模型')
-      return
-    }
     setModels((prev) => prev.filter((m) => m.id !== modelId))
   }
 
   /** 切换模型启用状态（点击可用模型 → 启用，点击已启用模型 → 禁用） */
   const handleToggleModel = (modelId: string): void => {
-    if (isLastEnabledChannelModel(models, modelId)) {
-      toast.warning('至少需要保留一个启用模型')
-      return
-    }
     setModels((prev) =>
       prev.map((m) => (m.id === modelId ? { ...m, enabled: !m.enabled } : m))
     )
@@ -1222,9 +1212,6 @@ export function ChannelForm({
                           {model.description}
                         </p>
                       )}
-                      <RuntimeModelCapabilitySummary
-                        model={resolveRuntimeModelInfo(model.id)}
-                      />
                     </div>
                     <button
                       type="button"
@@ -1240,11 +1227,7 @@ export function ChannelForm({
                       type="button"
                       onClick={() => handleToggleModel(model.id)}
                       className="p-0.5 text-muted-foreground hover:text-destructive transition-colors opacity-0 group-hover:opacity-100"
-                      title={
-                        isLastEnabledChannelModel(models, model.id)
-                          ? '至少需要保留一个启用模型'
-                          : '取消启用'
-                      }
+                      title="取消启用"
                     >
                       <X size={14} />
                     </button>
@@ -1359,9 +1342,6 @@ export function ChannelForm({
                           {model.description}
                         </p>
                       )}
-                      <RuntimeModelCapabilitySummary
-                        model={resolveRuntimeModelInfo(model.id)}
-                      />
                     </div>
                     <button
                       type="button"

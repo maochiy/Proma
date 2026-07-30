@@ -62,6 +62,10 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { cn } from '@/lib/utils'
+import {
+  buildAgentAppModelOptions,
+  resolveAppAgentChannelId,
+} from '@/lib/agent-runtime-model-options'
 import { getActiveAccelerator, getAcceleratorDisplay } from '@/lib/shortcut-registry'
 import { registerShortcut } from '@/lib/shortcut-registry'
 import { supportsChannelPlanQuota } from '@/lib/channel-plan-quota'
@@ -124,7 +128,7 @@ import { draftSessionIdsAtom } from '@/atoms/draft-session-atoms'
 import { sendWithCmdEnterAtom } from '@/atoms/shortcut-atoms'
 import { useOpenPreview } from '@/components/diff/preview-opener'
 import type { AgentRuntimeModelInfo, AgentSendInput, AgentPendingFile, FileDialogLargeFile, ModelOption, SDKMessage, SDKUserMessage } from '@proma/shared'
-import { CCB_NATIVE_CHANNEL_ID, MAX_ATTACHMENT_SIZE } from '@proma/shared'
+import { MAX_ATTACHMENT_SIZE } from '@proma/shared'
 import { fileToBase64, formatFileNames, getFileParentPath } from '@/lib/file-utils'
 import { buildQuotedSelectionBlock } from '@/lib/quoted-selection'
 import { createClipboardPendingFile, createClipboardTextDraft, makeUniqueAttachmentName } from '@/lib/clipboard-text-attachment'
@@ -291,11 +295,24 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   const sessionMetaChannelId = sessionMeta?.channelId
   const sessionMetaModelId = sessionMeta?.modelId
   const hasSessionMeta = Boolean(sessionMeta)
-  const agentChannelId =
-    sessionMetaChannelId
-    ?? sessionChannelMap.get(sessionId)
-    ?? defaultChannelId
-    ?? CCB_NATIVE_CHANNEL_ID
+  const globalChannels = useAtomValue(channelsAtom)
+  // App 会话只认已启用的 App 渠道；CLI 共用配置与未启用渠道不进入下拉/发送。
+  const agentChannelId = React.useMemo(() => {
+    const candidate = resolveAppAgentChannelId(
+      sessionMetaChannelId
+      ?? sessionChannelMap.get(sessionId)
+      ?? defaultChannelId,
+    )
+    if (!candidate) return null
+    const channel = globalChannels.find(item => item.id === candidate)
+    return channel?.enabled ? candidate : null
+  }, [
+    defaultChannelId,
+    globalChannels,
+    sessionChannelMap,
+    sessionId,
+    sessionMetaChannelId,
+  ])
   const agentModelId = sessionMetaModelId ?? sessionModelMap.get(sessionId) ?? defaultModelId
   const agentChannelIds = useAtomValue(agentChannelIdsAtom)
   const [agentThinking, setAgentThinking] = useAtom(agentThinkingAtom)
@@ -518,7 +535,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   }, [pendingFiles])
 
   // 渠道已选但模型未选时，自动选择第一个可用模型
-  const globalChannels = useAtomValue(channelsAtom)
   const [runtimeModelCatalogs, setRuntimeModelCatalogs] = useAtom(
     agentRuntimeModelCatalogsAtom,
   )
@@ -543,6 +559,10 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     let requestInFlight = false
 
     const loadCatalogs = async (showLoading: boolean): Promise<void> => {
+      if (!agentChannelId) {
+        if (showLoading) setRuntimeModelsLoading(false)
+        return
+      }
       if (requestInFlight) return
       requestInFlight = true
       if (showLoading) setRuntimeModelsLoading(true)
@@ -617,23 +637,17 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
 
   const runtimeModelOptions = React.useMemo<ModelOption[]>(
     () => {
-      const catalog = runtimeModelCatalogs.get(
-        getAgentRuntimeModelCatalogKey(currentWorkspaceId, agentChannelId),
-      )
-      if (!catalog) return []
-      const resolvedChannel = globalChannels.find(
-        channel => channel.id === catalog.channelId,
-      )
-      return catalog.models.map(model => ({
-        channelId: catalog.channelId,
-        channelName: 'Claude Code Best',
-        modelId: model.value,
-        modelName: model.displayName,
-        provider: resolvedChannel?.provider ?? 'anthropic',
-        thinkingEffortLevels: model.supportedEffortLevels,
-        defaultThinkingEffortLevel: model.defaultEffortLevel,
-        runtimeModelInfo: model,
-      }))
+      const catalog = agentChannelId
+        ? runtimeModelCatalogs.get(
+            getAgentRuntimeModelCatalogKey(currentWorkspaceId, agentChannelId),
+          )
+        : undefined
+      // App 下拉只展示当前启用渠道内已启用的模型；CLI 共用配置不参与。
+      return buildAgentAppModelOptions({
+        channelId: agentChannelId,
+        catalog,
+        channels: globalChannels,
+      })
     },
     [agentChannelId, currentWorkspaceId, globalChannels, runtimeModelCatalogs],
   )
@@ -651,9 +665,11 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   )
   const selectedRuntimeCatalog = React.useMemo(
     () =>
-      runtimeModelCatalogs.get(
-        getAgentRuntimeModelCatalogKey(currentWorkspaceId, agentChannelId),
-      ),
+      agentChannelId
+        ? runtimeModelCatalogs.get(
+            getAgentRuntimeModelCatalogKey(currentWorkspaceId, agentChannelId),
+          )
+        : undefined,
     [agentChannelId, currentWorkspaceId, runtimeModelCatalogs],
   )
   const selectedContextPolicy = React.useMemo(
