@@ -58,7 +58,7 @@ function UpdateCard(): React.ReactElement | null {
   }
 
   const handleQuitAndInstall = (): void => {
-    window.electronAPI.updater?.quitAndInstall()
+    void window.electronAPI.updater?.quitAndInstall()
   }
 
   // 当检测到新版本时，获取完整的 release 信息
@@ -78,7 +78,10 @@ function UpdateCard(): React.ReactElement | null {
     }
   }, [status.status, status.version, release])
 
-  const isChecking = checking || status.status === 'checking' || status.status === 'downloading'
+  const isChecking = checking
+    || status.status === 'checking'
+    || status.status === 'downloading'
+    || status.status === 'installing'
   const hasReleaseNotes = status.releaseNotes || release?.body
 
   return (
@@ -182,6 +185,13 @@ function StatusText({ status, version, error }: {
           更新 v{version} 已就绪
         </span>
       )
+    case 'installing':
+      return (
+        <span className="text-xs text-muted-foreground flex items-center gap-1">
+          <Loader2 className="h-3 w-3 animate-spin" />
+          正在准备安装 v{version}...
+        </span>
+      )
     case 'not-available':
       return (
         <span className="text-xs text-muted-foreground flex items-center gap-1">
@@ -193,7 +203,7 @@ function StatusText({ status, version, error }: {
       return (
         <span className="text-xs text-destructive flex items-center gap-1" title={error}>
           <AlertCircle className="h-3 w-3" />
-          检查失败
+          更新失败
         </span>
       )
     default:

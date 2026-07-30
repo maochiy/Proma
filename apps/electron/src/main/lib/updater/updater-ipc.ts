@@ -33,8 +33,8 @@ export function registerUpdaterIpc(): void {
 
   ipcMain.handle(
     UPDATER_IPC_CHANNELS.QUIT_AND_INSTALL,
-    (): void => {
-      quitAndInstall()
+    async (): Promise<void> => {
+      await quitAndInstall()
     }
   )
 

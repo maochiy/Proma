@@ -900,7 +900,7 @@ export interface ElectronAPI {
   updater?: {
     checkForUpdates: () => Promise<void>
     getStatus: () => Promise<{
-      status: 'idle' | 'disabled' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'not-available' | 'error'
+      status: 'idle' | 'disabled' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'installing' | 'not-available' | 'error'
       version?: string
       releaseNotes?: string
       progress?: { percent: number; transferred: number; total: number; bytesPerSecond: number }
@@ -908,7 +908,7 @@ export interface ElectronAPI {
       reason?: string
     }>
     onStatusChanged: (callback: (status: {
-      status: 'idle' | 'disabled' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'not-available' | 'error'
+      status: 'idle' | 'disabled' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'installing' | 'not-available' | 'error'
       version?: string
       releaseNotes?: string
       progress?: { percent: number; transferred: number; total: number; bytesPerSecond: number }

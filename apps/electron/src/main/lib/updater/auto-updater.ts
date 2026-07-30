@@ -6,10 +6,15 @@
  */
 
 import { autoUpdater } from 'electron-updater'
-import { BrowserWindow } from 'electron'
+import type { UpdateDownloadedEvent } from 'electron-updater'
+import { app, BrowserWindow } from 'electron'
 import type { UpdateStatus } from './updater-types'
 import { UPDATER_IPC_CHANNELS } from './updater-types'
 import { hasAppUpdateConfiguration } from './update-availability'
+import {
+  launchUnsignedMacUpdate,
+  prepareUnsignedMacUpdate,
+} from './unsigned-mac-installer'
 
 /** 当前更新状态 */
 let currentStatus: UpdateStatus = { status: 'idle' }
@@ -22,6 +27,9 @@ let checkInterval: ReturnType<typeof setInterval> | null = null
 
 /** 当前包是否包含 electron-updater 所需配置。 */
 let updaterEnabled = false
+
+/** electron-updater 已完成 SHA-512 校验的更新压缩包。 */
+let downloadedUpdate: { file: string; version: string } | null = null
 
 /** 更新状态并推送给渲染进程 */
 function setStatus(status: UpdateStatus): void {
@@ -63,8 +71,48 @@ export async function checkForUpdates(): Promise<void> {
 }
 
 /** 退出并安装已下载的更新 */
-export function quitAndInstall(): void {
+export async function quitAndInstall(): Promise<void> {
   if (!updaterEnabled) return
+
+  if (currentStatus.status !== 'downloaded' || !downloadedUpdate) {
+    setStatus({
+      status: 'error',
+      error: '更新文件尚未下载完成，请重新检查更新',
+    })
+    return
+  }
+
+  if (process.platform === 'darwin') {
+    const { file, version } = downloadedUpdate
+    setStatus({ status: 'installing', version })
+
+    try {
+      // 未配置 Developer ID 的公开构建无法通过 Squirrel.Mac 的签名替换流程。
+      // 下载文件已由 electron-updater 完成 SHA-512 校验，这里额外校验 App 的
+      // Bundle ID 与版本，再交给独立 shell 进程在 Proma 退出后安全替换。
+      const plan = await prepareUnsignedMacUpdate({
+        downloadedFile: file,
+        version,
+        executablePath: app.getPath('exe'),
+        tempPath: app.getPath('temp'),
+        logsPath: app.getPath('logs'),
+      })
+      await launchUnsignedMacUpdate(plan, process.pid)
+
+      for (const w of BrowserWindow.getAllWindows()) {
+        w.removeAllListeners('close')
+      }
+      app.quit()
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err)
+      console.error('[更新] macOS 更新安装准备失败:', err)
+      setStatus({
+        status: 'error',
+        error: `安装更新失败：${error}`,
+      })
+    }
+    return
+  }
 
   // 移除所有窗口的 close 监听器，避免 preventDefault 阻止退出
   for (const w of BrowserWindow.getAllWindows()) {
@@ -149,8 +197,12 @@ export function initAutoUpdater(mainWindow: BrowserWindow): void {
     })
   })
 
-  autoUpdater.on('update-downloaded', (info) => {
+  autoUpdater.on('update-downloaded', (info: UpdateDownloadedEvent) => {
     console.log('[更新] 下载完成:', info.version)
+    downloadedUpdate = {
+      file: info.downloadedFile,
+      version: info.version,
+    }
     setStatus({
       status: 'downloaded',
       version: info.version,
@@ -164,6 +216,7 @@ export function initAutoUpdater(mainWindow: BrowserWindow): void {
 
   autoUpdater.on('error', (err) => {
     console.error('[更新] 更新出错:', err)
+    downloadedUpdate = null
     setStatus({
       status: 'error',
       error: err.message,

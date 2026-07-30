@@ -12,6 +12,7 @@ export type UpdateStatus =
   | { status: 'available'; version: string; releaseNotes?: string }
   | { status: 'downloading'; version: string; progress: DownloadProgress }
   | { status: 'downloaded'; version: string }
+  | { status: 'installing'; version: string }
   | { status: 'not-available' }
   | { status: 'error'; error: string }
 

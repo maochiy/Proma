@@ -140,6 +140,8 @@ function getSidebarUpdateLabel(status: string, version?: string): string {
       return `正在下载更新${versionText}`
     case 'downloaded':
       return `立即重启更新${versionText}`
+    case 'installing':
+      return `正在安装更新${versionText}`
     default:
       return '软件更新'
   }
@@ -153,6 +155,8 @@ function getSidebarUpdateButtonText(status: string): string {
       return '下载中'
     case 'downloaded':
       return '更新'
+    case 'installing':
+      return '安装中'
     default:
       return '更新'
   }
