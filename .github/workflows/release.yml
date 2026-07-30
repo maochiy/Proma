@@ -96,6 +96,10 @@ jobs:
         working-directory: ccb-runtime-source
 
       - name: 构建 CCB Runtime
+        # Capability Probe 只检查认证能力是否存在，不会发起网络请求。
+        # CI 使用非敏感占位值，避免构建过程依赖开发机本地凭据。
+        env:
+          ANTHROPIC_API_KEY: proma-release-build-placeholder
         run: bun run build:desktop
         working-directory: ccb-runtime-source
 
@@ -186,6 +190,8 @@ jobs:
         working-directory: ccb-runtime-source
 
       - name: 构建 CCB Runtime
+        env:
+          ANTHROPIC_API_KEY: proma-release-build-placeholder
         run: bun run build:desktop
         working-directory: ccb-runtime-source
 
@@ -409,6 +415,8 @@ jobs:
         working-directory: ccb-runtime-source
 
       - name: 构建 CCB Runtime
+        env:
+          ANTHROPIC_API_KEY: proma-release-build-placeholder
         run: bun run build:desktop
         working-directory: ccb-runtime-source
 
