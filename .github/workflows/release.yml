@@ -89,10 +89,12 @@ jobs:
           node-version: 20
 
       - name: 安装依赖
-        run: bun install --frozen-lockfile
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/retry-bun-install.sh"
 
       - name: 安装 CCB Runtime 依赖
-        run: bun install --frozen-lockfile
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/retry-bun-install.sh"
         working-directory: ccb-runtime-source
 
       - name: 构建 CCB Runtime
@@ -183,10 +185,12 @@ jobs:
           node-version: 20
 
       - name: 安装依赖
-        run: bun install --frozen-lockfile
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/retry-bun-install.sh"
 
       - name: 安装 CCB Runtime 依赖
-        run: bun install --frozen-lockfile
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/retry-bun-install.sh"
         working-directory: ccb-runtime-source
 
       - name: 构建 CCB Runtime
@@ -408,10 +412,12 @@ jobs:
           node-version: 20
 
       - name: 安装依赖
-        run: bun install --frozen-lockfile
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/retry-bun-install.sh"
 
       - name: 安装 CCB Runtime 依赖
-        run: bun install --frozen-lockfile
+        shell: bash
+        run: bash "$GITHUB_WORKSPACE/.github/scripts/retry-bun-install.sh"
         working-directory: ccb-runtime-source
 
       - name: 构建 CCB Runtime
