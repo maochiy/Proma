@@ -8,13 +8,13 @@ import {
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { refreshSignedRuntimeManifest } from './local-mac-signing'
+import { refreshSignedRuntimeManifest } from './runtime-manifest-refresh'
 
 function sha256(content: string): string {
   return createHash('sha256').update(content).digest('hex')
 }
 
-describe('本地 macOS 签名后的 CCB Runtime Manifest', () => {
+describe('签名后的 CCB Runtime Manifest', () => {
   test('Given 原生文件被 codesign 改写 When 刷新 Manifest Then 保存最终文件哈希', () => {
     const root = mkdtempSync(join(tmpdir(), 'proma-local-signing-'))
     try {

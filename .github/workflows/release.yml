@@ -9,6 +9,9 @@
 # - APPLE_ID: Apple ID（公证用）
 # - APPLE_APP_SPECIFIC_PASSWORD: App-Specific 密码（公证用）
 # - APPLE_TEAM_ID: Apple Developer Team ID
+# 所需 GitHub Secrets（Windows 签名，可选）:
+# - WIN_CSC_LINK: Base64、HTTPS URL 或文件形式的 Windows 代码签名证书
+# - WIN_CSC_KEY_PASSWORD: Windows 代码签名证书密码
 # GITHUB_TOKEN 由 GitHub Actions 自动提供，无需手动配置
 
 name: Release
@@ -21,14 +24,56 @@ on:
 permissions:
   contents: write
 
+env:
+  CCB_RUNTIME_REPOSITORY: maochiy/claude-code
+  CCB_RUNTIME_COMMIT: bce2730f8833c8e12d83a230fe656ffc64858ccc
+
 jobs:
-  build-mac-arm64:
-    name: build (macos-latest, mac, arm64, --arm64)
-    runs-on: macos-latest
+  validate-release:
+    name: 校验发布版本
+    runs-on: ubuntu-latest
 
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
+
+      - name: 校验 tag 与 package.json 版本一致
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PACKAGE_VERSION=$(node -p "require('./apps/electron/package.json').version")
+
+          if [ "v${TAG_VERSION}" != "${GITHUB_REF_NAME}" ]; then
+            echo "ERROR: 发布 tag 必须以 v 开头，actual=${GITHUB_REF_NAME}"
+            exit 1
+          fi
+
+          if [ "${TAG_VERSION}" != "${PACKAGE_VERSION}" ]; then
+            echo "ERROR: tag 与应用版本不一致，tag=${TAG_VERSION}, package=${PACKAGE_VERSION}"
+            exit 1
+          fi
+
+          echo "✅ 发布版本校验通过: ${PACKAGE_VERSION}"
+
+  build-mac-arm64:
+    name: build (macos-latest, mac, arm64, --arm64)
+    runs-on: macos-latest
+    needs: validate-release
+    env:
+      MAC_CERTS: ${{ secrets.MAC_CERTS }}
+      MAC_CERTS_PASSWORD: ${{ secrets.MAC_CERTS_PASSWORD }}
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 检出 CCB Runtime 源码
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CCB_RUNTIME_REPOSITORY }}
+          ref: ${{ env.CCB_RUNTIME_COMMIT }}
+          path: ccb-runtime-source
 
       - name: 安装 Bun
         uses: oven-sh/setup-bun@v2
@@ -43,11 +88,23 @@ jobs:
       - name: 安装依赖
         run: bun install --frozen-lockfile
 
+      - name: 安装 CCB Runtime 依赖
+        run: bun install --frozen-lockfile
+        working-directory: ccb-runtime-source
+
+      - name: 构建 CCB Runtime
+        run: bun run build:desktop
+        working-directory: ccb-runtime-source
+
+      - name: 校验并同步 CCB Runtime
+        env:
+          PROMA_CCB_RUNTIME_PATH: ${{ github.workspace }}/ccb-runtime-source/dist-desktop
+        run: bun run sync:ccb-runtime
+        working-directory: apps/electron
+
       # macOS 代码签名准备
       - name: 导入 macOS 签名证书
-        env:
-          MAC_CERTS: ${{ secrets.MAC_CERTS }}
-          MAC_CERTS_PASSWORD: ${{ secrets.MAC_CERTS_PASSWORD }}
+        if: env.MAC_CERTS != ''
         run: |
           # 创建临时 keychain
           KEYCHAIN_PATH=$RUNNER_TEMP/build.keychain
@@ -78,6 +135,10 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
+          if [ -z "$MAC_CERTS" ]; then
+            export CSC_IDENTITY_AUTO_DISCOVERY=false
+            echo "未配置 macOS 签名证书，将生成未签名测试产物"
+          fi
           for i in 1 2 3; do
             npx electron-builder --mac --arm64 --publish always && break
             echo "Attempt $i failed, retrying in 10s..."
@@ -88,10 +149,21 @@ jobs:
   build-mac-x64:
     name: build (macos-15-intel, mac, x64, --x64)
     runs-on: macos-15-intel
+    needs: validate-release
+    env:
+      MAC_CERTS: ${{ secrets.MAC_CERTS }}
+      MAC_CERTS_PASSWORD: ${{ secrets.MAC_CERTS_PASSWORD }}
 
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
+
+      - name: 检出 CCB Runtime 源码
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CCB_RUNTIME_REPOSITORY }}
+          ref: ${{ env.CCB_RUNTIME_COMMIT }}
+          path: ccb-runtime-source
 
       - name: 安装 Bun
         uses: oven-sh/setup-bun@v2
@@ -106,11 +178,23 @@ jobs:
       - name: 安装依赖
         run: bun install --frozen-lockfile
 
+      - name: 安装 CCB Runtime 依赖
+        run: bun install --frozen-lockfile
+        working-directory: ccb-runtime-source
+
+      - name: 构建 CCB Runtime
+        run: bun run build:desktop
+        working-directory: ccb-runtime-source
+
+      - name: 校验并同步 CCB Runtime
+        env:
+          PROMA_CCB_RUNTIME_PATH: ${{ github.workspace }}/ccb-runtime-source/dist-desktop
+        run: bun run sync:ccb-runtime
+        working-directory: apps/electron
+
       # macOS 代码签名准备
       - name: 导入 macOS 签名证书
-        env:
-          MAC_CERTS: ${{ secrets.MAC_CERTS }}
-          MAC_CERTS_PASSWORD: ${{ secrets.MAC_CERTS_PASSWORD }}
+        if: env.MAC_CERTS != ''
         run: |
           # 创建临时 keychain
           KEYCHAIN_PATH=$RUNNER_TEMP/build.keychain
@@ -141,6 +225,10 @@ jobs:
           APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
         run: |
+          if [ -z "$MAC_CERTS" ]; then
+            export CSC_IDENTITY_AUTO_DISCOVERY=false
+            echo "未配置 macOS 签名证书，将生成未签名测试产物"
+          fi
           for i in 1 2 3; do
             npx electron-builder --mac --x64 --publish always && break
             echo "Attempt $i failed, retrying in 15s..."
@@ -287,10 +375,18 @@ jobs:
   build-windows-x64:
     name: build (windows-latest, win, x64, --x64)
     runs-on: windows-latest
+    needs: validate-release
 
     steps:
       - name: 检出代码
         uses: actions/checkout@v4
+
+      - name: 检出 CCB Runtime 源码
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.CCB_RUNTIME_REPOSITORY }}
+          ref: ${{ env.CCB_RUNTIME_COMMIT }}
+          path: ccb-runtime-source
 
       - name: 安装 Bun
         uses: oven-sh/setup-bun@v2
@@ -305,6 +401,20 @@ jobs:
       - name: 安装依赖
         run: bun install --frozen-lockfile
 
+      - name: 安装 CCB Runtime 依赖
+        run: bun install --frozen-lockfile
+        working-directory: ccb-runtime-source
+
+      - name: 构建 CCB Runtime
+        run: bun run build:desktop
+        working-directory: ccb-runtime-source
+
+      - name: 校验并同步 CCB Runtime
+        env:
+          PROMA_CCB_RUNTIME_PATH: ${{ github.workspace }}/ccb-runtime-source/dist-desktop
+        run: bun run sync:ccb-runtime
+        working-directory: apps/electron
+
       # 构建应用
       - name: 构建 Electron 应用
         run: bun run electron:build
@@ -313,5 +423,42 @@ jobs:
       - name: 打包并发布 (Windows)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx electron-builder --win --x64 --publish always
+          CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        shell: pwsh
+        run: |
+          if (-not $env:CSC_LINK) {
+            $env:CSC_IDENTITY_AUTO_DISCOVERY = "false"
+            Write-Host "未配置 Windows 签名证书，将生成未签名安装包"
+          }
+          npx electron-builder --win --x64 --publish always
         working-directory: apps/electron
+
+  publish-release:
+    name: 发布 GitHub Release
+    runs-on: ubuntu-latest
+    needs: [merge-mac-yml, build-windows-x64]
+
+    steps:
+      - name: 将 Draft Release 正式发布
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          REPO="${GITHUB_REPOSITORY}"
+
+          RELEASE_ID=$(gh api "repos/${REPO}/releases" \
+            --jq ".[] | select(.tag_name == \"${TAG}\") | .id" \
+            | head -n 1)
+
+          if [ -z "${RELEASE_ID}" ]; then
+            echo "ERROR: 未找到待发布的 Release: ${TAG}"
+            exit 1
+          fi
+
+          gh api --method PATCH "repos/${REPO}/releases/${RELEASE_ID}" \
+            -F draft=false \
+            -F prerelease=false
+
+          echo "✅ GitHub Release 已正式发布: ${TAG}"

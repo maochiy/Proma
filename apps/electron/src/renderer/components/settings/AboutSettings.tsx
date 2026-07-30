@@ -1,8 +1,7 @@
 /**
  * AboutSettings - 关于页面
  *
- * 显示应用版本号等基本信息，以及版本检测状态。
- * 检测到新版本后引导用户去 GitHub Releases 手动下载。
+ * 显示应用版本号等基本信息，以及应用内自动更新状态。
  */
 
 import * as React from 'react'
@@ -30,7 +29,7 @@ import { VersionHistory } from './VersionHistory'
 declare const __APP_VERSION__: string
 const APP_VERSION = __APP_VERSION__
 
-const GITHUB_RELEASES_URL = 'https://github.com/ErlichLiu/Proma/releases'
+const GITHUB_RELEASES_URL = 'https://github.com/maochiy/Proma/releases'
 
 /** 更新状态卡片 */
 function UpdateCard(): React.ReactElement | null {
@@ -497,12 +496,12 @@ export function AboutSettings(): React.ReactElement {
         </SettingsRow>
         <SettingsRow label="项目地址">
           <a
-            href="https://github.com/ErlichLiu/Proma.git"
+            href="https://github.com/maochiy/Proma.git"
             target="_blank"
             rel="noopener noreferrer"
             className="text-sm text-primary hover:underline"
           >
-            github.com/ErlichLiu/Proma
+            github.com/maochiy/Proma
           </a>
         </SettingsRow>
       </SettingsCard>

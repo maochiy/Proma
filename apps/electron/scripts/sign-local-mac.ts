@@ -14,7 +14,7 @@ import {
   EXPECTED_CCB_RUNTIME_COMMIT,
   EXPECTED_CCB_RUNTIME_VERSION,
 } from '../src/main/lib/ccb-runtime/protocol'
-import { refreshSignedRuntimeManifest } from './local-mac-signing'
+import { refreshSignedRuntimeManifest } from './runtime-manifest-refresh'
 import {
   ensureLocalCodeSigningIdentity,
   type LocalCodeSigningIdentity,
