@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { Check, Circle, CircleAlert } from 'lucide-react'
+import { Check, Circle, CircleAlert, Loader2 } from 'lucide-react'
 import { useAtomValue, useSetAtom } from 'jotai'
 import type { AgentRuntimeTodoItem, AgentTurnChangeStats } from '@proma/shared'
 import {
@@ -21,12 +21,19 @@ function isCompleted(todo: AgentRuntimeTodoItem): boolean {
   return todo.status === 'completed'
 }
 
-function currentStepIndex(todos: AgentRuntimeTodoItem[]): number {
-  const active = todos.findIndex(todo => todo.status === 'in_progress')
-  if (active >= 0) return active
-  const pending = todos.findIndex(todo => !isCompleted(todo))
-  if (pending >= 0) return pending
-  return Math.max(0, todos.length - 1)
+function completedTodoCount(todos: AgentRuntimeTodoItem[]): number {
+  return todos.filter(isCompleted).length
+}
+
+function currentStepNumber(todos: AgentRuntimeTodoItem[], completedCount: number): number {
+  if (todos.length === 0) return 0
+  if (completedCount >= todos.length) return todos.length
+  return Math.min(completedCount + 1, todos.length)
+}
+
+function completionPercentage(todos: AgentRuntimeTodoItem[], completedCount: number): number {
+  if (todos.length === 0) return 0
+  return Math.round((completedCount / todos.length) * 100)
 }
 
 export function shouldShowTurnChangeStats(
@@ -40,15 +47,77 @@ export function shouldShowTurnChangeStats(
 function TodoStatusIcon({ todo }: { todo: AgentRuntimeTodoItem }): React.ReactElement {
   if (todo.status === 'completed') {
     return (
-      <span className="flex size-4 shrink-0 items-center justify-center rounded-full bg-foreground text-background">
+      <span
+        aria-label="已完成"
+        data-plan-status-icon="completed"
+        className="flex size-4 shrink-0 items-center justify-center rounded-full bg-foreground text-background"
+      >
         <Check className="size-2.5" strokeWidth={2.5} />
       </span>
     )
   }
-  if (todo.status === 'blocked') {
-    return <CircleAlert className="size-4 shrink-0 text-amber-500" />
+  if (todo.status === 'in_progress') {
+    return (
+      <Loader2
+        aria-label="执行中"
+        data-plan-status-icon="in_progress"
+        className="size-4 shrink-0 animate-spin text-sky-500"
+        strokeWidth={2}
+      />
+    )
   }
-  return <Circle className="size-4 shrink-0 text-foreground/85" strokeWidth={1.75} />
+  if (todo.status === 'blocked') {
+    return (
+      <CircleAlert
+        aria-label="已阻塞"
+        data-plan-status-icon="blocked"
+        className="size-4 shrink-0 text-amber-500"
+      />
+    )
+  }
+  return (
+    <Circle
+      aria-label="等待中"
+      data-plan-status-icon="pending"
+      className="size-4 shrink-0 text-foreground/85"
+      strokeWidth={1.75}
+    />
+  )
+}
+
+function PlanCompletionRing({
+  percentage,
+}: {
+  percentage: number
+}): React.ReactElement {
+  return (
+    <svg
+      aria-label={`计划完成度 ${percentage}%`}
+      data-plan-progress={percentage}
+      className="size-3.5 shrink-0 -rotate-90"
+      viewBox="0 0 16 16"
+    >
+      <circle
+        cx="8"
+        cy="8"
+        r="6"
+        fill="none"
+        strokeWidth="2"
+        className="stroke-sky-100 dark:stroke-sky-900/70"
+      />
+      <circle
+        cx="8"
+        cy="8"
+        r="6"
+        fill="none"
+        pathLength="100"
+        strokeDasharray={`${percentage} 100`}
+        strokeLinecap="round"
+        strokeWidth="2"
+        className="stroke-sky-400 transition-[stroke-dasharray] duration-300"
+      />
+    </svg>
+  )
 }
 
 /** 输入框正上方的 CCB Todo 进度；默认收起，鼠标移入显示完整步骤。 */
@@ -132,7 +201,9 @@ export function RuntimeTodoHoverProgress({
 
   if (todos.length === 0) return null
 
-  const stepIndex = currentStepIndex(todos)
+  const completedCount = completedTodoCount(todos)
+  const stepNumber = currentStepNumber(todos, completedCount)
+  const progressPercentage = completionPercentage(todos, completedCount)
   const visibleChangeStats = shouldShowTurnChangeStats(
     changeStats,
     currentRunStartedAt,
@@ -166,6 +237,11 @@ export function RuntimeTodoHoverProgress({
                   )}>
                     {todo.content}
                   </p>
+                  {todo.status === 'in_progress' && (
+                    <p className="mt-0.5 text-[10px] text-sky-600 dark:text-sky-400">
+                      执行中{todo.activeForm ? ` · ${todo.activeForm}` : ''}
+                    </p>
+                  )}
                   {(todo.owner || (todo.blockedBy?.length ?? 0) > 0) && (
                     <p className="mt-0.5 text-[10px] text-muted-foreground">
                       {todo.owner ? `负责人：${todo.owner}` : ''}
@@ -188,11 +264,8 @@ export function RuntimeTodoHoverProgress({
           'inline-flex h-9 cursor-default items-center gap-2 px-3.5 text-[13px] text-muted-foreground',
         )}
       >
-        <Circle
-          className="size-3.5 shrink-0 text-sky-200 dark:text-sky-400/75"
-          strokeWidth={2}
-        />
-        <span className="tabular-nums">第 {stepIndex + 1} / {todos.length} 步</span>
+        <PlanCompletionRing percentage={progressPercentage} />
+        <span className="tabular-nums">第 {stepNumber} / {todos.length} 步</span>
         {visibleChangeStats && (
           <>
             <span className="text-muted-foreground/45">·</span>

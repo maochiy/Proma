@@ -10,6 +10,7 @@ import {
 import { RuntimeTodoHoverProgress } from './RuntimeTodoHoverProgress'
 
 const SESSION_ID = 'runtime-plan-card-test'
+type RuntimeTodoStore = ReturnType<typeof createStore>
 
 const EXECUTION_GRAPH: AgentRuntimeExecutionGraph = {
   nodes: [],
@@ -33,12 +34,16 @@ const EXECUTION_GRAPH: AgentRuntimeExecutionGraph = {
   updatedAt: 1,
 }
 
-function renderRuntimeTodoHoverProgress(options?: {
+function createRuntimeTodoStore(options?: {
+  graph?: AgentRuntimeExecutionGraph
   stats?: AgentTurnChangeStats
   startedAt?: number
-}): string {
+}): RuntimeTodoStore {
   const store = createStore()
-  store.set(agentRuntimeExecutionGraphsAtom, new Map([[SESSION_ID, EXECUTION_GRAPH]]))
+  store.set(agentRuntimeExecutionGraphsAtom, new Map([[
+    SESSION_ID,
+    options?.graph ?? EXECUTION_GRAPH,
+  ]]))
   if (options?.stats) {
     store.set(agentTurnChangeStatsAtom, new Map([[SESSION_ID, options.stats]]))
   }
@@ -53,7 +58,19 @@ function renderRuntimeTodoHoverProgress(options?: {
       },
     ]]))
   }
+  return store
+}
 
+function renderRuntimeTodoHoverProgress(options?: {
+  graph?: AgentRuntimeExecutionGraph
+  stats?: AgentTurnChangeStats
+  startedAt?: number
+}): string {
+  const store = createRuntimeTodoStore(options)
+  return renderRuntimeTodoHoverProgressWithStore(store)
+}
+
+function renderRuntimeTodoHoverProgressWithStore(store: RuntimeTodoStore): string {
   return renderToStaticMarkup(
     <Provider store={store}>
       <RuntimeTodoHoverProgress sessionId={SESSION_ID} />
@@ -82,7 +99,7 @@ describe('RuntimeTodoHoverProgress 计划进度卡片', () => {
     expect(html).not.toContain('backdrop-blur')
   })
 
-  test('Given 计划内容长度不同 When 渲染悬浮面板 Then 面板按内容自适应且入口显示浅蓝色进度圆圈', () => {
+  test('Given 计划内容长度不同 When 渲染悬浮面板 Then 面板按内容自适应且入口显示浅蓝色完成度圆环', () => {
     const html = renderRuntimeTodoHoverProgress()
 
     expect(html).toContain('group relative')
@@ -90,8 +107,134 @@ describe('RuntimeTodoHoverProgress 计划进度卡片', () => {
     expect(html).toContain('group-hover:pointer-events-auto')
     expect(html).toContain('w-max max-w-[min(420px,calc(100vw-3rem))]')
     expect(html).not.toContain('w-[min(390px,calc(100vw-3rem))]')
-    expect(html).toContain('text-sky-200 dark:text-sky-400/75')
+    expect(html).toContain('data-plan-progress="0"')
+    expect(html).toContain('stroke-sky-100 dark:stroke-sky-900/70')
+    expect(html).toContain('stroke-sky-400')
     expect(html).toContain('定位登录、认证、用户状态相关代码')
+  })
+
+  test('Given 五步计划已完成四步 When 渲染计划入口 Then 蓝色圆环按百分之八十填充', () => {
+    const html = renderRuntimeTodoHoverProgress({
+      graph: {
+        nodes: [],
+        todos: [
+          { id: 'todo-1', content: '步骤一', status: 'completed' },
+          { id: 'todo-2', content: '步骤二', status: 'completed' },
+          { id: 'todo-3', content: '步骤三', status: 'completed' },
+          { id: 'todo-4', content: '步骤四', status: 'completed' },
+          { id: 'todo-5', content: '步骤五', status: 'in_progress' },
+        ],
+        updatedAt: 2,
+      },
+    })
+
+    expect(html).toContain('第 5 / 5 步')
+    expect(html).toContain('data-plan-progress="80"')
+    expect(html).toContain('stroke-dasharray="80 100"')
+    expect(html).toContain('计划完成度 80%')
+  })
+
+  test('Given Todo 返回顺序与实际完成进度不同 When 渲染计划入口 Then 当前步数按完成数量推进而不依赖数组位置', () => {
+    const html = renderRuntimeTodoHoverProgress({
+      graph: {
+        nodes: [],
+        todos: [
+          { id: 'todo-3', content: '步骤三', status: 'in_progress' },
+          { id: 'todo-1', content: '步骤一', status: 'completed' },
+          { id: 'todo-2', content: '步骤二', status: 'completed' },
+          { id: 'todo-4', content: '步骤四', status: 'pending' },
+        ],
+        updatedAt: 3,
+      },
+    })
+
+    expect(html).toContain('第 3 / 4 步')
+    expect(html).toContain('data-plan-progress="50"')
+  })
+
+  test('Given 计划状态和总数发生变化 When Jotai 执行图更新后重新渲染 Then 入口分子与分母同步更新', () => {
+    const store = createRuntimeTodoStore()
+    const initialHtml = renderRuntimeTodoHoverProgressWithStore(store)
+
+    expect(initialHtml).toContain('第 1 / 3 步')
+
+    store.set(agentRuntimeExecutionGraphsAtom, new Map([[
+      SESSION_ID,
+      {
+        nodes: [],
+        todos: [
+          { id: 'todo-1', content: '步骤一', status: 'completed' },
+          { id: 'todo-2', content: '步骤二', status: 'in_progress' },
+          { id: 'todo-3', content: '步骤三', status: 'pending' },
+          { id: 'todo-4', content: '步骤四', status: 'pending' },
+        ],
+        updatedAt: 4,
+      },
+    ]]))
+
+    const updatedHtml = renderRuntimeTodoHoverProgressWithStore(store)
+    expect(updatedHtml).toContain('第 2 / 4 步')
+    expect(updatedHtml).toContain('data-plan-progress="25"')
+  })
+
+  test('Given 所有计划均已完成 When 渲染计划入口 Then 蓝色圆环显示百分之百', () => {
+    const html = renderRuntimeTodoHoverProgress({
+      graph: {
+        nodes: [],
+        todos: [
+          { id: 'todo-1', content: '步骤一', status: 'completed' },
+          { id: 'todo-2', content: '步骤二', status: 'completed' },
+        ],
+        updatedAt: 5,
+      },
+    })
+
+    expect(html).toContain('第 2 / 2 步')
+    expect(html).toContain('data-plan-progress="100"')
+    expect(html).toContain('stroke-dasharray="100 100"')
+  })
+
+  test('Given 计划包含四种步骤状态 When 渲染悬浮面板 Then 状态图标和执行说明分别显示', () => {
+    const html = renderRuntimeTodoHoverProgress({
+      graph: {
+        nodes: [],
+        todos: [
+          {
+            id: 'todo-completed',
+            content: '确认入口视觉',
+            status: 'completed',
+          },
+          {
+            id: 'todo-running',
+            content: '实现入口进度圆环',
+            status: 'in_progress',
+            activeForm: '正在实现入口进度圆环',
+          },
+          {
+            id: 'todo-pending',
+            content: '补充自动化测试',
+            status: 'pending',
+          },
+          {
+            id: 'todo-blocked',
+            content: '等待上游接口',
+            status: 'blocked',
+          },
+        ],
+        updatedAt: 6,
+      },
+    })
+
+    expect(html).toContain('data-plan-status-icon="completed"')
+    expect(html).toContain('aria-label="已完成"')
+    expect(html).toContain('data-plan-status-icon="in_progress"')
+    expect(html).toContain('animate-spin')
+    expect(html).toContain('text-sky-500')
+    expect(html).toContain('执行中 · 正在实现入口进度圆环')
+    expect(html).toContain('data-plan-status-icon="pending"')
+    expect(html).toContain('aria-label="等待中"')
+    expect(html).toContain('data-plan-status-icon="blocked"')
+    expect(html).toContain('aria-label="已阻塞"')
   })
 
   test('Given 本轮尚无文件改动 When 渲染计划入口 Then 不显示改动统计', () => {
