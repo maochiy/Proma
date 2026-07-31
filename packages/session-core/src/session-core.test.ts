@@ -67,6 +67,77 @@ describe('工具折叠 ×N', () => {
 })
 
 describe('SDK 压缩状态分组', () => {
+  test('Given 回复期间收到压缩配置 When 分组 Then 不得截断当前 Assistant Turn', () => {
+    const raw = jsonl([
+      { type: 'user', message: { content: [{ type: 'text', text: '继续排查' }] }, parent_tool_use_id: null },
+      {
+        type: 'assistant',
+        message: {
+          id: 'a1',
+          content: [{ type: 'text', text: '先检查依赖' }],
+        },
+        parent_tool_use_id: null,
+      },
+      {
+        type: 'system',
+        subtype: 'context_compaction_config',
+        autoCompactEnabled: true,
+        autoCompactThreshold: 125_999,
+      },
+      {
+        type: 'assistant',
+        message: {
+          id: 'a2',
+          content: [{ type: 'text', text: '最终结论' }],
+        },
+        parent_tool_use_id: null,
+      },
+      { type: 'result', subtype: 'success' },
+    ])
+
+    const groups = groupIntoTurns(readSessionMessagesFromString(raw))
+
+    expect(groups.map((group) => group.type)).toEqual(['user', 'assistant-turn'])
+    expect(groups[1]).toMatchObject({
+      type: 'assistant-turn',
+      assistantMessages: [
+        { message: { id: 'a1' } },
+        { message: { id: 'a2' } },
+      ],
+      turnMessages: [
+        { type: 'assistant' },
+        { type: 'system', subtype: 'context_compaction_config' },
+        { type: 'assistant' },
+        { type: 'result', subtype: 'success' },
+      ],
+    })
+  })
+
+  test('Given 回复开始前收到压缩配置 When 分组 Then 不生成独立历史分组', () => {
+    const raw = jsonl([
+      { type: 'user', message: { content: [{ type: 'text', text: '开始排查' }] }, parent_tool_use_id: null },
+      {
+        type: 'system',
+        subtype: 'context_compaction_config',
+        autoCompactEnabled: true,
+        autoCompactThreshold: 125_999,
+      },
+      {
+        type: 'assistant',
+        message: {
+          id: 'a1',
+          content: [{ type: 'text', text: '排查结论' }],
+        },
+        parent_tool_use_id: null,
+      },
+      { type: 'result', subtype: 'success' },
+    ])
+
+    const groups = groupIntoTurns(readSessionMessagesFromString(raw))
+
+    expect(groups.map((group) => group.type)).toEqual(['user', 'assistant-turn'])
+  })
+
   test('Given 压缩从进行中变为失败 When 分组 Then 原位更新同一个状态组', () => {
     const raw = jsonl([
       { type: 'user', message: { content: [{ type: 'text', text: '压缩测试' }] }, parent_tool_use_id: null },

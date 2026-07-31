@@ -62,7 +62,7 @@ export function AgentProjectPicker({
   }
 
   return (
-    <div className="mb-2 flex min-w-0 items-center px-0.5">
+    <div className="flex min-w-0 items-center">
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <button

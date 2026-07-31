@@ -510,6 +510,10 @@ export interface ElectronAPI {
     sessionId: string,
   ) => Promise<import('@proma/shared').AgentRuntimeExecutionGraph>
 
+  getAgentTurnChangeStats: (
+    sessionId: string,
+  ) => Promise<import('@proma/shared').AgentTurnChangeStats | null>
+
   getAgentRuntimeSubagentTranscript: (
     sessionId: string,
     executionNodeId: string,
@@ -1642,6 +1646,13 @@ const electronAPI: ElectronAPI = {
   getAgentRuntimeExecutionGraph: (sessionId: string) => {
     return ipcRenderer.invoke(
       AGENT_IPC_CHANNELS.GET_RUNTIME_EXECUTION_GRAPH,
+      sessionId,
+    )
+  },
+
+  getAgentTurnChangeStats: (sessionId: string) => {
+    return ipcRenderer.invoke(
+      AGENT_IPC_CHANNELS.GET_TURN_CHANGE_STATS,
       sessionId,
     )
   },

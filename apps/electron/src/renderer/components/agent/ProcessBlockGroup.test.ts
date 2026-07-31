@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test'
+import * as React from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 import { buildAssistantTurnRenderItems, buildProcessGroupToolNames } from './ProcessBlockGroup'
+import { ProcessBlockGroup } from './ProcessBlockGroup'
 import type { SDKContentBlock } from '@proma/shared'
 
 const tool = (id: string, name = 'Read'): SDKContentBlock => ({
@@ -103,7 +106,7 @@ describe('Agent 过程块折叠分组', () => {
     expect(items[0]?.type).toBe('block')
   })
 
-  test('given process only turn when grouping then folds the whole turn', () => {
+  test('given process only turn when grouping then keeps the whole turn expanded after completion', () => {
     const items = buildAssistantTurnRenderItems([
       thinking(),
       tool('tool-1'),
@@ -114,6 +117,47 @@ describe('Agent 过程块折叠分组', () => {
     if (items[0]?.type === 'process-group') {
       expect(items[0].items.map((item) => item.index)).toEqual([0, 1])
     }
+  })
+
+  test('given trailing blank text when grouping then does not treat it as visible final output', () => {
+    const items = buildAssistantTurnRenderItems([
+      thinking(),
+      tool('tool-1'),
+      text('   '),
+    ])
+
+    expect(items).toHaveLength(1)
+    expect(items[0]?.type).toBe('process-group')
+  })
+
+  test('given completed process-only group when rendering history then keeps details visible', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(
+        ProcessBlockGroup,
+        {
+          blocks: [thinking(), tool('tool-1')],
+          isMessageTail: true,
+          children: React.createElement('span', null, '过程详情'),
+        },
+      ),
+    )
+
+    expect(html).toContain('过程详情')
+  })
+
+  test('given completed process group with final output when rendering history then starts collapsed', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(
+        ProcessBlockGroup,
+        {
+          blocks: [thinking(), tool('tool-1')],
+          isMessageTail: false,
+          children: React.createElement('span', null, '过程详情'),
+        },
+      ),
+    )
+
+    expect(html).not.toContain('过程详情')
   })
 
   test('given streaming turn with only thinking before trailing text when grouping then keeps the whole turn inside process group', () => {

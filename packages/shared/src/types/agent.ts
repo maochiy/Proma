@@ -206,6 +206,20 @@ export interface AgentRuntimeExecutionGraph {
   updatedAt: number
 }
 
+/** 当前 Agent 本轮相对执行前工作树基线产生的 Git 改动统计。 */
+export interface AgentTurnChangeStats {
+  /** 本轮开始时间，与 AgentSendInput.startedAt 对齐。 */
+  startedAt: number
+  /** 本轮改动的文件数量。 */
+  filesChanged: number
+  /** 本轮新增行数。 */
+  additions: number
+  /** 本轮删除行数。 */
+  deletions: number
+  /** 统计完成时间。 */
+  updatedAt: number
+}
+
 /** CCB 子代理节点的 Transcript。 */
 export interface AgentRuntimeSubagentTranscript {
   executionNodeId: string
@@ -1696,6 +1710,8 @@ export const AGENT_IPC_CHANNELS = {
   UPDATE_NATIVE_MODEL_CONFIG: 'agent:update-native-model-config',
   /** 读取当前 CCB Session 的 Subagent/Teams/Workflow/Todo 执行图 */
   GET_RUNTIME_EXECUTION_GRAPH: 'agent:get-runtime-execution-graph',
+  /** 读取当前 Agent 本轮相对执行前基线产生的文件改动统计 */
+  GET_TURN_CHANGE_STATS: 'agent:get-turn-change-stats',
   /** 读取 CCB 子代理节点 Transcript */
   GET_RUNTIME_SUBAGENT_TRANSCRIPT: 'agent:get-runtime-subagent-transcript',
   /** 读取尚未保存的模型配置经 CCB Runtime 解析后的模型目录与能力 */

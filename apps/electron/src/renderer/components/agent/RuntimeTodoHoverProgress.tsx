@@ -1,8 +1,13 @@
 import * as React from 'react'
 import { Check, Circle, CircleAlert } from 'lucide-react'
-import { useAtomValue } from 'jotai'
-import type { AgentRuntimeTodoItem } from '@proma/shared'
-import { agentRuntimeExecutionGraphsAtom } from '@/atoms/agent-atoms'
+import { useAtomValue, useSetAtom } from 'jotai'
+import type { AgentRuntimeTodoItem, AgentTurnChangeStats } from '@proma/shared'
+import {
+  agentDiffRefreshVersionAtom,
+  agentRuntimeExecutionGraphsAtom,
+  agentSessionStreamingStateAtomFamily,
+  agentTurnChangeStatsAtom,
+} from '@/atoms/agent-atoms'
 import { cn } from '@/lib/utils'
 
 interface RuntimeTodoHoverProgressProps {
@@ -24,6 +29,14 @@ function currentStepIndex(todos: AgentRuntimeTodoItem[]): number {
   return Math.max(0, todos.length - 1)
 }
 
+export function shouldShowTurnChangeStats(
+  stats: AgentTurnChangeStats | undefined,
+  currentRunStartedAt: number | undefined,
+): stats is AgentTurnChangeStats {
+  if (!stats || stats.filesChanged <= 0) return false
+  return currentRunStartedAt == null || stats.startedAt === currentRunStartedAt
+}
+
 function TodoStatusIcon({ todo }: { todo: AgentRuntimeTodoItem }): React.ReactElement {
   if (todo.status === 'completed') {
     return (
@@ -43,15 +56,91 @@ export function RuntimeTodoHoverProgress({
   sessionId,
 }: RuntimeTodoHoverProgressProps): React.ReactElement | null {
   const graphs = useAtomValue(agentRuntimeExecutionGraphsAtom)
-  const todos = graphs.get(sessionId)?.todos ?? []
+  const graph = graphs.get(sessionId)
+  const todos = graph?.todos ?? []
+  const streamingState = useAtomValue(agentSessionStreamingStateAtomFamily(sessionId))
+  const currentRunStartedAt = streamingState?.startedAt
+  const diffRefreshVersions = useAtomValue(agentDiffRefreshVersionAtom)
+  const diffRefreshVersion = diffRefreshVersions.get(sessionId) ?? 0
+  const changeStatsMap = useAtomValue(agentTurnChangeStatsAtom)
+  const setChangeStatsMap = useSetAtom(agentTurnChangeStatsAtom)
+  const changeStats = changeStatsMap.get(sessionId)
+  const requestSequenceRef = React.useRef(0)
+
+  const refreshChangeStats = React.useCallback(async (): Promise<void> => {
+    const requestSequence = ++requestSequenceRef.current
+    try {
+      const result = await window.electronAPI.getAgentTurnChangeStats(sessionId)
+      if (requestSequence !== requestSequenceRef.current) return
+      // 新一轮刚启动而 Main 仍在创建基线时，旧一轮结果不允许覆盖当前显示。
+      if (
+        result
+        && currentRunStartedAt != null
+        && result.startedAt !== currentRunStartedAt
+      ) {
+        return
+      }
+
+      setChangeStatsMap((previous) => {
+        const next = new Map(previous)
+        if (result) next.set(sessionId, result)
+        else next.delete(sessionId)
+        return next
+      })
+    } catch {
+      // 统计是辅助信息，Git 不可用或会话正在切换时静默降级。
+    }
+  }, [currentRunStartedAt, sessionId, setChangeStatsMap])
+
+  React.useEffect(() => {
+    if (currentRunStartedAt == null) return
+    setChangeStatsMap((previous) => {
+      const existing = previous.get(sessionId)
+      if (!existing || existing.startedAt === currentRunStartedAt) return previous
+      const next = new Map(previous)
+      next.delete(sessionId)
+      return next
+    })
+  }, [currentRunStartedAt, sessionId, setChangeStatsMap])
+
+  React.useEffect(() => {
+    if (todos.length === 0) return
+
+    void refreshChangeStats()
+    // Agent IPC 先进入 Main，再创建 Git 基线；启动后补一次轻量重试消除这段竞态。
+    const retryTimer = currentRunStartedAt != null
+      ? window.setTimeout(() => void refreshChangeStats(), 750)
+      : null
+
+    return () => {
+      requestSequenceRef.current += 1
+      if (retryTimer != null) window.clearTimeout(retryTimer)
+    }
+  }, [
+    currentRunStartedAt,
+    refreshChangeStats,
+    todos.length,
+  ])
+
+  const previousDiffRefreshVersionRef = React.useRef(diffRefreshVersion)
+  React.useEffect(() => {
+    if (previousDiffRefreshVersionRef.current === diffRefreshVersion) return
+    previousDiffRefreshVersionRef.current = diffRefreshVersion
+    if (todos.length === 0) return
+    void refreshChangeStats()
+  }, [diffRefreshVersion, refreshChangeStats, todos.length])
 
   if (todos.length === 0) return null
 
   const stepIndex = currentStepIndex(todos)
+  const visibleChangeStats = shouldShowTurnChangeStats(
+    changeStats,
+    currentRunStartedAt,
+  )
 
   return (
     <div
-      className="group relative z-30 mx-auto mb-2 w-fit"
+      className="group relative z-30 w-fit"
     >
       <div
         className={cn(
@@ -104,6 +193,22 @@ export function RuntimeTodoHoverProgress({
           strokeWidth={2}
         />
         <span className="tabular-nums">第 {stepIndex + 1} / {todos.length} 步</span>
+        {visibleChangeStats && (
+          <>
+            <span className="text-muted-foreground/45">·</span>
+            <span className="tabular-nums">{changeStats.filesChanged} 个文件已更改</span>
+            {changeStats.additions > 0 && (
+              <span className="tabular-nums text-emerald-500">
+                +{changeStats.additions}
+              </span>
+            )}
+            {changeStats.deletions > 0 && (
+              <span className="tabular-nums text-red-500">
+                -{changeStats.deletions}
+              </span>
+            )}
+          </>
+        )}
       </div>
     </div>
   )

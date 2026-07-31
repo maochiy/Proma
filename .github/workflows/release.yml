@@ -459,6 +459,9 @@ jobs:
     needs: [merge-mac-yml, build-windows-x64]
 
     steps:
+      - name: 检出版本说明
+        uses: actions/checkout@v4
+
       - name: 将 Draft Release 正式发布
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -466,6 +469,7 @@ jobs:
           set -euo pipefail
           TAG="${GITHUB_REF_NAME}"
           REPO="${GITHUB_REPOSITORY}"
+          NOTES_FILE=".github/release-notes/${TAG}.md"
 
           RELEASE_ID=$(gh api "repos/${REPO}/releases" \
             --jq ".[] | select(.tag_name == \"${TAG}\") | .id" \
@@ -476,8 +480,19 @@ jobs:
             exit 1
           fi
 
-          gh api --method PATCH "repos/${REPO}/releases/${RELEASE_ID}" \
-            -F draft=false \
+          RELEASE_FIELDS=(
+            -F "name=${TAG}"
+            -F draft=false
             -F prerelease=false
+          )
+          if [ -f "${NOTES_FILE}" ]; then
+            RELEASE_FIELDS+=(-F "body=@${NOTES_FILE}")
+            echo "使用版本说明: ${NOTES_FILE}"
+          else
+            echo "未找到版本说明文件，保留 Release 现有正文: ${NOTES_FILE}"
+          fi
+
+          gh api --method PATCH "repos/${REPO}/releases/${RELEASE_ID}" \
+            "${RELEASE_FIELDS[@]}"
 
           echo "✅ GitHub Release 已正式发布: ${TAG}"

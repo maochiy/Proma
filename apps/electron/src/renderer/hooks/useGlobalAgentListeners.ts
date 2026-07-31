@@ -71,11 +71,20 @@ import {
 import { getPlanModeChangeFromToolName, updatePlanModeSessionSet } from '@/lib/agent-plan-mode'
 import { upsertAgentLiveMessage } from '@/lib/agent-live-message'
 
-/** 触发右侧文件浏览器自动定位的写入类工具集合 */
-const WRITE_TOOLS = new Set(['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Update'])
+/** 触发右侧文件浏览器自动定位的写入类工具集合。 */
+const WRITE_TOOLS = new Set([
+  'Write',
+  'Edit',
+  'MultiEdit',
+  'NotebookEdit',
+  'Update',
+  'apply_patch',
+  'ApplyPatch',
+  'Patch',
+])
 
-/** 会改变 git 工作树状态的子命令（用于识别 Bash 中触发 diff 刷新的 git 操作） */
-const GIT_MUTATING_SUBCOMMANDS = /\bgit\s+(commit|checkout|reset|restore|stash|clean|add|rm|mv|pull|merge|rebase|cherry-pick|revert|switch|am|apply)\b/
+/** Shell 类工具可能通过 sed、脚本等间接修改文件，完成后统一刷新改动统计。 */
+const SHELL_TOOLS = new Set(['Bash', 'Shell'])
 
 function isAbsolutePath(path: string): boolean {
   return path.startsWith('/') || /^[A-Za-z]:[\\/]/.test(path)
@@ -396,8 +405,16 @@ export function useGlobalAgentListeners(): void {
   useEffect(() => {
     /** 正在执行的写工具：toolUseId → { path, sessionId } */
     const pendingWriteTools = new Map<string, { path: string; sessionId: string }>()
-    /** 正在执行的 git 突变 Bash 命令：toolUseId → sessionId（完成后触发 diff 刷新） */
-    const pendingGitMutateTools = new Map<string, string>()
+    /** 正在执行的 Shell 工具：toolUseId → sessionId（完成后刷新改动统计和 Diff）。 */
+    const pendingShellTools = new Map<string, string>()
+
+    const bumpDiffRefresh = (sessionId: string): void => {
+      store.set(agentDiffRefreshVersionAtom, (prev) => {
+        const map = new Map(prev)
+        map.set(sessionId, (prev.get(sessionId) ?? 0) + 1)
+        return map
+      })
+    }
 
     /** 构建导航到指定会话的回调 */
     const makeNavigateToSession = (sessionId: string, sessionTitle: string) => () => {
@@ -769,13 +786,9 @@ export function useGlobalAgentListeners(): void {
             }
           }
 
-          // Bash 工具执行 git 突变命令时，标记为待刷新（完成后刷新 diff 列表）
-          if (event.type === 'tool_start' && event.toolName === 'Bash') {
-            const input = event.input as Record<string, unknown> | undefined
-            const command = typeof input?.command === 'string' ? input.command : ''
-            if (command && GIT_MUTATING_SUBCOMMANDS.test(command)) {
-              pendingGitMutateTools.set(event.toolUseId, sessionId)
-            }
+          // Shell 工具可能通过 sed、脚本等间接修改文件，完成后统一刷新。
+          if (event.type === 'tool_start' && SHELL_TOOLS.has(event.toolName)) {
+            pendingShellTools.set(event.toolUseId, sessionId)
           }
 
           // 处理后台任务事件
@@ -821,9 +834,7 @@ export function useGlobalAgentListeners(): void {
               const entry = pendingWriteTools.get(event.toolUseId)!
               const writtenPath = entry.path
               pendingWriteTools.delete(event.toolUseId)
-              store.set(agentDiffRefreshVersionAtom, (prev) => {
-                const m = new Map(prev); m.set(sessionId, (prev.get(sessionId) ?? 0) + 1); return m
-              })
+              bumpDiffRefresh(sessionId)
               if (writtenPath) {
                 buildWrittenFilePreviewInfo(sessionId, writtenPath).then((previewFile) => {
                   if (!previewFile || previewFile.previewOnly || !previewFile.inDiffScope) return
@@ -842,12 +853,10 @@ export function useGlobalAgentListeners(): void {
                 }).catch(() => { /* 改动提示不应影响流式输出 */ })
               }
             }
-            // Bash git 突变命令完成时，仅刷新 diff 列表（不标记 unseen，避免红点）
-            if (pendingGitMutateTools.has(event.toolUseId)) {
-              pendingGitMutateTools.delete(event.toolUseId)
-              store.set(agentDiffRefreshVersionAtom, (prev) => {
-                const m = new Map(prev); m.set(sessionId, (prev.get(sessionId) ?? 0) + 1); return m
-              })
+            // Shell 工具完成时仅刷新统计和 Diff，不标记 unseen，避免普通命令触发红点。
+            if (pendingShellTools.has(event.toolUseId)) {
+              pendingShellTools.delete(event.toolUseId)
+              bumpDiffRefresh(sessionId)
             }
           } else if (event.type === 'shell_killed') {
             store.set(backgroundTasksAtomFamily(sessionId), (prev) => {
@@ -991,6 +1000,21 @@ export function useGlobalAgentListeners(): void {
         const backgroundTasksPending = data.backgroundTasksPending === true
         const hasStreamError = store.get(agentStreamErrorsAtom).has(data.sessionId)
 
+        // 本轮真正结束时再刷新一次，捕获工具结果落盘与完成事件之间的最后改动。
+        const streamBeforeCompletion = store.get(agentStreamingStatesAtom).get(data.sessionId)
+        const isCurrentCompletion = Boolean(
+          streamBeforeCompletion
+          && (streamBeforeCompletion.running || streamBeforeCompletion.backgroundWaiting)
+          && !(
+            streamBeforeCompletion.startedAt != null
+            && (
+              data.startedAt == null
+              || streamBeforeCompletion.startedAt > data.startedAt
+            )
+          )
+        )
+        if (isCurrentCompletion) bumpDiffRefresh(data.sessionId)
+
         // 发送桌面通知（仅真正成功完成时播放提示音，错误/中断/异常完成不伪装成完成）
         const completionSession = store.get(agentSessionsAtom)
           .find((session) => session.id === data.sessionId)
@@ -1128,9 +1152,9 @@ export function useGlobalAgentListeners(): void {
               pendingWriteTools.delete(toolId)
             }
           }
-          for (const [toolId, sid] of pendingGitMutateTools) {
+          for (const [toolId, sid] of pendingShellTools) {
             if (sid === data.sessionId) {
-              pendingGitMutateTools.delete(toolId)
+              pendingShellTools.delete(toolId)
             }
           }
 
@@ -1230,14 +1254,6 @@ export function useGlobalAgentListeners(): void {
     const fileContentHashMap = new Map<string, string>()
     const HASH_MAX = 100
     let focusCheckSeq = 0
-    const bumpDiffRefresh = (sessionId: string) => {
-      store.set(agentDiffRefreshVersionAtom, (prev) => {
-        const m = new Map(prev)
-        m.set(sessionId, (prev.get(sessionId) ?? 0) + 1)
-        return m
-      })
-    }
-
     const onWindowFocus = async () => {
       const activeSessionId = store.get(currentAgentSessionIdAtom)
       if (!activeSessionId) return

@@ -47,6 +47,7 @@ import {
   createRuntimeSessionProjectionTitle,
   hasRuntimePromptContext,
 } from './title-generation'
+import { normalizeCcbAssistantMessage } from './ccb-runtime/ccb-assistant-message-normalization'
 
 /**
  * 会话索引文件格式
@@ -146,9 +147,9 @@ function parseJsonlStrict<T>(lines: string[], context: string): T[] {
 function normalizePersistedSDKMessage(parsed: unknown): SDKMessage {
   // 旧格式检测：AgentMessage 有 `role` 字段，SDKMessage 有 `type` 字段
   if (parsed && typeof parsed === 'object' && 'role' in parsed && !('type' in parsed)) {
-    return convertLegacyMessage(parsed as AgentMessage)
+    return normalizeCcbAssistantMessage(convertLegacyMessage(parsed as AgentMessage))
   }
-  return parsed as SDKMessage
+  return normalizeCcbAssistantMessage(parsed as SDKMessage)
 }
 
 /**
@@ -660,9 +661,9 @@ export function mergeAgentSessionSDKMessages(
   runtimeMessages: SDKMessage[],
 ): SDKMessage[] {
   const localMessages = getAgentSessionSDKMessages(id)
-  const projectionRuntimeMessages = runtimeMessages.filter(
-    message => !isUnstructuredRuntimeAssistantError(message),
-  )
+  const projectionRuntimeMessages = runtimeMessages
+    .map(normalizeCcbAssistantMessage)
+    .filter(message => !isUnstructuredRuntimeAssistantError(message))
   if (projectionRuntimeMessages.length === 0) return localMessages
 
   const consumedLocalIndexes = new Set<number>()

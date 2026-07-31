@@ -1,4 +1,5 @@
 import type { SDKContentBlock, SDKMessage } from '@proma/shared'
+import { normalizeCcbAssistantMessage } from './ccb-assistant-message-normalization'
 
 interface PartialAssistantBlock {
   index: number
@@ -104,6 +105,23 @@ function appendBlockDelta(
       content: {
         ...block.content,
         text: block.content.text + delta.text,
+      },
+    }
+  }
+
+  if (
+    block.content.type === 'thinking'
+    && 'thinking' in block.content
+    && block.content.thinking === ''
+    && delta.type === 'text_delta'
+    && typeof delta.text === 'string'
+    && delta.text.length > 0
+  ) {
+    return {
+      ...block,
+      content: {
+        type: 'text',
+        text: delta.text,
       },
     }
   }
@@ -272,20 +290,21 @@ export function annotateCcbFinalAssistantMessage(
   previous: CcbPartialAssistantState,
   message: SDKMessage,
 ): CcbPartialAssistantUpdate {
-  const messageRecord = message as Record<string, unknown>
-  if (message.type !== 'assistant' || messageRecord._partial === true) {
-    return { state: previous, message }
+  const normalizedMessage = normalizeCcbAssistantMessage(message)
+  const messageRecord = normalizedMessage as Record<string, unknown>
+  if (normalizedMessage.type !== 'assistant' || messageRecord._partial === true) {
+    return { state: previous, message: normalizedMessage }
   }
 
-  const messageId = getAssistantMessageId(message)
-  const finalBlocks = getAssistantBlocks(message)
+  const messageId = getAssistantMessageId(normalizedMessage)
+  const finalBlocks = getAssistantBlocks(normalizedMessage)
   if (
     !messageId
     || messageId !== previous.messageId
     || finalBlocks.length === 0
     || previous.blocks.size === 0
   ) {
-    return { state: previous, message }
+    return { state: previous, message: normalizedMessage }
   }
 
   const matchedIndexes: number[] = []
@@ -300,7 +319,9 @@ export function annotateCcbFinalAssistantMessage(
     matchedIndexes.push(matchedIndex)
     consumedIndexes.add(matchedIndex)
   }
-  if (matchedIndexes.length === 0) return { state: previous, message }
+  if (matchedIndexes.length === 0) {
+    return { state: previous, message: normalizedMessage }
+  }
 
   const blocks = new Map(previous.blocks)
   const completedBlockIndexes = new Set(previous.completedBlockIndexes)
@@ -316,7 +337,7 @@ export function annotateCcbFinalAssistantMessage(
       completedBlockIndexes,
     },
     message: {
-      ...message,
+      ...normalizedMessage,
       ...(matchedIndexes.length === 1
         ? { _partialBlockIndex: matchedIndexes[0] }
         : { _partialBlockIndexes: matchedIndexes }),

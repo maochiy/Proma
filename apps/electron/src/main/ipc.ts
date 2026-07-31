@@ -208,7 +208,7 @@ import {
   searchAgentSessionMessages,
   searchAgentSessionReferences,
 } from './lib/agent-session-manager'
-import { runAgent, stopAgent, closeAgentSessionRuntime, generateAgentTitle, saveFilesToAgentSession, saveFilesToWorkspaceFiles, isAgentSessionActive, queueAgentMessage, updateAgentPermissionMode, updateAgentRuntimeConfig, invalidateAgentRuntimeConfiguration, getAgentRuntimeExecutionGraph, getAgentRuntimeSubagentTranscript, rewindAgentSession, forkAgentRuntimeSession } from './lib/agent-service'
+import { runAgent, stopAgent, closeAgentSessionRuntime, generateAgentTitle, saveFilesToAgentSession, saveFilesToWorkspaceFiles, isAgentSessionActive, queueAgentMessage, updateAgentPermissionMode, updateAgentRuntimeConfig, invalidateAgentRuntimeConfiguration, getAgentRuntimeExecutionGraph, getAgentRuntimeSubagentTranscript, getAgentTurnChangeStats, rewindAgentSession, forkAgentRuntimeSession } from './lib/agent-service'
 import {
   clearAgentRuntimeModelCatalogCache,
   resolveAgentRuntimeModelCatalog,
@@ -2209,6 +2209,13 @@ export function registerIpcHandlers(): void {
     AGENT_IPC_CHANNELS.GET_RUNTIME_EXECUTION_GRAPH,
     async (_, sessionId: string) => {
       return getAgentRuntimeExecutionGraph(sessionId)
+    },
+  )
+
+  ipcMain.handle(
+    AGENT_IPC_CHANNELS.GET_TURN_CHANGE_STATS,
+    async (_, sessionId: string) => {
+      return getAgentTurnChangeStats(sessionId)
     },
   )
 

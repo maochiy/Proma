@@ -24,6 +24,7 @@ import { AgentMessageQueue } from './AgentMessageQueue'
 import { AgentProjectPicker } from './AgentProjectPicker'
 import { AgentThinkingEffortControl } from './AgentThinkingEffortControl'
 import { AgentInputAddMenu } from './AgentInputAddMenu'
+import { AgentInputContextBar } from './AgentInputContextBar'
 import { RuntimeTodoHoverProgress } from './RuntimeTodoHoverProgress'
 import { ContextUsageBadge } from './ContextUsageBadge'
 import { PermissionBanner } from './PermissionBanner'
@@ -2969,14 +2970,18 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
 
         {!hasInteractionPanel && (
         <div className={inputAreaContainerClass} data-input-mode="agent">
-          <AgentProjectPicker
-            workspaces={workspaces}
-            workspaceId={currentWorkspaceId}
-            changing={projectChanging}
-            onSelect={handleProjectSelect}
-            onAdd={handleProjectAdd}
+          <AgentInputContextBar
+            projectPicker={(
+              <AgentProjectPicker
+                workspaces={workspaces}
+                workspaceId={currentWorkspaceId}
+                changing={projectChanging}
+                onSelect={handleProjectSelect}
+                onAdd={handleProjectAdd}
+              />
+            )}
+            planProgress={<RuntimeTodoHoverProgress sessionId={sessionId} />}
           />
-          <RuntimeTodoHoverProgress sessionId={sessionId} />
           <div
             className={cn(
               inputCardClass,

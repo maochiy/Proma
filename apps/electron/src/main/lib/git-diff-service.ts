@@ -6,7 +6,8 @@
  */
 
 import { spawn } from 'child_process'
-import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'fs'
+import { existsSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync } from 'fs'
+import { tmpdir } from 'os'
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'path'
 import type { ChangedFileEntry, UnstagedChangesResult, UntrackedFileEntry } from '@proma/shared'
 import { normalizePathForCompare } from '@proma/shared'
@@ -116,7 +117,11 @@ function normalizeSafePath(root: string, filePath: string): string | null {
  * @param cwd - 工作目录
  * @returns 命令输出，如果失败返回 null
  */
-function runGitCommand(args: string[], cwd: string, options?: { quiet?: boolean }): Promise<string | null> {
+function runGitCommand(
+  args: string[],
+  cwd: string,
+  options?: { quiet?: boolean; env?: NodeJS.ProcessEnv },
+): Promise<string | null> {
   return new Promise((resolve) => {
     try {
       // -c core.quotePath=false：禁用 git 对非 ASCII 路径的八进制转义（如中文文件名
@@ -127,6 +132,7 @@ function runGitCommand(args: string[], cwd: string, options?: { quiet?: boolean 
         env: {
           ...process.env,
           GIT_TERMINAL_PROMPT: '0',
+          ...options?.env,
         },
       })
 
@@ -412,6 +418,125 @@ export async function findAllGitRoots(baseDir: string): Promise<string[]> {
   }
 
   return roots
+}
+
+/** Git 工作树快照，用临时 Index 写入对象库，不修改用户当前 Index 或工作区。 */
+export interface GitWorkingTreeSnapshot {
+  gitRoot: string
+  tree: string
+  pathspecs: string[]
+}
+
+/** 两棵 Git Tree 之间的文件和行数统计。 */
+export interface GitTreeChangeStats {
+  filesChanged: number
+  additions: number
+  deletions: number
+}
+
+function normalizeSnapshotPathspecs(pathspecs: string[]): string[] {
+  const normalized = pathspecs
+    .map((pathspec) => pathspec.replace(/\\/g, '/').replace(/^\.\/+/, ''))
+    .filter((pathspec) => (
+      pathspec === '.'
+      || (
+        pathspec.length > 0
+        && pathspec !== '..'
+        && !pathspec.startsWith('../')
+        && !isAbsolute(pathspec)
+      )
+    ))
+  return Array.from(new Set(normalized))
+}
+
+/**
+ * 创建当前工作树的 Git Tree 快照。
+ *
+ * 使用独立临时 Index，因此不会暂存用户文件；Tree/Blob 作为无引用对象写入仓库，
+ * 后续由 Git GC 自动回收。
+ */
+export async function createGitWorkingTreeSnapshot(
+  gitRoot: string,
+  pathspecs: string[],
+): Promise<GitWorkingTreeSnapshot | null> {
+  const safePathspecs = normalizeSnapshotPathspecs(pathspecs)
+  if (safePathspecs.length === 0) return null
+
+  const tempDir = mkdtempSync(join(tmpdir(), 'proma-turn-diff-'))
+  const indexPath = join(tempDir, 'index')
+  const env = { GIT_INDEX_FILE: indexPath }
+
+  try {
+    // 有提交时从 HEAD 初始化，确保 pathspec 中已经删除的跟踪文件能被正确记录；
+    // 新仓库没有 HEAD 时回退为空 Index。
+    const initialized = await runGitCommand(['read-tree', 'HEAD'], gitRoot, {
+      quiet: true,
+      env,
+    })
+    if (initialized === null) {
+      const emptyInitialized = await runGitCommand(['read-tree', '--empty'], gitRoot, {
+        quiet: true,
+        env,
+      })
+      if (emptyInitialized === null) return null
+    }
+
+    const added = await runGitCommand(['add', '-A', '--', ...safePathspecs], gitRoot, {
+      quiet: true,
+      env,
+    })
+    if (added === null) return null
+
+    const tree = await runGitCommand(['write-tree'], gitRoot, { quiet: true, env })
+    if (!tree) return null
+
+    return {
+      gitRoot,
+      tree,
+      pathspecs: safePathspecs,
+    }
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true })
+  }
+}
+
+/** 比较两份工作树快照，只统计指定范围内的文件。 */
+export async function getGitTreeChangeStats(
+  baseline: GitWorkingTreeSnapshot,
+  current: GitWorkingTreeSnapshot,
+): Promise<GitTreeChangeStats | null> {
+  if (normalizeGitRoot(baseline.gitRoot) !== normalizeGitRoot(current.gitRoot)) {
+    return null
+  }
+
+  const numstat = await runGitCommand([
+    'diff',
+    '--numstat',
+    '--find-renames',
+    baseline.tree,
+    current.tree,
+    '--',
+    ...baseline.pathspecs,
+  ], baseline.gitRoot, { quiet: true })
+  if (numstat === null) return null
+  if (!numstat) return { filesChanged: 0, additions: 0, deletions: 0 }
+
+  let filesChanged = 0
+  let additions = 0
+  let deletions = 0
+
+  for (const line of numstat.split('\n')) {
+    if (!line) continue
+    const parts = line.split('\t')
+    if (parts.length < 3) continue
+    filesChanged += 1
+    const fileAdditions = Number.parseInt(parts[0]!, 10)
+    const fileDeletions = Number.parseInt(parts[1]!, 10)
+    if (Number.isFinite(fileAdditions)) additions += fileAdditions
+    if (Number.isFinite(fileDeletions)) deletions += fileDeletions
+  }
+
+  return { filesChanged, additions, deletions }
 }
 
 /** 查找 Git 仓库根目录，先向上后向下搜索，失败返回 null */

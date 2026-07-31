@@ -131,6 +131,33 @@ describe('Agent 会话 JSONL 读取', () => {
     expect(messages.map((message) => message.type)).toEqual(['user', 'assistant'])
   })
 
+  test('Given 历史消息包含 CCB 非法 thinking 正文块 When 读取 Then 恢复为标准 text 块', () => {
+    writeAgentSessionJsonl('session-with-malformed-thinking-text', [
+      JSON.stringify({
+        type: 'assistant',
+        message: {
+          content: [{
+            type: 'thinking',
+            thinking: '',
+            signature: '',
+            text: '历史正文',
+          }],
+        },
+        parent_tool_use_id: null,
+      }),
+    ])
+
+    const messages = manager.getAgentSessionSDKMessages(
+      'session-with-malformed-thinking-text',
+    )
+
+    expect(messages[0]).toMatchObject({
+      message: {
+        content: [{ type: 'text', text: '历史正文' }],
+      },
+    })
+  })
+
   test('Given CCB 自动重试原始错误已同步到本地 When 读取 Then 不展示为未知错误', () => {
     writeAgentSessionJsonl('session-with-runtime-retry-error', [
       JSON.stringify({
@@ -445,6 +472,31 @@ describe('Agent 会话元数据', () => {
 })
 
 describe('Agent Transcript 增量合并', () => {
+  test('Given Runtime Transcript 包含 CCB 非法 thinking 正文块 When 合并 Then 转换为标准 text 块', () => {
+    const merged = manager.mergeAgentSessionSDKMessages(
+      'merge-malformed-thinking-text',
+      [{
+        type: 'assistant',
+        message: {
+          content: [{
+            type: 'thinking',
+            thinking: '',
+            signature: '',
+            text: 'Runtime 正文',
+          }],
+        },
+        parent_tool_use_id: null,
+        uuid: 'assistant-malformed',
+      } as never],
+    )
+
+    expect(merged[0]).toMatchObject({
+      message: {
+        content: [{ type: 'text', text: 'Runtime 正文' }],
+      },
+    })
+  })
+
   test('Given Runtime Transcript 包含自动重试原始错误 When 最终成功 Then 不合并未知错误卡片', () => {
     writeAgentSessionJsonl('merge-runtime-retry-error', [
       JSON.stringify({

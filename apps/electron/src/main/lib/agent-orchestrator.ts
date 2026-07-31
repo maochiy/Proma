@@ -63,6 +63,7 @@ import { isBuiltinMcpUserEnabled } from './builtin-mcp/settings'
 import { buildAgentRuntimeEnv, mergeRuntimeEnv, type AgentRuntimeEnv } from './agent-runtime-env'
 import { isVisibleRunMessage } from './agent-run-message-visibility'
 import { getAgentSdkMaxOutputTokens } from './agent-sdk-output-limits'
+import { startAgentTurnChangeTracking } from './agent-turn-change-tracker'
 import { createFallbackTitle } from './title-generation'
 import {
   buildCcbProviderConfiguration,
@@ -1320,6 +1321,20 @@ export class AgentOrchestrator {
         sessionMeta,
         workspaceSlug,
       })
+      try {
+        await startAgentTurnChangeTracking({
+          sessionId,
+          startedAt: streamStartedAt,
+          // 未选择项目时不扫描用户 Home；仅跟踪显式附加的目录。
+          paths: [
+            ...(workspace ? [agentCwd] : []),
+            ...allAdditionalDirectories,
+          ],
+        })
+      } catch (error) {
+        // 改动统计是展示增强，失败不得阻断 Agent 主流程。
+        console.warn(`[Agent 本轮改动] 创建基线失败: sessionId=${sessionId}`, error)
+      }
       const systemPromptAppend = buildSystemPrompt({
         workspaceName: workspace?.name,
         workspaceSlug,

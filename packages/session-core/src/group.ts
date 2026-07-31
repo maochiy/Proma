@@ -152,6 +152,15 @@ export function groupIntoTurns(messages: SDKMessage[], sessionModelId?: string):
       }
     } else if (msg.type === 'system') {
       const sysMsg = msg as SDKSystemMessage
+      // 压缩配置只是 Runtime 上下文窗口遥测，不代表会话发生了压缩，也不应
+      // 截断正在输出的 Assistant Turn。配置仍保留在 turnMessages 中，供调用方
+      // 统计上下文；没有进行中 Turn 时则无需生成一条不可见的历史分组。
+      if (sysMsg.subtype === 'context_compaction_config') {
+        if (currentTurn) {
+          currentTurn.turnMessages.push(msg)
+        }
+        continue
+      }
       // 仅需要独立渲染的 system 消息才中断 turn（压缩状态 / permission_denied）
       // 其他 system 消息（如 init、task_started、task_progress）归入当前 turn，不中断分组
       if (isPersistableSDKSystemMessage(sysMsg)) {

@@ -5,6 +5,7 @@ import { getToolDisplayName, getToolIcon } from './tool-utils'
 import type {
   SDKContentBlock,
   SDKMessage,
+  SDKTextBlock,
   SDKToolResultBlock,
   SDKToolUseBlock,
   SDKUserMessage,
@@ -62,7 +63,14 @@ function getTrailingTextStartIndex(blocks: SDKContentBlock[]): number | null {
   while (finalStartIndex > 0 && blocks[finalStartIndex - 1]?.type === 'text') {
     finalStartIndex -= 1
   }
-  return finalStartIndex
+
+  const hasVisibleText = blocks
+    .slice(finalStartIndex)
+    .some((block) =>
+      block.type === 'text'
+      && (block as SDKTextBlock).text.trim().length > 0,
+    )
+  return hasVisibleText ? finalStartIndex : null
 }
 
 function areToolsBeforeIndexCompleted(
@@ -167,13 +175,19 @@ export function buildProcessGroupToolNames(blocks: SDKContentBlock[]): string[] 
   return toolNames
 }
 
-export function ProcessBlockGroup({ blocks, isStreaming, isMessageTail = false, children }: ProcessBlockGroupProps): React.ReactElement {
-  const shouldExpandByDefault = !!isStreaming
+export function ProcessBlockGroup({
+  blocks,
+  isStreaming,
+  isMessageTail = false,
+  children,
+}: ProcessBlockGroupProps): React.ReactElement {
+  const shouldExpandByDefault = !!isStreaming || isMessageTail
   const [expanded, setExpanded] = React.useState(shouldExpandByDefault)
   const [shouldRenderContent, setShouldRenderContent] = React.useState(shouldExpandByDefault)
   const [collapseCountdown, setCollapseCountdown] = React.useState<number | null>(null)
   const userToggledRef = React.useRef(false)
   const wasStreamingRef = React.useRef(!!isStreaming)
+  const awaitingFinalOutputRef = React.useRef(false)
   const autoCollapseTimersRef = React.useRef<number[]>([])
   const contentRef = React.useRef<HTMLDivElement>(null)
   const [measuredHeight, setMeasuredHeight] = React.useState<number | undefined>(undefined)
@@ -185,10 +199,11 @@ export function ProcessBlockGroup({ blocks, isStreaming, isMessageTail = false, 
 
   React.useEffect(() => {
     clearAutoCollapseTimers()
+    setCollapseCountdown(null)
 
     if (isStreaming) {
-      setCollapseCountdown(null)
-      if (isStreaming && !wasStreamingRef.current) {
+      awaitingFinalOutputRef.current = false
+      if (!wasStreamingRef.current) {
         userToggledRef.current = false
       }
       if (!userToggledRef.current) {
@@ -198,13 +213,28 @@ export function ProcessBlockGroup({ blocks, isStreaming, isMessageTail = false, 
       return
     }
 
-    const shouldAutoCollapseAfterCompletion = wasStreamingRef.current && !userToggledRef.current
+    const completedStreaming = wasStreamingRef.current
     wasStreamingRef.current = false
 
-    if (!shouldAutoCollapseAfterCompletion) {
-      if (!userToggledRef.current) {
-        setExpanded(false)
+    if (userToggledRef.current) {
+      awaitingFinalOutputRef.current = false
+      return
+    }
+
+    if (isMessageTail) {
+      if (completedStreaming) {
+        awaitingFinalOutputRef.current = true
       }
+      setExpanded(true)
+      return
+    }
+
+    const shouldAutoCollapseAfterCompletion =
+      completedStreaming || awaitingFinalOutputRef.current
+    awaitingFinalOutputRef.current = false
+
+    if (!shouldAutoCollapseAfterCompletion) {
+      setExpanded(false)
       return
     }
 
@@ -224,7 +254,7 @@ export function ProcessBlockGroup({ blocks, isStreaming, isMessageTail = false, 
     autoCollapseTimersRef.current.push(soundDelayTimer)
 
     return clearAutoCollapseTimers
-  }, [clearAutoCollapseTimers, isStreaming])
+  }, [clearAutoCollapseTimers, isMessageTail, isStreaming])
 
   // 折叠前测量实际高度，用于丝滑的 height 过渡（子元素不 reflow，只裁剪边界）
   React.useEffect(() => {

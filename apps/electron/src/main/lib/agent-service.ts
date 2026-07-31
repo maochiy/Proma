@@ -33,6 +33,7 @@ import type {
   ThinkingEffortLevel,
   AgentRuntimeExecutionGraph,
   AgentRuntimeSubagentTranscript,
+  AgentTurnChangeStats,
 } from '@proma/shared'
 import { CcbDesktopRuntimeAdapter } from './ccb-runtime/ccb-agent-adapter'
 import { ccbDesktopRuntimeClient } from './ccb-runtime/runtime-client'
@@ -42,6 +43,10 @@ import { getAgentSessionAttachmentsDir, getWorkspaceFilesDir } from './config-pa
 import { getAgentSessionMeta, updateAgentSessionMeta } from './agent-session-manager'
 import { setAgentStopper, setHeadlessAgentRunner } from './agent-headless-runner-registry'
 import { sendAgentStreamComplete } from './agent-completion-payload'
+import {
+  clearAgentTurnChangeTracking,
+  getAgentTurnChangeStats as readAgentTurnChangeStats,
+} from './agent-turn-change-tracker'
 
 // ===== 实例创建 =====
 
@@ -325,7 +330,15 @@ export async function stopAgent(sessionId: string): Promise<void> {
 }
 
 export async function closeAgentSessionRuntime(sessionId: string): Promise<void> {
+  clearAgentTurnChangeTracking(sessionId)
   await orchestrator.closeSession(sessionId)
+}
+
+/** 获取当前 Agent 本轮相对执行前基线产生的文件改动统计。 */
+export async function getAgentTurnChangeStats(
+  sessionId: string,
+): Promise<AgentTurnChangeStats | null> {
+  return readAgentTurnChangeStats(sessionId)
 }
 
 setHeadlessAgentRunner(runAgentHeadless)

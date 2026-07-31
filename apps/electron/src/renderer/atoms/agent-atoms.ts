@@ -7,7 +7,7 @@
 
 import { atom } from 'jotai'
 import { atomFamily, atomWithStorage } from 'jotai/utils'
-import type { AgentSessionMeta, AgentEvent, AgentWorkspace, AgentPendingFile, AgentRuntimeModelCatalog, AgentRuntimeExecutionGraph, RetryAttempt, PromaPermissionMode, PermissionRequest, AskUserRequest, ExitPlanModeRequest, ThinkingConfig, ThinkingEffortLevel, SDKMessage, UnstagedChangesResult } from '@proma/shared'
+import type { AgentSessionMeta, AgentEvent, AgentWorkspace, AgentPendingFile, AgentRuntimeModelCatalog, AgentRuntimeExecutionGraph, AgentTurnChangeStats, RetryAttempt, PromaPermissionMode, PermissionRequest, AskUserRequest, ExitPlanModeRequest, ThinkingConfig, ThinkingEffortLevel, SDKMessage, UnstagedChangesResult } from '@proma/shared'
 import { PROMA_DEFAULT_PERMISSION_MODE } from '@proma/shared'
 import { calculateDockBadgeCount, countPendingRequests } from '@/lib/dock-badge-count'
 import type { AgentQueuedMessage } from '@/lib/agent-message-queue'
@@ -338,6 +338,11 @@ export const workspaceFilesVersionAtom = atom(0)
 /** CCB 原生 Subagent / Teams / Workflow / Todo 执行图，按会话隔离。 */
 export const agentRuntimeExecutionGraphsAtom = atom<
   Map<string, AgentRuntimeExecutionGraph>
+>(new Map())
+
+/** Agent 本轮相对执行前工作树基线产生的文件改动统计，按会话隔离。 */
+export const agentTurnChangeStatsAtom = atom<
+  Map<string, AgentTurnChangeStats>
 >(new Map())
 
 // ===== 侧面板 Atoms =====

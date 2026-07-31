@@ -93,6 +93,52 @@ describe('CCB 思考过程增量快照', () => {
     })
   })
 
+  test('Given CCB 错误地为正文重开空 thinking block When 收到 text_delta Then 按文本块继续渲染', () => {
+    let state = createCcbPartialAssistantState()
+    for (const event of [
+      { type: 'message_start', message: { id: 'msg-deepseek', model: 'deepseek-v4-flash' } },
+      { type: 'content_block_start', index: 2, content_block: { type: 'thinking', thinking: '', signature: '' } },
+    ]) {
+      state = applyCcbPartialAssistantEvent(state, streamEvent(event)).state
+    }
+
+    const update = applyCcbPartialAssistantEvent(state, streamEvent({
+      type: 'content_block_delta',
+      index: 2,
+      delta: { type: 'text_delta', text: '正文继续输出' },
+    }))
+
+    expect(update.message).toMatchObject({
+      uuid: 'ccb-partial:msg-deepseek:2',
+      message: {
+        content: [{ type: 'text', text: '正文继续输出' }],
+      },
+    })
+  })
+
+  test('Given 空 thinking block When 仅收到空 text_delta 后继续 thinking_delta Then 保持思考块类型', () => {
+    let state = createCcbPartialAssistantState()
+    for (const event of [
+      { type: 'message_start', message: { id: 'msg-empty-text', model: 'deepseek-v4-flash' } },
+      { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '' } },
+    ]) {
+      state = applyCcbPartialAssistantEvent(state, streamEvent(event)).state
+    }
+
+    const update = applyCcbPartialAssistantEvent(state, streamEvent({
+      type: 'content_block_delta',
+      index: 0,
+      delta: { type: 'thinking_delta', thinking: '继续思考' },
+    }))
+
+    expect(update.message).toMatchObject({
+      message: {
+        content: [{ type: 'thinking', thinking: '继续思考' }],
+      },
+    })
+  })
+
   test('Given Provider 省略 content_block_start When 直接收到 thinking_delta Then 仍生成思考快照', () => {
     let state = createCcbPartialAssistantState()
     state = applyCcbPartialAssistantEvent(state, streamEvent({
