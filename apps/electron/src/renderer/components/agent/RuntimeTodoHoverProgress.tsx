@@ -1,5 +1,5 @@
 import * as React from 'react'
-import { Check, Circle, CircleAlert, Loader2 } from 'lucide-react'
+import { Check, Circle, CircleAlert } from 'lucide-react'
 import { useAtomValue } from 'jotai'
 import type { AgentRuntimeTodoItem } from '@proma/shared'
 import { agentRuntimeExecutionGraphsAtom } from '@/atoms/agent-atoms'
@@ -8,6 +8,9 @@ import { cn } from '@/lib/utils'
 interface RuntimeTodoHoverProgressProps {
   sessionId: string
 }
+
+const FLOATING_PLAN_CARD_CLASS =
+  'rounded-[14px] border border-black/[0.07] bg-card text-card-foreground shadow-md dark:border-white/[0.10]'
 
 function isCompleted(todo: AgentRuntimeTodoItem): boolean {
   return todo.status === 'completed'
@@ -29,13 +32,10 @@ function TodoStatusIcon({ todo }: { todo: AgentRuntimeTodoItem }): React.ReactEl
       </span>
     )
   }
-  if (todo.status === 'in_progress') {
-    return <Loader2 className="size-4 shrink-0 animate-spin text-primary" />
-  }
   if (todo.status === 'blocked') {
     return <CircleAlert className="size-4 shrink-0 text-amber-500" />
   }
-  return <Circle className="size-4 shrink-0 text-muted-foreground/70" />
+  return <Circle className="size-4 shrink-0 text-foreground/85" strokeWidth={1.75} />
 }
 
 /** 输入框正上方的 CCB Todo 进度；默认收起，鼠标移入显示完整步骤。 */
@@ -44,40 +44,33 @@ export function RuntimeTodoHoverProgress({
 }: RuntimeTodoHoverProgressProps): React.ReactElement | null {
   const graphs = useAtomValue(agentRuntimeExecutionGraphsAtom)
   const todos = graphs.get(sessionId)?.todos ?? []
-  const [hovered, setHovered] = React.useState(false)
 
   if (todos.length === 0) return null
 
   const stepIndex = currentStepIndex(todos)
-  const currentTodo = todos[stepIndex]
 
   return (
     <div
-      className="relative z-30 mx-auto -mb-1"
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
+      className="group relative z-30 mx-auto mb-2 w-fit"
     >
-      {hovered && (
-        <div
-          className={cn(
-            'absolute bottom-full left-1/2 mb-2 w-[min(390px,calc(100vw-3rem))] -translate-x-1/2',
-            'rounded-xl bg-popover/98 p-2.5 text-popover-foreground shadow-xl ring-1 ring-black/8',
-            'animate-in fade-in zoom-in-95 slide-in-from-bottom-1 duration-150',
-          )}
-        >
-          <div className="space-y-1">
-            {todos.map((todo, index) => (
+      <div
+        className={cn(
+          'pointer-events-none invisible absolute bottom-full left-1/2 w-max max-w-[min(420px,calc(100vw-3rem))]',
+          '-translate-x-1/2 translate-y-1 pb-2 opacity-0 transition-[opacity,transform,visibility] duration-150',
+          'group-hover:pointer-events-auto group-hover:visible group-hover:translate-y-0 group-hover:opacity-100',
+        )}
+      >
+        <div className={cn(FLOATING_PLAN_CARD_CLASS, 'p-2.5')}>
+          <div className="space-y-0.5">
+            {todos.map((todo) => (
               <div
                 key={todo.id}
-                className={cn(
-                  'flex items-start gap-2 rounded-lg px-2 py-1.5 text-[13px] leading-5',
-                  index === stepIndex && 'bg-accent/65',
-                )}
+                className="flex max-w-full items-start gap-2 px-1.5 py-0.5 text-[13px] leading-5"
               >
                 <span className="mt-0.5">
                   <TodoStatusIcon todo={todo} />
                 </span>
-                <div className="min-w-0 flex-1">
+                <div className="min-w-0">
                   <p className={cn(
                     'break-words',
                     isCompleted(todo) && 'text-muted-foreground line-through decoration-muted-foreground/45',
@@ -98,18 +91,18 @@ export function RuntimeTodoHoverProgress({
             ))}
           </div>
         </div>
-      )}
+      </div>
 
       <div
         className={cn(
-          'flex h-9 cursor-default items-center gap-2 rounded-full bg-background/95 px-3.5',
-          'text-[13px] text-muted-foreground shadow-sm ring-1 ring-border/70 backdrop-blur-md',
-          'transition-colors hover:bg-accent/65 hover:text-foreground',
+          FLOATING_PLAN_CARD_CLASS,
+          'inline-flex h-9 cursor-default items-center gap-2 px-3.5 text-[13px] text-muted-foreground',
         )}
       >
-        {currentTodo?.status === 'in_progress'
-          ? <Loader2 className="size-3.5 animate-spin text-primary" />
-          : <Circle className="size-3.5 text-primary/60" />}
+        <Circle
+          className="size-3.5 shrink-0 text-sky-200 dark:text-sky-400/75"
+          strokeWidth={2}
+        />
         <span className="tabular-nums">第 {stepIndex + 1} / {todos.length} 步</span>
       </div>
     </div>
