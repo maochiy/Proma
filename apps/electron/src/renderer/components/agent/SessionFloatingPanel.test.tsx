@@ -15,6 +15,7 @@ import {
   allocateFloatingRuntimeListRows,
   SessionFloatingPanel,
 } from './SessionFloatingPanel'
+import { selectRuntimePlanVisibleItems } from './runtime-plan-visible-window'
 
 const SESSION_ID = 'floating-panel-test'
 
@@ -115,8 +116,11 @@ describe('SessionFloatingPanel 会话悬浮面板', () => {
     const html = renderFloatingPanel(false)
 
     expect(html).toContain('!rounded-[24px]')
-    expect(html).toContain('max-h-[min(380px,calc(100%-72px))]')
+    expect(html).toContain('max-h-[calc(100%-72px)]')
+    expect(html).not.toContain('max-h-[min(380px')
     expect(html).not.toContain('h-[380px]')
+    expect(html).toContain('overflow-y-auto')
+    expect(html).toContain('scrollbar-none')
   })
 
   test('Given 会话存在计划和节点 When 渲染 Then 二者共用无滚动条区域且节点只显示名称', () => {
@@ -299,13 +303,103 @@ describe('SessionFloatingPanel 会话悬浮面板', () => {
     expect(html).toContain('data-session-plan-view-all')
     expect(html).toContain('data-session-subagent-view-all')
     expect(html).toContain('子智能体 · 6')
-    expect(html).not.toContain('overflow-y-auto')
+    expect(html).toContain('overflow-y-auto')
     expect(
       allocateFloatingRuntimeListRows(graph.todos.length, graph.nodes.length),
     ).toEqual({
-      visiblePlanItems: 3,
-      visibleSubagentItems: 2,
+      visiblePlanItems: 5,
+      visibleSubagentItems: 4,
     })
+  })
+
+  test('Given 计划超过可见数量且后续步骤正在执行 When 渲染 Then 可见窗口向后补位且不修改完整计划', () => {
+    const todos: AgentRuntimeExecutionGraph['todos'] = Array.from(
+      { length: 8 },
+      (_, index) => ({
+        id: `${index + 1}`,
+        content: `计划步骤 ${index + 1}`,
+        status: index < 3
+          ? 'completed'
+          : index === 3
+            ? 'in_progress'
+            : 'pending',
+      }),
+    )
+    const originalIds = todos.map((todo) => todo.id)
+    const visible = selectRuntimePlanVisibleItems(todos, 5)
+
+    expect(visible.map((todo) => todo.id)).toEqual(['4', '5', '6', '7', '8'])
+    expect(todos.map((todo) => todo.id)).toEqual(originalIds)
+
+    const html = renderFloatingPanel(true, [], {
+      nodes: [],
+      todos,
+      updatedAt: 1,
+    })
+    expect(html).not.toContain('计划步骤 1')
+    expect(html).toContain('计划步骤 4')
+    expect(html).toContain('计划步骤 8')
+    expect(html).toContain('3 / 8')
+    expect(html).toContain('data-session-plan-view-all')
+  })
+
+  test('Given 当前步骤接近计划末尾 When 计算可见窗口 Then 向前补齐但保持原计划顺序', () => {
+    const todos: AgentRuntimeExecutionGraph['todos'] = Array.from(
+      { length: 6 },
+      (_, index) => ({
+        id: `${index + 1}`,
+        content: `计划步骤 ${index + 1}`,
+        status: index < 3
+          ? 'completed'
+          : index === 3
+            ? 'in_progress'
+            : 'pending',
+      }),
+    )
+
+    expect(
+      selectRuntimePlanVisibleItems(todos, 5).map((todo) => todo.id),
+    ).toEqual(['2', '3', '4', '5', '6'])
+  })
+
+  test('Given 全部计划已经完成 When 计算可见窗口 Then 保留完成数据且不触碰跨轮重置状态', () => {
+    const todos: AgentRuntimeExecutionGraph['todos'] = Array.from(
+      { length: 7 },
+      (_, index) => ({
+        id: `${index + 1}`,
+        content: `已完成步骤 ${index + 1}`,
+        status: 'completed',
+      }),
+    )
+
+    expect(
+      selectRuntimePlanVisibleItems(todos, 5).map((todo) => todo.id),
+    ).toEqual(['3', '4', '5', '6', '7'])
+    expect(todos.every((todo) => todo.status === 'completed')).toBe(true)
+  })
+
+  test('Given 前面的子智能体已经完成 When 数据超过可见数量 Then 后续节点依次向前补位', () => {
+    const graph: AgentRuntimeExecutionGraph = {
+      nodes: Array.from({ length: 6 }, (_, index) => ({
+        id: `node-${index + 1}`,
+        kind: 'subagent',
+        name: `子智能体 ${index + 1}`,
+        description: `执行任务 ${index + 1}`,
+        status: index === 0 ? 'completed' : index === 1 ? 'running' : 'queued',
+        transcriptAvailable: true,
+        startedAt: index + 1,
+      })),
+      todos: [],
+      updatedAt: 1,
+    }
+
+    const html = renderFloatingPanel(true, [], graph)
+
+    expect(html).toContain('子智能体 · 6')
+    expect(html).toContain('子智能体 2')
+    expect(html).toContain('子智能体 5')
+    expect(html).not.toContain('子智能体 6</span>')
+    expect(html).toContain('data-session-subagent-view-all')
   })
 
   test('Given CCB 节点仍为 running 但父会话已停止 When 渲染 Then 保留节点但不显示旋转状态', () => {

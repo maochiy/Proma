@@ -13,6 +13,10 @@ import {
   hasActiveRuntimeTodos,
   shouldShowRuntimeTodoProgress,
 } from './RuntimeTodoHoverProgress'
+import {
+  getRuntimePlanVisibleWindowStartIndex,
+  selectRuntimePlanVisibleItems,
+} from './runtime-plan-visible-window'
 
 const SESSION_ID = 'runtime-plan-card-test'
 type RuntimeTodoStore = ReturnType<typeof createStore>
@@ -505,20 +509,21 @@ describe('RuntimeTodoHoverProgress 计划进度卡片', () => {
     expect(html).not.toContain('overflow-y-auto')
   })
 
-  test('Given 计划超过五条 When 渲染悬浮面板 Then 固定高度并支持无滚动条滚动', () => {
+  test('Given 计划超过五条且后续步骤正在执行 When 渲染入口计划面板 Then 可见窗口自动向后推进并保留完整滚动列表', () => {
+    const todos: AgentRuntimeExecutionGraph['todos'] = [
+      { id: '1', content: '步骤一', status: 'completed' },
+      { id: '2', content: '步骤二', status: 'completed' },
+      { id: '3', content: '步骤三', status: 'in_progress' },
+      { id: '4', content: '步骤四', status: 'pending' },
+      { id: '5', content: '步骤五', status: 'pending' },
+      { id: '6', content: '步骤六', status: 'pending' },
+      { id: '7', content: '步骤七', status: 'blocked' },
+    ]
     const html = renderRuntimeTodoHoverProgress({
       running: true,
       graph: {
         nodes: [],
-        todos: [
-          { id: '1', content: '步骤一', status: 'completed' },
-          { id: '2', content: '步骤二', status: 'completed' },
-          { id: '3', content: '步骤三', status: 'in_progress' },
-          { id: '4', content: '步骤四', status: 'pending' },
-          { id: '5', content: '步骤五', status: 'pending' },
-          { id: '6', content: '步骤六', status: 'pending' },
-          { id: '7', content: '步骤七', status: 'blocked' },
-        ],
+        todos,
         updatedAt: 12,
       },
     })
@@ -528,8 +533,30 @@ describe('RuntimeTodoHoverProgress 计划进度卡片', () => {
     expect(html).toContain('overflow-y-auto')
     expect(html).toContain('overscroll-contain')
     expect(html).toContain('scrollbar-none')
+    expect(html).toContain('步骤一')
     expect(html).toContain('步骤七')
     expect(html).toContain('第 3 / 7 步')
+    expect(getRuntimePlanVisibleWindowStartIndex(todos, 5)).toBe(2)
+    expect(
+      selectRuntimePlanVisibleItems(todos, 5).map((todo) => todo.id),
+    ).toEqual(['3', '4', '5', '6', '7'])
+  })
+
+  test('Given 当前步骤接近计划末尾 When 入口计划面板推进窗口 Then 向前补齐并保持计划原顺序', () => {
+    const todos: AgentRuntimeExecutionGraph['todos'] = [
+      { id: '1', content: '步骤一', status: 'completed' },
+      { id: '2', content: '步骤二', status: 'completed' },
+      { id: '3', content: '步骤三', status: 'completed' },
+      { id: '4', content: '步骤四', status: 'completed' },
+      { id: '5', content: '步骤五', status: 'in_progress' },
+      { id: '6', content: '步骤六', status: 'pending' },
+    ]
+
+    expect(getRuntimePlanVisibleWindowStartIndex(todos, 5)).toBe(1)
+    expect(
+      selectRuntimePlanVisibleItems(todos, 5).map((todo) => todo.id),
+    ).toEqual(['2', '3', '4', '5', '6'])
+    expect(todos.map((todo) => todo.id)).toEqual(['1', '2', '3', '4', '5', '6'])
   })
 
   test('Given 本轮有多文件改动 When 悬停改动统计 Then 显示文件名与各自增删行数', () => {

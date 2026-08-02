@@ -193,7 +193,7 @@ export function FileSearchBar({
       const entry = results[selectedIndex]
       if (entry) {
         const absPath = resolveAbsolutePath(entry)
-        if (sessionId) setAutoReveal({ sessionId, path: absPath, ts: Date.now(), select: true })
+        if (sessionId) setAutoReveal({ sessionId, path: absPath, ts: Date.now() })
         // 文件才打开预览；文件夹仅在文件树中定位+选中
         if (entry.type === 'file') onFilePreview?.(absPath)
         setIsOpen(false)
@@ -205,7 +205,7 @@ export function FileSearchBar({
 
   const handleClick = React.useCallback((entry: FileIndexEntry) => {
     const absPath = resolveAbsolutePath(entry)
-    if (sessionId) setAutoReveal({ sessionId, path: absPath, ts: Date.now(), select: true })
+    if (sessionId) setAutoReveal({ sessionId, path: absPath, ts: Date.now() })
     // 文件才打开预览；文件夹仅在文件树中定位+选中
     if (entry.type === 'file') onFilePreview?.(absPath)
     setIsOpen(false)

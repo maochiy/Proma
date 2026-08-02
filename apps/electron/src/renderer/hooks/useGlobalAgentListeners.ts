@@ -20,8 +20,8 @@ import {
   allPendingExitPlanRequestsAtom,
   agentPromptSuggestionsAtom,
   backgroundTasksAtomFamily,
-  fileBrowserAutoRevealAtom,
   recentlyModifiedPathsAtom,
+  markAgentFileModifiedAtom,
   RECENTLY_MODIFIED_TTL_MS,
   applyAgentEvent,
   liveMessagesMapAtom,
@@ -78,7 +78,7 @@ import {
 import { getPlanModeChangeFromToolName, updatePlanModeSessionSet } from '@/lib/agent-plan-mode'
 import { upsertAgentLiveMessage } from '@/lib/agent-live-message'
 
-/** 触发右侧文件浏览器自动定位的写入类工具集合。 */
+/** 用于记录成功写入文件的工具集合。 */
 const WRITE_TOOLS = new Set([
   'Write',
   'Edit',
@@ -803,9 +803,8 @@ export function useGlobalAgentListeners(): void {
             })
           }
 
-          // RightSidePanel 由用户完全控制，Agent 行为不影响其开关状态
-
-          // Agent 修改文件时，触发右侧文件浏览器自动定位（展开父目录 + 滚动 + 高亮）
+          // RightSidePanel 由用户完全控制，Agent 行为不影响其开关、Tab、滚动或目录展开状态。
+          // 此处只记录待完成的写工具；文件刷新和最近修改标记在工具完成后处理。
           if (event.type === 'tool_start' && WRITE_TOOLS.has(event.toolName)) {
             const input = event.input as Record<string, unknown> | undefined
             const targetPath =
@@ -813,18 +812,6 @@ export function useGlobalAgentListeners(): void {
               ?? (input?.path as string | undefined)
               ?? (input?.notebook_path as string | undefined)
             pendingWriteTools.set(event.toolUseId, { path: targetPath || '', sessionId })
-            if (typeof targetPath === 'string' && targetPath.length > 0) {
-              const now = Date.now()
-              store.set(fileBrowserAutoRevealAtom, { sessionId, path: targetPath, ts: now })
-              // 同时记入「最近修改」状态，用于 60s 内左侧竖条标记
-              store.set(recentlyModifiedPathsAtom, (prev) => {
-                const map = new Map(prev)
-                const inner = new Map(map.get(sessionId) ?? new Map())
-                inner.set(targetPath, now)
-                map.set(sessionId, inner)
-                return map
-              })
-            }
           }
 
           // Shell 工具可能通过 sed、脚本等间接修改文件，完成后统一刷新。
@@ -876,7 +863,13 @@ export function useGlobalAgentListeners(): void {
               const writtenPath = entry.path
               pendingWriteTools.delete(event.toolUseId)
               bumpDiffRefresh(sessionId)
-              if (writtenPath) {
+              if (writtenPath && !event.isError) {
+                // 只标记成功写入的文件，不发送自动定位信号。
+                store.set(markAgentFileModifiedAtom, {
+                  sessionId,
+                  path: writtenPath,
+                  modifiedAt: Date.now(),
+                })
                 buildWrittenFilePreviewInfo(sessionId, writtenPath).then((previewFile) => {
                   if (!previewFile || previewFile.previewOnly || !previewFile.inDiffScope) return
 

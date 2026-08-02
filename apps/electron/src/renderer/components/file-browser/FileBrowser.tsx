@@ -104,9 +104,9 @@ export function FileBrowser({ rootPath, hideToolbar, embedded, hideEmpty, onAddT
   const [error, setError] = React.useState<string | null>(null)
   const filesVersion = useAtomValue(workspaceFilesVersionAtom)
 
-  // ===== Agent 写入文件时的自动定位 =====
+  // ===== 用户通过文件搜索主动定位 =====
   const autoReveal = useAtomValue(fileBrowserAutoRevealAtom)
-  // 仅当目标路径落在本实例 rootPath 内才响应；以 ts 标识本次脉冲
+  // 仅当目标路径落在本实例 rootPath 内才响应；以 ts 区分连续定位操作
   const revealForThisRoot = React.useMemo(() => {
     if (!autoReveal || !rootPath) return null
     if (!isPathUnderRoot(rootPath, autoReveal.path)) return null
@@ -118,17 +118,16 @@ export function FileBrowser({ rootPath, hideToolbar, embedded, hideEmpty, onAddT
   )
   const revealTarget = revealForThisRoot?.path ?? null
   const revealTs = revealForThisRoot?.ts ?? 0
-  const revealSelect = revealForThisRoot?.select ?? false
 
-  // ===== autoReveal 带 select 标记时，将目标文件加入选中态 =====
+  // ===== 主动定位时将目标文件加入选中态 =====
   const consumedSelectTsRef = React.useRef(0)
   React.useEffect(() => {
-    if (!revealForThisRoot?.select || !revealTarget) return
+    if (!revealForThisRoot || !revealTarget) return
     // 避免同一个 ts 被重复消费
     if (revealTs <= consumedSelectTsRef.current) return
     consumedSelectTsRef.current = revealTs
     setSelectedPaths(new Set([revealTarget]))
-  }, [revealTs, revealForThisRoot?.select, revealTarget])
+  }, [revealTs, revealForThisRoot, revealTarget])
 
   // ===== 最近修改的文件路径（60s 内显示左侧竖条） =====
   const recentlyModifiedMap = useAtomValue(recentlyModifiedPathsAtom)
@@ -327,7 +326,6 @@ export function FileBrowser({ rootPath, hideToolbar, embedded, hideEmpty, onAddT
           revealAncestors={revealAncestors}
           revealTarget={revealTarget}
           revealTs={revealTs}
-          revealSelect={revealSelect}
           recentlyModifiedSet={recentlyModifiedSet}
           onSelect={handleSelect}
           onShowInFolder={handleShowInFolder}
@@ -424,14 +422,12 @@ interface FileTreeItemProps {
   moving: boolean
   /** 文件版本号，变化时已展开的文件夹自动重新加载子项 */
   refreshVersion: number
-  /** 自动定位：祖先目录路径集合（命中则自动展开） */
+  /** 主动定位：祖先目录路径集合（命中则自动展开） */
   revealAncestors: Set<string>
-  /** 自动定位：目标文件路径（命中则滚动 + 高亮脉冲） */
+  /** 主动定位：目标文件路径（命中则滚动到可视区） */
   revealTarget: string | null
-  /** 自动定位脉冲时间戳，变化时重新触发 */
+  /** 主动定位时间戳，变化时重新触发 */
   revealTs: number
-  /** 本次 reveal 是否带 select 标记（来源于用户搜索点击）；为 true 时跳过 flash 高亮，避免覆盖选中色 */
-  revealSelect: boolean
   /** 最近修改的路径集合（命中则在行左侧显示竖条标记） */
   recentlyModifiedSet: Set<string>
   onSelect: (entry: FileEntry, event: React.MouseEvent) => void
@@ -459,7 +455,6 @@ function FileTreeItem({
   revealAncestors,
   revealTarget,
   revealTs,
-  revealSelect,
   recentlyModifiedSet,
   onSelect,
   onShowInFolder,
@@ -477,7 +472,6 @@ function FileTreeItem({
   const [expanded, setExpanded] = React.useState(false)
   const [children, setChildren] = React.useState<FileEntry[]>([])
   const [childrenLoaded, setChildrenLoaded] = React.useState(false)
-  const [flash, setFlash] = React.useState(false)
   const rowRef = React.useRef<HTMLDivElement>(null)
   const supportsTerminalFolderOpen = typeof navigator !== 'undefined' && navigator.userAgent.includes('Mac')
 
@@ -490,7 +484,7 @@ function FileTreeItem({
     }
   }, [refreshVersion]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // ===== Agent 自动定位：祖先目录自动展开 + 目标行滚动到中心 + 0.8s 高亮脉冲 =====
+  // ===== 用户主动定位：展开祖先目录并将目标行滚动到中心 =====
   React.useEffect(() => {
     if (revealTs === 0) return
 
@@ -531,20 +525,10 @@ function FileTreeItem({
       cleanups.push(() => { cancelled = true })
     }
 
-    // 目标行：滚动到可视区中心 + 高亮脉冲
+    // 目标行滚动到可视区中心
     if (isTarget) {
       // 仅在不会通过展开分支异步滚动时立即滚动（即：目标是文件，或已展开的目录）
       if (!willExpand) scrollToTarget()
-      // 用户搜索点击场景（revealSelect=true）会同步把目标置为选中态，
-      // flash 动画末关键帧的 transparent 背景会盖掉 bg-accent，造成"先闪一下再变选中"的视觉断层，
-      // 因此该路径跳过 flash，仅保留滚动 + 选中态。Agent 自动定位（无 select）仍走 flash。
-      // 注意：不要改 globals.css 里 .file-browser-row-flash 末关键帧的 transparent，那是 Agent
-      // 路径下"动画结束行恢复无背景"的预期行为；选中态冲突应由本分支跳过 class 解决。
-      if (!revealSelect) {
-        setFlash(true)
-        const t = setTimeout(() => setFlash(false), 1200)
-        cleanups.push(() => clearTimeout(t))
-      }
     }
 
     if (cleanups.length > 0) return () => { for (const c of cleanups) c() }
@@ -711,7 +695,6 @@ function FileTreeItem({
               : isSticky
                 ? 'group-hover:bg-accent'
                 : 'group-hover:bg-accent/50',
-            flash && 'file-browser-row-flash',
           )}
         />
         {/* sticky 行祖先链竖线，逻辑见 tree-row-layout.tsx 的 AncestorGuides */}
@@ -888,7 +871,6 @@ function FileTreeItem({
               revealAncestors={revealAncestors}
               revealTarget={revealTarget}
               revealTs={revealTs}
-              revealSelect={revealSelect}
               recentlyModifiedSet={recentlyModifiedSet}
               onSelect={onSelect}
               onShowInFolder={onShowInFolder}

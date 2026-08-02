@@ -862,25 +862,47 @@ export const currentSessionSidePanelOpenAtom = atom<boolean>((get) => {
 export const agentSessionPathMapAtom = atom<Map<string, string>>(new Map())
 
 /**
- * 文件浏览器自动定位信号：当 Agent 调用写入类工具（Write/Edit/MultiEdit/NotebookEdit）时，
- * 设置该 atom；FileBrowser 实例订阅后，若路径落在自身 rootPath 下则展开祖先 + 滚动 + 高亮。
+ * 文件浏览器主动定位信号：仅由用户操作（例如点击文件搜索结果）设置。
+ * FileBrowser 实例订阅后，若路径落在自身 rootPath 下则展开祖先、滚动并高亮。
+ * Agent 写文件不得设置该 atom，避免执行期间影响用户的右侧 Tab 与文件树视口。
  * `ts` 用于触发同路径的二次脉冲（atom 比对引用）。
  */
 export interface FileBrowserAutoReveal {
   sessionId: string
   path: string
   ts: number
-  /** 是否同时将文件设为选中态 */
-  select?: boolean
 }
 export const fileBrowserAutoRevealAtom = atom<FileBrowserAutoReveal | null>(null)
 
 /**
  * 最近被 Agent 修改的文件路径（per-session，path → 修改时间戳 ms）。
- * FileBrowser 据此在文件行左侧渲染竖条标记，60s 后自动消失，
- * 用于让用户在错过 0.8s 脉冲后仍能看到「最近修改」状态。
+ * FileBrowser 据此在文件行左侧渲染标记，60s 后自动消失。
  */
 export const recentlyModifiedPathsAtom = atom<Map<string, Map<string, number>>>(new Map())
+
+export interface MarkAgentFileModifiedInput {
+  sessionId: string
+  path: string
+  modifiedAt: number
+}
+
+/**
+ * 记录 Agent 最近修改的文件。
+ *
+ * 该动作只更新标记，不触碰右侧面板开关、动态 Tabs 或文件浏览器定位信号。
+ */
+export const markAgentFileModifiedAtom = atom(
+  null,
+  (_get, set, input: MarkAgentFileModifiedInput) => {
+    set(recentlyModifiedPathsAtom, (previous) => {
+      const next = new Map(previous)
+      const sessionPaths = new Map(next.get(input.sessionId) ?? new Map())
+      sessionPaths.set(input.path, input.modifiedAt)
+      next.set(input.sessionId, sessionPaths)
+      return next
+    })
+  },
+)
 
 /** 最近修改标记的存活时间（毫秒） */
 export const RECENTLY_MODIFIED_TTL_MS = 60_000

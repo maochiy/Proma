@@ -1,5 +1,14 @@
 import { describe, expect, test } from 'bun:test'
-import { applyAgentEvent, type AgentStreamState } from './agent-atoms'
+import { createStore } from 'jotai'
+import {
+  agentDiffPanelTabAtom,
+  agentSidePanelTabsAtom,
+  applyAgentEvent,
+  fileBrowserAutoRevealAtom,
+  markAgentFileModifiedAtom,
+  recentlyModifiedPathsAtom,
+  type AgentStreamState,
+} from './agent-atoms'
 
 function createStreamState(overrides: Partial<AgentStreamState> = {}): AgentStreamState {
   return {
@@ -122,5 +131,47 @@ describe('Agent 上下文压缩状态', () => {
       inputTokens: 180_000,
     })
     expect(result.contextUsageIsEstimated).toBeUndefined()
+  })
+})
+
+describe('Agent 文件修改展示状态', () => {
+  test('Given 右侧没有打开文件 Tab When Agent 修改文件 Then 只记录标记且不创建 Tab 或定位文件', () => {
+    const store = createStore()
+    const sessionId = 'agent-file-write-session'
+    const path = '/tmp/project/src/new-file.ts'
+
+    store.set(markAgentFileModifiedAtom, {
+      sessionId,
+      path,
+      modifiedAt: 123,
+    })
+
+    expect(store.get(recentlyModifiedPathsAtom).get(sessionId)?.get(path)).toBe(123)
+    expect(store.get(agentSidePanelTabsAtom).get(sessionId)).toBeUndefined()
+    expect(store.get(agentDiffPanelTabAtom).get(sessionId)).toBeUndefined()
+    expect(store.get(fileBrowserAutoRevealAtom)).toBeNull()
+  })
+
+  test('Given 用户已打开其他文件 Tab When Agent 修改文件 Then 不切换 Tab 且不覆盖用户定位状态', () => {
+    const store = createStore()
+    const sessionId = 'agent-file-write-session'
+    const manualReveal = {
+      sessionId,
+      path: '/tmp/project/src/manual.ts',
+      ts: 100,
+    }
+    store.set(agentSidePanelTabsAtom, new Map([[sessionId, ['workspace']]]))
+    store.set(agentDiffPanelTabAtom, new Map([[sessionId, 'workspace']]))
+    store.set(fileBrowserAutoRevealAtom, manualReveal)
+
+    store.set(markAgentFileModifiedAtom, {
+      sessionId,
+      path: '/tmp/project/src/generated.ts',
+      modifiedAt: 123,
+    })
+
+    expect(store.get(agentSidePanelTabsAtom).get(sessionId)).toEqual(['workspace'])
+    expect(store.get(agentDiffPanelTabAtom).get(sessionId)).toBe('workspace')
+    expect(store.get(fileBrowserAutoRevealAtom)).toEqual(manualReveal)
   })
 })

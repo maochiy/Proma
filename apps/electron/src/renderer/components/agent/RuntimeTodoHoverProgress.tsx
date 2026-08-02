@@ -11,6 +11,7 @@ import {
 } from '@/atoms/agent-atoms'
 import { shouldSuppressAgentRunningIndicator } from '@/lib/agent-running-state'
 import { cn } from '@/lib/utils'
+import { getRuntimePlanVisibleWindowStartIndex } from './runtime-plan-visible-window'
 
 interface RuntimeTodoHoverProgressProps {
   sessionId: string
@@ -243,6 +244,11 @@ export function RuntimeTodoHoverProgress({
     () => sortRuntimeTodos(graph?.todos ?? []),
     [graph?.todos],
   )
+  const planPanelScrollRef = React.useRef<HTMLDivElement>(null)
+  const planWindowStartIndex = getRuntimePlanVisibleWindowStartIndex(
+    todos,
+    PLAN_PANEL_MAX_VISIBLE_ITEMS,
+  )
   const streamingState = useAtomValue(agentSessionStreamingStateAtomFamily(sessionId))
   const currentRunStartedAt = streamingState?.startedAt
   const isStreaming = streamingState?.running === true
@@ -340,6 +346,18 @@ export function RuntimeTodoHoverProgress({
     void refreshChangeStats()
   }, [diffRefreshVersion, refreshChangeStats, todos.length])
 
+  React.useEffect(() => {
+    const container = planPanelScrollRef.current
+    if (!container || todos.length <= PLAN_PANEL_MAX_VISIBLE_ITEMS) return
+
+    const firstVisibleItem = container.children.item(planWindowStartIndex)
+    if (!(firstVisibleItem instanceof HTMLElement)) return
+
+    const containerTop = container.getBoundingClientRect().top
+    const itemTop = firstVisibleItem.getBoundingClientRect().top
+    container.scrollTop += itemTop - containerTop
+  }, [planWindowStartIndex, todos])
+
   if (!shouldShowRuntimeTodoProgress(todos, streamingState)) return null
 
   const completedCount = completedTodoCount(todos)
@@ -371,9 +389,10 @@ export function RuntimeTodoHoverProgress({
           >
             <div className={cn(FLOATING_PANEL_CARD_CLASS, 'min-w-[220px] p-2.5')}>
               <div
+                ref={planPanelScrollRef}
                 className={cn(
                   'space-y-0.5',
-                  // 超过 5 条固定高度，支持滚动但不显示滚动条
+                  // 超过可见数量后保留完整列表与滚动能力，并自动跟随当前执行窗口。
                   todos.length > PLAN_PANEL_MAX_VISIBLE_ITEMS && cn(
                     PLAN_PANEL_SCROLL_MAX_HEIGHT_CLASS,
                     'overflow-y-auto overscroll-contain scrollbar-none',

@@ -41,6 +41,7 @@ import {
   completedTodoCount,
   sortRuntimeTodos,
 } from './RuntimeTodoHoverProgress'
+import { selectRuntimePlanVisibleItems } from './runtime-plan-visible-window'
 import { RuntimePlanList } from './RuntimePlanList'
 import { RuntimeExecutionNodeList } from './RuntimeExecutionNodeList'
 
@@ -53,54 +54,27 @@ const EMPTY_PATHS: string[] = []
 const EMPTY_TODOS: AgentRuntimeTodoItem[] = []
 export const FLOATING_PLAN_MAX_VISIBLE_ITEMS = 5
 export const FLOATING_SUBAGENT_MAX_VISIBLE_ITEMS = 4
-const FLOATING_RUNTIME_ROW_BUDGET = 7
 
 export interface FloatingRuntimeListAllocation {
   visiblePlanItems: number
   visibleSubagentItems: number
 }
 
-function renderedRowCount(total: number, visible: number): number {
-  if (total === 0) return 0
-  return visible + (total > visible ? 1 : 0)
-}
-
-/** 两类列表同时出现时收缩可见条目，给两个“查看全部”入口预留高度。 */
+/**
+ * 计划与子智能体分别使用自己的可见上限，面板高度由实际渲染数量决定。
+ * 不再用共享行预算压缩其中一类，否则少量子智能体可能被计划区域裁掉。
+ */
 export function allocateFloatingRuntimeListRows(
   planCount: number,
   subagentCount: number,
 ): FloatingRuntimeListAllocation {
-  let visiblePlanItems = Math.min(planCount, FLOATING_PLAN_MAX_VISIBLE_ITEMS)
-  let visibleSubagentItems = Math.min(
-    subagentCount,
-    FLOATING_SUBAGENT_MAX_VISIBLE_ITEMS,
-  )
-
-  if (planCount === 0 || subagentCount === 0) {
-    return { visiblePlanItems, visibleSubagentItems }
+  return {
+    visiblePlanItems: Math.min(planCount, FLOATING_PLAN_MAX_VISIBLE_ITEMS),
+    visibleSubagentItems: Math.min(
+      subagentCount,
+      FLOATING_SUBAGENT_MAX_VISIBLE_ITEMS,
+    ),
   }
-
-  while (
-    renderedRowCount(planCount, visiblePlanItems)
-      + renderedRowCount(subagentCount, visibleSubagentItems)
-    > FLOATING_RUNTIME_ROW_BUDGET
-  ) {
-    const planFill = visiblePlanItems / FLOATING_PLAN_MAX_VISIBLE_ITEMS
-    const subagentFill = (
-      visibleSubagentItems / FLOATING_SUBAGENT_MAX_VISIBLE_ITEMS
-    )
-    if (subagentFill >= planFill && visibleSubagentItems > 1) {
-      visibleSubagentItems -= 1
-    } else if (visiblePlanItems > 1) {
-      visiblePlanItems -= 1
-    } else if (visibleSubagentItems > 1) {
-      visibleSubagentItems -= 1
-    } else {
-      break
-    }
-  }
-
-  return { visiblePlanItems, visibleSubagentItems }
 }
 
 export function SessionFloatingPanel({
@@ -356,7 +330,10 @@ export function SessionFloatingPanel({
 
   const completedCount = completedTodoCount(todos)
   const allocation = allocateFloatingRuntimeListRows(todos.length, nodes.length)
-  const visibleTodos = todos.slice(0, allocation.visiblePlanItems)
+  const visibleTodos = selectRuntimePlanVisibleItems(
+    todos,
+    allocation.visiblePlanItems,
+  )
   const visibleNodes = nodes.slice(0, allocation.visibleSubagentItems)
   const hasMoreTodos = visibleTodos.length < todos.length
   const hasMoreNodes = visibleNodes.length < nodes.length
@@ -392,7 +369,7 @@ export function SessionFloatingPanel({
     <aside
       aria-label="会话环境信息"
       className={cn(
-        'absolute right-4 top-[56px] z-40 flex w-[300px] max-h-[min(380px,calc(100%-72px))] flex-col overflow-hidden p-3',
+        'absolute right-4 top-[56px] z-40 flex w-[300px] max-h-[calc(100%-72px)] flex-col overflow-hidden p-3',
         '!rounded-[24px] border border-black/[0.07] bg-card text-card-foreground shadow-lg',
         'dark:border-white/[0.10] dark:shadow-[0_12px_36px_-18px_rgba(0,0,0,0.85)]',
       )}
@@ -432,7 +409,7 @@ export function SessionFloatingPanel({
 
       {(todos.length > 0 || nodes.length > 0) && (
         <div
-          className="min-h-0 overflow-hidden"
+          className="min-h-0 overflow-y-auto overscroll-contain scrollbar-none"
           data-session-floating-runtime-region
         >
           {todos.length > 0 && (
