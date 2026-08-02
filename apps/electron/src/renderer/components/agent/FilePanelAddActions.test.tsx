@@ -2,17 +2,20 @@ import { describe, expect, test } from 'bun:test'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import {
-  FILE_PANEL_MENU_COPY,
-  FilePanelAddMenu,
-} from './FilePanelAddMenu'
-import { prepareFilePanelSelection, referenceFilePaths } from './file-panel-actions'
+  FILE_PANEL_ACTION_COPY,
+  FilePanelAddActions,
+} from './FilePanelAddActions'
+import {
+  prepareFilePanelSelection,
+  referenceFilePaths,
+} from './file-panel-actions'
 import { MAX_ATTACHMENT_SIZE } from '@proma/shared'
 import type { FileDialogResult } from '@proma/shared'
 
 function renderMenu(scope: 'session' | 'workspace'): string {
   return renderToStaticMarkup(
     <TooltipProvider>
-      <FilePanelAddMenu
+      <FilePanelAddActions
         scope={scope}
         onSaveFiles={async () => undefined}
         onReferenceFiles={async filePaths => ({
@@ -25,21 +28,25 @@ function renderMenu(scope: 'session' | 'workspace'): string {
   )
 }
 
-describe('FilePanelAddMenu 文件面板统一入口', () => {
-  test('Given 会话文件面板 When 渲染添加入口 Then 使用会话级说明', () => {
+describe('FilePanelAddActions 文件面板直接添加入口', () => {
+  test('Given 会话文件面板 When 渲染添加入口 Then 文件和目录都使用直接按钮', () => {
     const html = renderMenu('session')
 
-    expect(html).toContain(`aria-label="${FILE_PANEL_MENU_COPY.session.triggerLabel}"`)
-    expect(FILE_PANEL_MENU_COPY.session.fileDescription).toContain('当前会话')
-    expect(FILE_PANEL_MENU_COPY.session.directoryDescription).toContain('不复制文件')
+    expect(html).toContain(`aria-label="${FILE_PANEL_ACTION_COPY.session.fileLabel}"`)
+    expect(html).toContain(`aria-label="${FILE_PANEL_ACTION_COPY.session.directoryLabel}"`)
+    expect(html).not.toContain('aria-haspopup="menu"')
+    expect(FILE_PANEL_ACTION_COPY.session.fileDescription).toContain('当前会话')
+    expect(FILE_PANEL_ACTION_COPY.session.directoryDescription).toContain('不复制文件')
   })
 
-  test('Given 工作区文件面板 When 渲染添加入口 Then 明确工作区共享范围', () => {
+  test('Given 工作区文件面板 When 渲染添加入口 Then 文件和目录按钮明确共享范围', () => {
     const html = renderMenu('workspace')
 
-    expect(html).toContain(`aria-label="${FILE_PANEL_MENU_COPY.workspace.triggerLabel}"`)
-    expect(FILE_PANEL_MENU_COPY.workspace.fileDescription).toContain('工作区共享')
-    expect(FILE_PANEL_MENU_COPY.workspace.directoryDescription).toContain('所有会话')
+    expect(html).toContain(`aria-label="${FILE_PANEL_ACTION_COPY.workspace.fileLabel}"`)
+    expect(html).toContain(`aria-label="${FILE_PANEL_ACTION_COPY.workspace.directoryLabel}"`)
+    expect(html).not.toContain('aria-haspopup="menu"')
+    expect(FILE_PANEL_ACTION_COPY.workspace.fileDescription).toContain('工作区共享')
+    expect(FILE_PANEL_ACTION_COPY.workspace.directoryDescription).toContain('所有会话')
   })
 
   test('Given 选择小文件 When 解析文件选择结果 Then 复制到目标文件目录', () => {

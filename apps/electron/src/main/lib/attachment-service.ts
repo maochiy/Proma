@@ -24,6 +24,7 @@ import type {
   AttachmentSaveInput,
   AttachmentSaveResult,
   FileDialogResult,
+  FileOrDirectoryDialogResult,
   FileDialogFile,
   FileDialogLargeFile,
   FileDialogSkippedFile,
@@ -262,11 +263,88 @@ export async function openFileDialog(): Promise<FileDialogResult> {
     return { files: [] }
   }
 
+  return readSelectedFiles(result.filePaths)
+}
+
+/**
+ * 打开文件或文件夹统一选择器。
+ *
+ * macOS 原生选择器可以在同一个面板中选择文件或文件夹；Windows / Linux
+ * 原生选择器不支持混合模式，因此先用系统对话框选择内容类型。
+ */
+export async function openFileOrDirectoryDialog(): Promise<FileOrDirectoryDialogResult> {
+  const parentWindow = BrowserWindow.getFocusedWindow()
+  let properties: Electron.OpenDialogOptions['properties']
+
+  if (process.platform === 'darwin') {
+    properties = ['openFile', 'openDirectory', 'multiSelections']
+  } else {
+    const choiceOptions: Electron.MessageBoxOptions = {
+      type: 'question',
+      title: '添加文件或文件夹',
+      message: '请选择要添加的内容类型',
+      buttons: ['选择文件', '选择文件夹', '取消'],
+      defaultId: 0,
+      cancelId: 2,
+      noLink: true,
+    }
+    const choice = parentWindow
+      ? await dialog.showMessageBox(parentWindow, choiceOptions)
+      : await dialog.showMessageBox(choiceOptions)
+
+    if (choice.response === 2) {
+      return { files: [], directories: [] }
+    }
+    properties = choice.response === 0
+      ? ['openFile', 'multiSelections']
+      : ['openDirectory', 'multiSelections']
+  }
+
+  const dialogOptions: Electron.OpenDialogOptions = {
+    title: '添加文件或文件夹',
+    buttonLabel: '添加',
+    properties,
+    filters: FILE_FILTERS,
+  }
+  const result = parentWindow
+    ? await dialog.showOpenDialog(parentWindow, dialogOptions)
+    : await dialog.showOpenDialog(dialogOptions)
+
+  if (result.canceled || result.filePaths.length === 0) {
+    return { files: [], directories: [] }
+  }
+
+  const filePaths: string[] = []
+  const directories: FileOrDirectoryDialogResult['directories'] = []
+
+  for (const selectedPath of result.filePaths) {
+    try {
+      if (statSync(selectedPath).isDirectory()) {
+        directories.push({
+          name: basename(selectedPath),
+          path: selectedPath,
+        })
+      } else {
+        filePaths.push(selectedPath)
+      }
+    } catch (error) {
+      console.warn(`[附件服务] 无法识别选择路径，按文件处理: ${selectedPath}`, error)
+      filePaths.push(selectedPath)
+    }
+  }
+
+  return {
+    ...readSelectedFiles(filePaths),
+    directories,
+  }
+}
+
+function readSelectedFiles(filePaths: string[]): FileDialogResult {
   const files: FileDialogFile[] = []
   const largeFiles: FileDialogLargeFile[] = []
   const skippedFiles: FileDialogSkippedFile[] = []
 
-  for (const filePath of result.filePaths) {
+  for (const filePath of filePaths) {
     const filename = basename(filePath)
     const ext = extname(filePath)
     const mediaType = getMimeType(ext)

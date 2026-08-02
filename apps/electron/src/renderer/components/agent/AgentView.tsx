@@ -2371,7 +2371,6 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         running: true,
         startedAt: streamStartedAt,
         isCompacting: true,
-        compactInFlight: true,
         contextCompaction: { status: 'running' },
       })
       return map
@@ -2401,7 +2400,12 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         const map = new Map(prev)
         const current = prev.get(sessionId)
         if (!current) return prev
-        map.set(sessionId, { ...current, isCompacting: false, compactInFlight: false })
+        map.set(sessionId, {
+          ...current,
+          isCompacting: false,
+          // 发送失败时同步清掉乐观压缩态，避免计划入口被长期隐藏
+          contextCompaction: undefined,
+        })
         return map
       })
     })

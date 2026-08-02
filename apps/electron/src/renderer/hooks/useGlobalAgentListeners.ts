@@ -64,6 +64,7 @@ import type { AgentStreamEvent, AgentStreamCompletePayload, AgentEvent, AgentStr
 import { pickRuntimeReportedContextWindow } from '@proma/shared'
 import { buildExternalAgentRunActivation } from '@/lib/external-agent-run'
 import { upsertAgentSession, mergeFetchedAgentSessions } from '@/lib/agent-session-list'
+import { reconcileAgentRunActivity } from '@/lib/agent-running-state'
 import {
   getAgentCompletionMarkers,
   notifyAgentCompletion,
@@ -755,7 +756,10 @@ export function useGlobalAgentListeners(): void {
                 // 正常流程中 handleSend 已设置了正确的 startedAt，此 fallback 仅在极端情况下触发
                 startedAt: undefined,
               }
-              const next = applyAgentEvent(current, event)
+              const next = applyAgentEvent(
+                reconcileAgentRunActivity(current, event),
+                event,
+              )
               const map = new Map(prev)
               map.set(sessionId, next)
               return map

@@ -22,7 +22,7 @@ import { DiffPanelTabBar } from '@/components/diff/DiffPanelTabBar'
 import { DiffChangesList } from '@/components/diff/DiffChangesList'
 import { ChatView } from '@/components/chat/ChatView'
 import { RuntimeExecutionPanel } from './RuntimeExecutionPanel'
-import { FilePanelAddMenu } from './FilePanelAddMenu'
+import { FilePanelAddButton } from './FilePanelAddButton'
 import { FilePanelDropTarget } from './FilePanelDropTarget'
 import { referenceFilePaths } from './file-panel-actions'
 import type { FilePanelReferenceResult, FilePanelUploadEntry } from './file-panel-actions'
@@ -513,12 +513,12 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
                     <span className="text-[10px] text-muted-foreground/70 truncate flex-1 min-w-0" title={sessionPath}>
                       {breadcrumb}
                     </span>
-                    <FilePanelAddMenu
+                    <FilePanelAddButton
                       scope="session"
                       className={filePanelActionButtonClass}
                       onSaveFiles={handleSaveSessionFiles}
                       onReferenceFiles={handleSessionFilesAttached}
-                      onAddDirectory={handleAttachFolder}
+                      onReferenceDirectories={handleSessionDirectoriesDropped}
                     />
                     <Tooltip>
                       <TooltipTrigger asChild>
@@ -600,13 +600,13 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
                     </TooltipContent>
                   </Tooltip>
                   <div className="flex-1" />
-                  <FilePanelAddMenu
+                  <FilePanelAddButton
                     scope="workspace"
                     disabled={!workspaceFilesPath || !workspaceSlug}
                     className={filePanelActionButtonClass}
                     onSaveFiles={handleSaveWorkspaceFiles}
                     onReferenceFiles={handleWorkspaceFilesAttached}
-                    onAddDirectory={handleAttachWorkspaceFolder}
+                    onReferenceDirectories={handleWorkspaceDirectoriesDropped}
                   />
                   {workspaceFilesPath && (
                     <Tooltip>

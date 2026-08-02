@@ -101,12 +101,6 @@ export interface AgentStreamState {
   isCompacting?: boolean
   /** 当前或最近一次压缩状态，保留到实时消息清理完成后供底部进度区展示。 */
   contextCompaction?: ContextCompactionState
-  /**
-   * 压缩流程是否进行中（含收尾窗口）。
-   * 从用户点击压缩 / SDK compacting 事件开始 → 到整个 stream 结束（state 被删除）前一直为 true。
-   * 用于抑制压缩分隔符切换期间 AgentRunningIndicator 的短暂闪烁。
-   */
-  compactInFlight?: boolean
   /** 流式开始时间戳（用于思考计时持久化） */
   startedAt?: number
   /** 重试状态（扩展版） */
@@ -840,7 +834,6 @@ export function applyAgentEvent(
         retrying: undefined,
         ...(prev.isCompacting && {
           isCompacting: false,
-          compactInFlight: false,
           contextCompaction: {
             status: 'failed' as const,
             trigger: prev.contextCompaction?.trigger,
@@ -857,7 +850,6 @@ export function applyAgentEvent(
         running: false,
         ...(prev.isCompacting && {
           isCompacting: false,
-          compactInFlight: false,
           contextCompaction: {
             status: 'failed' as const,
             trigger: prev.contextCompaction?.trigger,
@@ -890,7 +882,6 @@ export function applyAgentEvent(
       return {
         ...prev,
         isCompacting: true,
-        compactInFlight: true,
         contextCompaction: { status: 'running', trigger: event.trigger },
       }
 

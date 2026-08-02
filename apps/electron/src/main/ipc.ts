@@ -46,6 +46,7 @@ import type {
   AttachmentSaveInput,
   AttachmentSaveResult,
   FileDialogResult,
+  FileOrDirectoryDialogResult,
   RecentMessagesResult,
   AgentSessionMeta,
   AgentSessionCatalogSyncedPayload,
@@ -163,6 +164,7 @@ import {
   readAttachmentAsBase64,
   deleteAttachment,
   openFileDialog,
+  openFileOrDirectoryDialog,
 } from './lib/attachment-service'
 import { extractTextFromAttachment } from './lib/document-parser'
 import { getTutorialContent, createWelcomeConversation } from './lib/tutorial-service'
@@ -3053,6 +3055,14 @@ export function registerIpcHandlers(): void {
       const folderPath = result.filePaths[0]!
       const name = folderPath.split('/').filter(Boolean).pop() || 'folder'
       return { path: folderPath, name }
+    }
+  )
+
+  // 打开文件或文件夹统一选择对话框
+  ipcMain.handle(
+    AGENT_IPC_CHANNELS.OPEN_FILE_OR_DIRECTORY_DIALOG,
+    async (): Promise<FileOrDirectoryDialogResult> => {
+      return openFileOrDirectoryDialog()
     }
   )
 

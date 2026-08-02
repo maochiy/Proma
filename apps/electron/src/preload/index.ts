@@ -32,6 +32,7 @@ import type {
   AttachmentSaveInput,
   AttachmentSaveResult,
   FileDialogResult,
+  FileOrDirectoryDialogResult,
   RecentMessagesResult,
   MessageSearchResult,
   AgentSessionMeta,
@@ -752,6 +753,9 @@ export interface ElectronAPI {
 
   /** 打开文件夹选择对话框 */
   openFolderDialog: () => Promise<{ path: string; name: string } | null>
+
+  /** 打开文件或文件夹统一选择对话框 */
+  openFileOrDirectoryDialog: () => Promise<FileOrDirectoryDialogResult>
 
   /** 附加外部目录到 Agent 会话 */
   attachDirectory: (input: AgentAttachDirectoryInput) => Promise<string[]>
@@ -2006,6 +2010,10 @@ const electronAPI: ElectronAPI = {
 
   openFolderDialog: () => {
     return ipcRenderer.invoke(AGENT_IPC_CHANNELS.OPEN_FOLDER_DIALOG)
+  },
+
+  openFileOrDirectoryDialog: () => {
+    return ipcRenderer.invoke(AGENT_IPC_CHANNELS.OPEN_FILE_OR_DIRECTORY_DIALOG)
   },
 
   attachDirectory: (input: AgentAttachDirectoryInput) => {

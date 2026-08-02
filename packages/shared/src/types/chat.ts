@@ -54,6 +54,17 @@ export interface FileDialogResult {
   skippedFiles?: FileDialogSkippedFile[]
 }
 
+/** 文件或目录统一选择器结果 */
+export interface FileOrDirectoryDialogResult extends FileDialogResult {
+  /** 用户选中的目录，仅返回路径引用，不复制目录内容 */
+  directories: FileDialogDirectory[]
+}
+
+export interface FileDialogDirectory {
+  name: string
+  path: string
+}
+
 export interface FileDialogFile {
   filename: string
   mediaType: string

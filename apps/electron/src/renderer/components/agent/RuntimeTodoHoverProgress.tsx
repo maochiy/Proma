@@ -8,6 +8,7 @@ import {
   agentSessionStreamingStateAtomFamily,
   agentTurnChangeStatsAtom,
 } from '@/atoms/agent-atoms'
+import { shouldSuppressAgentRunningIndicator } from '@/lib/agent-running-state'
 import { cn } from '@/lib/utils'
 
 interface RuntimeTodoHoverProgressProps {
@@ -17,23 +18,89 @@ interface RuntimeTodoHoverProgressProps {
 const FLOATING_PLAN_CARD_CLASS =
   'rounded-[14px] border border-black/[0.07] bg-card text-card-foreground shadow-md dark:border-white/[0.10]'
 
-function isCompleted(todo: AgentRuntimeTodoItem): boolean {
+export function isCompleted(todo: AgentRuntimeTodoItem): boolean {
   return todo.status === 'completed'
 }
 
-function completedTodoCount(todos: AgentRuntimeTodoItem[]): number {
+export function completedTodoCount(todos: AgentRuntimeTodoItem[]): number {
   return todos.filter(isCompleted).length
 }
 
-function currentStepNumber(todos: AgentRuntimeTodoItem[], completedCount: number): number {
-  if (todos.length === 0) return 0
-  if (completedCount >= todos.length) return todos.length
-  return Math.min(completedCount + 1, todos.length)
+export function inProgressTodoCount(todos: AgentRuntimeTodoItem[]): number {
+  return todos.filter((todo) => todo.status === 'in_progress').length
 }
 
-function completionPercentage(todos: AgentRuntimeTodoItem[], completedCount: number): number {
+/**
+ * 当前步 = 已完成 + 执行中（与 Codex 一致）。
+ * 只统计已经真正推进过的步骤，不把下一个 pending 提前算成当前步。
+ */
+export function currentStepNumber(todos: AgentRuntimeTodoItem[], completedCount: number): number {
+  if (todos.length === 0) return 0
+  if (completedCount >= todos.length) return todos.length
+
+  const advancedCount = completedCount + inProgressTodoCount(todos)
+  return Math.min(Math.max(advancedCount, 0), todos.length)
+}
+
+export function completionPercentage(todos: AgentRuntimeTodoItem[], completedCount: number): number {
   if (todos.length === 0) return 0
   return Math.round((completedCount / todos.length) * 100)
+}
+
+/** 稳定排序：数字 ID 按数值，其它按字符串。 */
+export function sortRuntimeTodos(todos: AgentRuntimeTodoItem[]): AgentRuntimeTodoItem[] {
+  return [...todos].sort((left, right) => {
+    const leftNum = Number(left.id)
+    const rightNum = Number(right.id)
+    const leftIsNum = Number.isFinite(leftNum) && String(leftNum) === left.id
+    const rightIsNum = Number.isFinite(rightNum) && String(rightNum) === right.id
+    if (leftIsNum && rightIsNum) return leftNum - rightNum
+    if (leftIsNum) return -1
+    if (rightIsNum) return 1
+    return left.id.localeCompare(right.id)
+  })
+}
+
+export function formatPlanProgressLabel(
+  todos: AgentRuntimeTodoItem[],
+  _completedCount: number,
+  stepNumber: number,
+): string {
+  if (todos.length === 0) return ''
+  return `第 ${stepNumber} / ${todos.length} 步`
+}
+
+/**
+ * 计划入口可见性：
+ * 1. 有 Todo 才显示
+ * 2. 仅本轮会话仍在执行（running）时显示；会话结束后整块入口/面板都隐藏
+ * 3. 上下文压缩进行中时也隐藏（底部只展示压缩进度）
+ *
+ * 任务文件里残留 in_progress 在「执行中」时展示是正常的；
+ * 会话已停时不应再展示转圈「执行中」，否则会误导成还在跑。
+ */
+export function shouldShowRuntimeTodoProgress(
+  todos: AgentRuntimeTodoItem[],
+  streamState?: {
+    running?: boolean
+    isCompacting?: boolean
+    contextCompaction?: {
+      status: 'running' | 'success' | 'noop' | 'failed'
+    }
+  },
+): boolean {
+  if (todos.length === 0) return false
+  // 会话已停：隐藏计划入口与悬浮面板，避免 idle 仍转圈「执行中」
+  if (streamState?.running !== true) return false
+  if (shouldSuppressAgentRunningIndicator(streamState)) return false
+  return true
+}
+
+function isUsableExecutionGraph(
+  graph: { nodes: unknown[]; todos: unknown[]; updatedAt: number } | null | undefined,
+): boolean {
+  if (!graph) return false
+  return graph.updatedAt > 0 || graph.todos.length > 0 || graph.nodes.length > 0
 }
 
 export function shouldShowTurnChangeStats(
@@ -125,16 +192,53 @@ export function RuntimeTodoHoverProgress({
   sessionId,
 }: RuntimeTodoHoverProgressProps): React.ReactElement | null {
   const graphs = useAtomValue(agentRuntimeExecutionGraphsAtom)
+  const setGraphs = useSetAtom(agentRuntimeExecutionGraphsAtom)
   const graph = graphs.get(sessionId)
-  const todos = graph?.todos ?? []
+  const todos = React.useMemo(
+    () => sortRuntimeTodos(graph?.todos ?? []),
+    [graph?.todos],
+  )
   const streamingState = useAtomValue(agentSessionStreamingStateAtomFamily(sessionId))
   const currentRunStartedAt = streamingState?.startedAt
+  const isStreaming = streamingState?.running === true
   const diffRefreshVersions = useAtomValue(agentDiffRefreshVersionAtom)
   const diffRefreshVersion = diffRefreshVersions.get(sessionId) ?? 0
   const changeStatsMap = useAtomValue(agentTurnChangeStatsAtom)
   const setChangeStatsMap = useSetAtom(agentTurnChangeStatsAtom)
   const changeStats = changeStatsMap.get(sessionId)
   const requestSequenceRef = React.useRef(0)
+
+  // 会话打开或流式结束后主动拉一次执行图，避免只依赖实时事件导致进度停在旧快照。
+  React.useEffect(() => {
+    let cancelled = false
+
+    void (async () => {
+      try {
+        const next = await window.electronAPI.getAgentRuntimeExecutionGraph(sessionId)
+        if (cancelled || !isUsableExecutionGraph(next)) return
+        setGraphs((previous) => {
+          const existing = previous.get(sessionId)
+          if (
+            existing
+            && existing.updatedAt === next.updatedAt
+            && existing.todos.length === next.todos.length
+            && existing.nodes.length === next.nodes.length
+          ) {
+            return previous
+          }
+          const updated = new Map(previous)
+          updated.set(sessionId, next)
+          return updated
+        })
+      } catch {
+        // Session 未打开时保留事件推送的最后快照。
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [isStreaming, sessionId, setGraphs])
 
   const refreshChangeStats = React.useCallback(async (): Promise<void> => {
     const requestSequence = ++requestSequenceRef.current
@@ -199,11 +303,12 @@ export function RuntimeTodoHoverProgress({
     void refreshChangeStats()
   }, [diffRefreshVersion, refreshChangeStats, todos.length])
 
-  if (todos.length === 0) return null
+  if (!shouldShowRuntimeTodoProgress(todos, streamingState)) return null
 
   const completedCount = completedTodoCount(todos)
   const stepNumber = currentStepNumber(todos, completedCount)
   const progressPercentage = completionPercentage(todos, completedCount)
+  const progressLabel = formatPlanProgressLabel(todos, completedCount, stepNumber)
   const visibleChangeStats = shouldShowTurnChangeStats(
     changeStats,
     currentRunStartedAt,
@@ -265,7 +370,7 @@ export function RuntimeTodoHoverProgress({
         )}
       >
         <PlanCompletionRing percentage={progressPercentage} />
-        <span className="tabular-nums">第 {stepNumber} / {todos.length} 步</span>
+        <span className="tabular-nums">{progressLabel}</span>
         {visibleChangeStats && (
           <>
             <span className="text-muted-foreground/45">·</span>
