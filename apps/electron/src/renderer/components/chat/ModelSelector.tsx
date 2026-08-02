@@ -340,7 +340,7 @@ export function ModelSelector({
             />
           </div>
 
-          <div className="max-h-[min(320px,calc(100vh-160px))] overflow-y-auto overscroll-contain p-1.5 scrollbar-thin">
+          <div className="scrollbar-none max-h-[min(320px,calc(100vh-160px))] overflow-y-auto overscroll-contain p-1.5">
             {filteredGrouped.size === 0 ? (
               <div className="py-8 text-center text-sm text-muted-foreground">
                 未找到模型

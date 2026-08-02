@@ -13,7 +13,13 @@ import { RightSidePanel } from './RightSidePanel'
 import { MainArea } from '@/components/tabs/MainArea'
 import { AppShellProvider, type AppShellContextType } from '@/contexts/AppShellContext'
 import { appModeAtom } from '@/atoms/app-mode'
-import { agentSidePanelWidthAtom, currentAgentSessionIdAtom, currentSessionSidePanelOpenAtom } from '@/atoms/agent-atoms'
+import {
+  AGENT_SIDE_PANEL_MAX_WIDTH,
+  AGENT_SIDE_PANEL_MIN_WIDTH,
+  agentSidePanelWidthAtom,
+  currentAgentSessionIdAtom,
+  currentSessionSidePanelOpenAtom,
+} from '@/atoms/agent-atoms'
 import { leftSidebarWidthAtom } from '@/atoms/sidebar-atoms'
 import { sidebarCollapsedAtom } from '@/atoms/tab-atoms'
 import { automationFormAtom } from '@/atoms/automation-atoms'
@@ -23,11 +29,11 @@ import { WindowControls } from '@/components/WindowControls'
 import { detectIsWindows, WINDOW_CONTROLS_INSET_RIGHT } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 
-const MIN_RIGHT_PANEL_WIDTH = 300
-const MAX_RIGHT_PANEL_WIDTH = 560
-
 function clampRightPanelWidth(width: number): number {
-  return Math.max(MIN_RIGHT_PANEL_WIDTH, Math.min(MAX_RIGHT_PANEL_WIDTH, width))
+  return Math.max(
+    AGENT_SIDE_PANEL_MIN_WIDTH,
+    Math.min(AGENT_SIDE_PANEL_MAX_WIDTH, width),
+  )
 }
 
 const MIN_LEFT_SIDEBAR_WIDTH = 260

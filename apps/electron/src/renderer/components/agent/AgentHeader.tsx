@@ -19,7 +19,9 @@ interface AgentHeaderProps {
   sessionId: string
 }
 
-export function AgentHeader({ sessionId }: AgentHeaderProps): React.ReactElement | null {
+export function AgentHeader({
+  sessionId,
+}: AgentHeaderProps): React.ReactElement | null {
   const isWindows = React.useMemo(() => detectIsWindows(), [])
   const sessions = useAtomValue(agentSessionsAtom)
   const session = sessions.find((s) => s.id === sessionId) ?? null

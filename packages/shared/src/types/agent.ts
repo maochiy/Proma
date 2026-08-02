@@ -206,6 +206,16 @@ export interface AgentRuntimeExecutionGraph {
   updatedAt: number
 }
 
+/** 本轮改动中的单个文件统计。 */
+export interface AgentTurnChangedFile {
+  /** 相对 Git 根的路径（重命名取目标路径）。 */
+  path: string
+  /** 新增行数；二进制文件为 0。 */
+  additions: number
+  /** 删除行数；二进制文件为 0。 */
+  deletions: number
+}
+
 /** 当前 Agent 本轮相对执行前工作树基线产生的 Git 改动统计。 */
 export interface AgentTurnChangeStats {
   /** 本轮开始时间，与 AgentSendInput.startedAt 对齐。 */
@@ -216,6 +226,8 @@ export interface AgentTurnChangeStats {
   additions: number
   /** 本轮删除行数。 */
   deletions: number
+  /** 本轮改动文件明细，用于悬浮面板展示。 */
+  files: AgentTurnChangedFile[]
   /** 统计完成时间。 */
   updatedAt: number
 }
@@ -766,6 +778,14 @@ export type PromaEvent =
   | { type: 'title_updated'; title: string }
   | { type: 'external_run_started'; source: AgentExternalRunSource; sessionId: string; title?: string; workspaceId?: string; modelId?: string; startedAt: number }
   | { type: 'run_resumed'; sessionId: string }
+  | {
+      type: 'delegation_status_changed'
+      parentSessionId: string
+      childSessionId: string
+      delegationId: string
+      status: AgentDelegationStatus
+      updatedAt: number
+    }
   // 协作子会话阻塞事件上浮
   | { type: 'delegation_blocked'; delegationId: string; blockedEvent: unknown }
   // 自动任务会话被用户接管（毕业）

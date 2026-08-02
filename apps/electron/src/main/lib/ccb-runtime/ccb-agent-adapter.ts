@@ -28,7 +28,6 @@ import {
 } from './ccb-partial-assistant'
 import { ccbDesktopRuntimeClient } from './runtime-client'
 import { sanitizeCcbSessionEnvironment } from './runtime-security'
-import { assertCcbRuntimeModelCatalog } from './protocol-validation'
 import { createAdditionalSkillDirectoriesFingerprint } from './skill-directory-fingerprint'
 import { getCcbUserConfigDir } from './user-config'
 import {
@@ -42,12 +41,13 @@ import {
   resolveCompletedTurnResult,
 } from './turn-lifecycle'
 import { shouldRecoverSessionWorker } from './session-worker-recovery'
+import { resolveFallbackModel } from './model-catalog-fallback'
+import { normalizeCcbMessage } from './ccb-assistant-message-normalization'
 import type {
   CcbInteractionResponse,
   CcbPermissionMode,
   CcbRuntimeEnvelope,
   CcbRuntimeEvent,
-  CcbRuntimeModelCatalog,
 } from './protocol'
 
 export interface CcbAgentQueryOptions extends AgentQueryInput {
@@ -338,13 +338,17 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
     if (!this.openedSessions.has(sessionId)) {
       throw new Error('CCB Session 尚未打开，无法读取子代理 Transcript')
     }
-    return ccbDesktopRuntimeClient.request<
+    const transcript = await ccbDesktopRuntimeClient.request<
       import('@proma/shared').AgentRuntimeSubagentTranscript
     >(
       { type: 'session.getSubagentTranscript', executionNodeId },
       sessionId,
       10_000,
     )
+    return {
+      ...transcript,
+      messages: transcript.messages.map(normalizeCcbMessage),
+    }
   }
 
   async forkSession(
@@ -550,6 +554,16 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
         options.providerConfiguration,
       ),
     }
+    if (options.providerConfiguration) {
+      const fallbackModel = resolveFallbackModel(
+        options.providerConfiguration,
+        options.model,
+      )
+      if (fallbackModel) {
+        options.onModelResolved?.(fallbackModel.value)
+        options.onContextWindow?.(fallbackModel.contextWindow)
+      }
+    }
     let current = this.openedSessions.get(options.sessionId)
     const currentRuntimeConfig = this.sessionRuntimeConfigs.get(
       options.sessionId,
@@ -577,29 +591,6 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
         nextRuntimeConfig,
       )
       return
-    }
-
-    if (options.providerConfiguration) {
-      const catalog =
-        await ccbDesktopRuntimeClient.request<CcbRuntimeModelCatalog>(
-          {
-            type: 'session.resolveModelCatalog',
-            cwd: options.cwd ?? process.cwd(),
-            environment: {
-              variables: environment,
-              configDir: getCcbUserConfigDir(),
-            },
-            providerConfiguration: options.providerConfiguration,
-          },
-          options.sessionId,
-          30_000,
-        )
-      assertCcbRuntimeModelCatalog(catalog)
-      const selectedModel = this.resolveCatalogModel(catalog, options.model)
-      if (selectedModel) {
-        options.onModelResolved?.(selectedModel.value)
-        options.onContextWindow?.(selectedModel.contextWindow)
-      }
     }
 
     console.log(
@@ -653,17 +644,6 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
       runtimeProtocolVersion: runtime?.protocolVersion,
       runtimeWorkerState: 'ready',
     })
-  }
-
-  private resolveCatalogModel(
-    catalog: CcbRuntimeModelCatalog,
-    requestedModel: string | undefined,
-  ): CcbRuntimeModelCatalog['models'][number] | undefined {
-    const normalizedRequested = requestedModel?.replace(/\[1m\]$/i, '')
-    return catalog.models.find(model =>
-      model.value === requestedModel || model.value === normalizedRequested,
-    ) ?? catalog.models.find(model => model.value === catalog.defaultModel)
-      ?? catalog.models[0]
   }
 
   private async closeOpenedSession(sessionId: string): Promise<void> {

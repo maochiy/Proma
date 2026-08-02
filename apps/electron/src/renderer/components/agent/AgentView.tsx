@@ -25,6 +25,7 @@ import { AgentProjectPicker } from './AgentProjectPicker'
 import { AgentThinkingEffortControl } from './AgentThinkingEffortControl'
 import { AgentInputAddMenu } from './AgentInputAddMenu'
 import { AgentInputContextBar } from './AgentInputContextBar'
+import { SessionFloatingPanel } from './SessionFloatingPanel'
 import { RuntimeTodoHoverProgress } from './RuntimeTodoHoverProgress'
 import { ContextUsageBadge } from './ContextUsageBadge'
 import { PermissionBanner } from './PermissionBanner'
@@ -117,6 +118,10 @@ import {
   allPendingAskUserRequestsAtom,
   allPendingPermissionRequestsAtom,
   allPendingExitPlanRequestsAtom,
+  agentFloatingPanelEnabledAtom,
+  agentFloatingPanelForcedSessionsAtom,
+  agentFloatingPanelVisibleSessionsAtom,
+  beginAgentFloatingPanelTurnAtom,
 } from '@/atoms/agent-atoms'
 import type { AgentContextStatus, AgentStreamState } from '@/atoms/agent-atoms'
 import { settingsOpenAtom } from '@/atoms/settings-tab'
@@ -155,6 +160,8 @@ import {
   restoreQueuedMessageToFront,
 } from '@/lib/agent-message-queue'
 import type { AgentQueuedAttachment, AgentQueuedMessage, QueueDropPlacement } from '@/lib/agent-message-queue'
+import { useSessionFloatingLayout } from '@/hooks/useSessionFloatingLayout'
+import { useSessionFloatingRuntimeLifecycle } from '@/hooks/useSessionFloatingRuntimeLifecycle'
 
 /** 稳定的空 SDKMessage 数组引用，避免 ?? [] 每次创建新引用 */
 const EMPTY_SDK_MESSAGES: SDKMessage[] = []
@@ -261,6 +268,49 @@ function isStaleAgentQueueError(error: unknown): boolean {
 }
 
 export function AgentView({ sessionId }: { sessionId: string }): React.ReactElement {
+  const sessionViewportRef = React.useRef<HTMLDivElement>(null)
+  const floatingPanelEnabled = useAtomValue(agentFloatingPanelEnabledAtom)
+  const floatingPanelForcedSessions = useAtomValue(agentFloatingPanelForcedSessionsAtom)
+  const setFloatingPanelForcedSessions = useSetAtom(agentFloatingPanelForcedSessionsAtom)
+  const setFloatingPanelVisibleSessions = useSetAtom(agentFloatingPanelVisibleSessionsAtom)
+  const floatingPanelForced = floatingPanelForcedSessions.has(sessionId)
+  const clearFloatingPanelForce = React.useCallback(() => {
+    setFloatingPanelForcedSessions((previous) => {
+      if (!previous.has(sessionId)) return previous
+      const next = new Set(previous)
+      next.delete(sessionId)
+      return next
+    })
+  }, [sessionId, setFloatingPanelForcedSessions])
+  const floatingLayout = useSessionFloatingLayout(
+    sessionViewportRef,
+    floatingPanelEnabled,
+    floatingPanelForced,
+    clearFloatingPanelForce,
+  )
+  React.useEffect(() => {
+    setFloatingPanelVisibleSessions((previous) => {
+      const isVisible = previous.has(sessionId)
+      if (isVisible === floatingLayout.visible) return previous
+
+      const next = new Set(previous)
+      if (floatingLayout.visible) {
+        next.add(sessionId)
+      } else {
+        next.delete(sessionId)
+      }
+      return next
+    })
+
+    return () => {
+      setFloatingPanelVisibleSessions((previous) => {
+        if (!previous.has(sessionId)) return previous
+        const next = new Set(previous)
+        next.delete(sessionId)
+        return next
+      })
+    }
+  }, [floatingLayout.visible, sessionId, setFloatingPanelVisibleSessions])
   const [persistedSDKMessages, setPersistedSDKMessages] = React.useState<SDKMessage[]>([])
   const persistedSDKMessagesRef = React.useRef<SDKMessage[]>([])
   persistedSDKMessagesRef.current = persistedSDKMessages
@@ -270,6 +320,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   // atom 输出引用未变，订阅者跳过通知。
   const streamState = useAtomValue(agentSessionStreamingStateAtomFamily(sessionId))
   const streaming = streamState?.running ?? false
+  useSessionFloatingRuntimeLifecycle(sessionId)
   // 软空闲态：本轮主体已结束、UI 可输入，但 SDK 通道仍开着等后台任务唤醒。
   // 此时服务端 activeSessions 仍保留，新消息须走注入通道而非新建 run。
   const backgroundWaiting = streamState?.backgroundWaiting ?? false
@@ -1002,11 +1053,15 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         ...(mentions.mentionedMcpServers.length > 0 && { mentionedMcpServers: mentions.mentionedMcpServers }),
         ...(mentions.mentionedSessionIds.length > 0 && { mentionedSessionIds: mentions.mentionedSessionIds }),
       })
+      store.set(beginAgentFloatingPanelTurnAtom, {
+        sessionId,
+        epoch: message.createdAt,
+      })
     } catch (error) {
       removeLiveUserMessage(message.id)
       throw error
     }
-  }, [appendLiveUserMessage, removeLiveUserMessage, sessionId])
+  }, [appendLiveUserMessage, removeLiveUserMessage, sessionId, store])
 
   const startQueuedMessageRun = React.useCallback(async (
     text: string,
@@ -1015,6 +1070,10 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     queuedAdditionalDirectories: string[] = [],
   ): Promise<void> => {
     const streamStartedAt = Date.now()
+    store.set(beginAgentFloatingPanelTurnAtom, {
+      sessionId,
+      epoch: streamStartedAt,
+    })
     const additionalDirectoriesForRun = createBaseAdditionalDirectories()
     for (const dir of queuedAdditionalDirectories) {
       additionalDirectoriesForRun.add(dir)
@@ -1071,6 +1130,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     runtimeThinking,
     sessionId,
     setStreamingStates,
+    store,
   ])
 
   const sendPlainTextAgentMessage = React.useCallback(async (
@@ -2937,13 +2997,17 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   return (
     <>
     <AgentSessionProvider sessionId={sessionId}>
-      <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+      <div
+        ref={sessionViewportRef}
+        className="relative flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
+      >
         {/* Agent Header */}
         <AgentHeader sessionId={sessionId} />
 
         {/* 消息区域 */}
         <AgentMessages
           sessionId={sessionId}
+          contentOffsetX={floatingLayout.contentOffsetX}
           sessionModelId={agentModelId || undefined}
           messagesLoaded={messagesLoaded}
           persistedSDKMessages={persistedSDKMessages}
@@ -2963,7 +3027,11 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         {/* 交互面板与输入框共用同一宽度；出现时完整替换输入区域，高度随内容自适应。 */}
         {hasInteractionPanel && (
           <div
-            className={cn(inputAreaContainerClass, 'flex flex-col gap-2')}
+            className={cn(
+              inputAreaContainerClass,
+              'flex flex-col gap-2 transition-transform duration-200 motion-reduce:transition-none',
+            )}
+            style={{ transform: `translateX(${floatingLayout.contentOffsetX}px)` }}
             data-agent-interaction-panel
           >
             {activeInteractionPanel === 'permission' && <PermissionBanner sessionId={sessionId} />}
@@ -2973,7 +3041,14 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         )}
 
         {!hasInteractionPanel && (
-        <div className={inputAreaContainerClass} data-input-mode="agent">
+        <div
+          className={cn(
+            inputAreaContainerClass,
+            'transition-transform duration-200 motion-reduce:transition-none',
+          )}
+          style={{ transform: `translateX(${floatingLayout.contentOffsetX}px)` }}
+          data-input-mode="agent"
+        >
           <AgentInputContextBar
             projectPicker={(
               <AgentProjectPicker
@@ -3107,6 +3182,12 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
             <InputToolbarOverflow items={inputToolbarItems} trailing={inputTrailingNode} />
           </div>
         </div>
+        )}
+        {floatingLayout.visible && (
+          <SessionFloatingPanel
+            sessionId={sessionId}
+            sessionPath={sessionPath}
+          />
         )}
       </div>
     </AgentSessionProvider>

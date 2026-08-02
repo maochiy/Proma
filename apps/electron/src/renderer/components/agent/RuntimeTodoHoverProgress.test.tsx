@@ -9,6 +9,8 @@ import {
 } from '@/atoms/agent-atoms'
 import {
   RuntimeTodoHoverProgress,
+  formatChangedFileDisplayName,
+  hasActiveRuntimeTodos,
   shouldShowRuntimeTodoProgress,
 } from './RuntimeTodoHoverProgress'
 
@@ -99,19 +101,23 @@ describe('RuntimeTodoHoverProgress 计划进度卡片', () => {
   test('Given 运行时存在计划 When 渲染计划入口 Then 入口居中且宽度随内容变化', () => {
     const html = renderRuntimeTodoHoverProgress()
 
-    expect(html).toContain('group relative z-30 w-fit')
+    expect(html).toContain('relative z-30 w-fit')
+    expect(html).toContain('group/plan')
     expect(html).toContain('inline-flex h-9')
     expect(html).toContain('第 1 / 3 步')
     expect(html).not.toContain('mb-2')
     expect(html).not.toContain('group relative z-30 w-full')
   })
 
-  test('Given 入口与面板同时渲染 When 检查视觉样式 Then 使用相同的不透明卡片背景、圆角与阴影', () => {
+  test('Given 入口与面板同时渲染 When 检查视觉样式 Then 入口胶囊圆角、面板使用柔和卡片圆角与阴影', () => {
     const html = renderRuntimeTodoHoverProgress()
 
+    // 入口胶囊 + 计划悬浮面板
     expect(html.match(/bg-card/g)).toHaveLength(2)
-    expect(html.match(/rounded-\[14px\]/g)).toHaveLength(2)
-    expect(html.match(/shadow-md/g)).toHaveLength(2)
+    expect(html).toContain('rounded-full')
+    expect(html).toContain('rounded-[16px]')
+    expect(html).toContain('shadow-sm')
+    expect(html).toContain('shadow-[0_10px_30px_-12px_rgba(0,0,0,0.18)]')
     expect(html).not.toContain('bg-popover/98')
     expect(html).not.toContain('backdrop-blur')
   })
@@ -119,9 +125,9 @@ describe('RuntimeTodoHoverProgress 计划进度卡片', () => {
   test('Given 计划内容长度不同 When 渲染悬浮面板 Then 面板按内容自适应且入口显示浅蓝色完成度圆环', () => {
     const html = renderRuntimeTodoHoverProgress()
 
-    expect(html).toContain('group relative')
+    expect(html).toContain('group/plan')
     expect(html).toContain('pb-2')
-    expect(html).toContain('group-hover:pointer-events-auto')
+    expect(html).toContain('group-hover/plan:pointer-events-auto')
     expect(html).toContain('w-max max-w-[min(420px,calc(100vw-3rem))]')
     expect(html).not.toContain('w-[min(390px,calc(100vw-3rem))]')
     expect(html).toContain('data-plan-progress="0"')
@@ -194,8 +200,9 @@ describe('RuntimeTodoHoverProgress 计划进度卡片', () => {
     expect(updatedHtml).toContain('data-plan-progress="25"')
   })
 
-  test('Given 所有计划均已完成 When 渲染计划入口 Then 蓝色圆环显示百分之百', () => {
+  test('Given 所有计划均已完成 When 渲染计划入口 Then 不显示旧的已完成计划', () => {
     const html = renderRuntimeTodoHoverProgress({
+      running: true,
       graph: {
         nodes: [],
         todos: [
@@ -206,9 +213,30 @@ describe('RuntimeTodoHoverProgress 计划进度卡片', () => {
       },
     })
 
-    expect(html).toContain('第 2 / 2 步')
-    expect(html).toContain('data-plan-progress="100"')
-    expect(html).toContain('stroke-dasharray="100 100"')
+    expect(html).toBe('')
+    expect(html).not.toContain('第 2 / 2 步')
+    expect(html).not.toContain('步骤一')
+  })
+
+  test('Given 上一轮计划已全部完成 When 新一轮会话重新 running Then 不展示上一轮完成计划入口', () => {
+    const html = renderRuntimeTodoHoverProgress({
+      running: true,
+      graph: {
+        nodes: [],
+        todos: [
+          { id: '1', content: '旧计划 A', status: 'completed' },
+          { id: '2', content: '旧计划 B', status: 'completed' },
+          { id: '3', content: '旧计划 C', status: 'completed' },
+        ],
+        updatedAt: 10,
+      },
+    })
+
+    expect(html).toBe('')
+    expect(hasActiveRuntimeTodos([
+      { id: '1', content: '旧计划 A', status: 'completed' },
+      { id: '2', content: '旧计划 B', status: 'completed' },
+    ])).toBe(false)
   })
 
   test('Given 计划包含四种步骤状态 When 渲染悬浮面板 Then 状态图标和执行说明分别显示', () => {
@@ -262,6 +290,7 @@ describe('RuntimeTodoHoverProgress 计划进度卡片', () => {
         filesChanged: 0,
         additions: 0,
         deletions: 0,
+        files: [],
         updatedAt: 101,
       },
     })
@@ -279,6 +308,11 @@ describe('RuntimeTodoHoverProgress 计划进度卡片', () => {
         filesChanged: 3,
         additions: 128,
         deletions: 24,
+        files: [
+          { path: 'apps/electron/src/a.ts', additions: 100, deletions: 10 },
+          { path: 'apps/electron/src/b.ts', additions: 20, deletions: 10 },
+          { path: 'apps/electron/src/c.ts', additions: 8, deletions: 4 },
+        ],
         updatedAt: 201,
       },
     })
@@ -288,6 +322,8 @@ describe('RuntimeTodoHoverProgress 计划进度卡片', () => {
     expect(html).toContain('+128')
     expect(html).toContain('text-red-500')
     expect(html).toContain('-24')
+    expect(html).toContain('group/files')
+    expect(html).toContain('data-file-change-panel')
   })
 
   test('Given 页面仍保留上一轮统计 When 新一轮已经开始 Then 不显示旧统计', () => {
@@ -298,6 +334,10 @@ describe('RuntimeTodoHoverProgress 计划进度卡片', () => {
         filesChanged: 2,
         additions: 8,
         deletions: 3,
+        files: [
+          { path: 'old-a.ts', additions: 5, deletions: 1 },
+          { path: 'old-b.ts', additions: 3, deletions: 2 },
+        ],
         updatedAt: 302,
       },
     })
@@ -367,6 +407,9 @@ describe('RuntimeTodoHoverProgress 计划进度卡片', () => {
         filesChanged: 1,
         additions: 0,
         deletions: 0,
+        files: [
+          { path: 'binary.dat', additions: 0, deletions: 0 },
+        ],
         updatedAt: 401,
       },
     })
@@ -441,13 +484,124 @@ describe('RuntimeTodoHoverProgress 计划进度卡片', () => {
     expect(html).toContain('data-plan-status-icon="pending"')
   })
 
-  test('Given shouldShowRuntimeTodoProgress 可见性规则 When 判断执行态与压缩态 Then 仅执行中且非压缩时显示', () => {
+  test('Given 计划不超过五条 When 渲染悬浮面板 Then 不固定高度也不开启滚动', () => {
+    const html = renderRuntimeTodoHoverProgress({
+      running: true,
+      graph: {
+        nodes: [],
+        todos: [
+          { id: '1', content: '步骤一', status: 'completed' },
+          { id: '2', content: '步骤二', status: 'in_progress' },
+          { id: '3', content: '步骤三', status: 'pending' },
+          { id: '4', content: '步骤四', status: 'pending' },
+          { id: '5', content: '步骤五', status: 'pending' },
+        ],
+        updatedAt: 11,
+      },
+    })
+
+    expect(html).toContain('data-plan-panel-scroll="false"')
+    expect(html).not.toContain('max-h-[128px]')
+    expect(html).not.toContain('overflow-y-auto')
+  })
+
+  test('Given 计划超过五条 When 渲染悬浮面板 Then 固定高度并支持无滚动条滚动', () => {
+    const html = renderRuntimeTodoHoverProgress({
+      running: true,
+      graph: {
+        nodes: [],
+        todos: [
+          { id: '1', content: '步骤一', status: 'completed' },
+          { id: '2', content: '步骤二', status: 'completed' },
+          { id: '3', content: '步骤三', status: 'in_progress' },
+          { id: '4', content: '步骤四', status: 'pending' },
+          { id: '5', content: '步骤五', status: 'pending' },
+          { id: '6', content: '步骤六', status: 'pending' },
+          { id: '7', content: '步骤七', status: 'blocked' },
+        ],
+        updatedAt: 12,
+      },
+    })
+
+    expect(html).toContain('data-plan-panel-scroll="true"')
+    expect(html).toContain('max-h-[128px]')
+    expect(html).toContain('overflow-y-auto')
+    expect(html).toContain('overscroll-contain')
+    expect(html).toContain('scrollbar-none')
+    expect(html).toContain('步骤七')
+    expect(html).toContain('第 3 / 7 步')
+  })
+
+  test('Given 本轮有多文件改动 When 悬停改动统计 Then 显示文件名与各自增删行数', () => {
+    const html = renderRuntimeTodoHoverProgress({
+      startedAt: 200,
+      stats: {
+        startedAt: 200,
+        filesChanged: 3,
+        additions: 128,
+        deletions: 24,
+        files: [
+          { path: 'apps/electron/src/a.ts', additions: 100, deletions: 10 },
+          { path: 'apps/electron/src/b.ts', additions: 20, deletions: 10 },
+          { path: 'apps/electron/src/c.ts', additions: 8, deletions: 4 },
+        ],
+        updatedAt: 201,
+      },
+    })
+
+    expect(html).toContain('data-file-change-panel')
+    expect(html).toContain('a.ts')
+    expect(html).toContain('b.ts')
+    expect(html).toContain('c.ts')
+    expect(html).toContain('+100')
+    expect(html).toContain('-10')
+    expect(html).toContain('+20')
+    expect(html).toContain('+8')
+    expect(html).toContain('-4')
+    expect(html).toContain('data-file-change-panel-scroll="false"')
+    expect(formatChangedFileDisplayName('apps/electron/src/a.ts')).toBe('a.ts')
+  })
+
+  test('Given 本轮改动超过五个文件 When 渲染文件改动面板 Then 固定高度并无滚动条滚动', () => {
+    const files = Array.from({ length: 7 }, (_, index) => ({
+      path: `src/file-${index + 1}.ts`,
+      additions: index + 1,
+      deletions: index,
+    }))
+    const html = renderRuntimeTodoHoverProgress({
+      startedAt: 500,
+      stats: {
+        startedAt: 500,
+        filesChanged: 7,
+        additions: 28,
+        deletions: 21,
+        files,
+        updatedAt: 501,
+      },
+    })
+
+    expect(html).toContain('data-file-change-panel-scroll="true"')
+    expect(html).toContain('max-h-[128px]')
+    expect(html).toContain('overflow-y-auto')
+    expect(html).toContain('scrollbar-none')
+    expect(html).toContain('file-7.ts')
+    expect(html).toContain('+7')
+  })
+
+  test('Given shouldShowRuntimeTodoProgress 可见性规则 When 判断执行态与压缩态 Then 仅有未完成项且执行中且非压缩时显示', () => {
     const todos = EXECUTION_GRAPH.todos
+    const completedOnly = [
+      { id: '1', content: 'a', status: 'completed' as const },
+      { id: '2', content: 'b', status: 'completed' as const },
+    ]
 
     // 无 streamState / 未 running：视为会话已停，隐藏
     expect(shouldShowRuntimeTodoProgress(todos)).toBe(false)
     expect(shouldShowRuntimeTodoProgress(todos, { running: true })).toBe(true)
     expect(shouldShowRuntimeTodoProgress([])).toBe(false)
+    expect(shouldShowRuntimeTodoProgress(completedOnly, { running: true })).toBe(false)
+    expect(hasActiveRuntimeTodos(completedOnly)).toBe(false)
+    expect(hasActiveRuntimeTodos(todos)).toBe(true)
     expect(shouldShowRuntimeTodoProgress(todos, {
       running: false,
     })).toBe(false)

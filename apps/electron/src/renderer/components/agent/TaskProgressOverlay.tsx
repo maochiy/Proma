@@ -35,6 +35,8 @@ interface TaskProgressOverlayProps {
   streaming: boolean
   /** 与 Agent 任务并列的系统级短时操作；当前用于上下文压缩。 */
   contextCompaction?: ContextCompactionProgress
+  /** 与会话正文保持一致的水平偏移。 */
+  contentOffsetX?: number
 }
 
 function compactionSignature(progress: ContextCompactionProgress): string {
@@ -76,7 +78,12 @@ function CompactionProgressDetails({ progress }: { progress: ContextCompactionPr
  * 取代单独的“回到最下方”按钮：任务进行时展示单行进度，点击展开完整任务卡；
  * 无任务时自动退化为原箭头按钮。
  */
-export function TaskProgressOverlay({ activities, streaming, contextCompaction }: TaskProgressOverlayProps): React.ReactElement | null {
+export function TaskProgressOverlay({
+  activities,
+  streaming,
+  contextCompaction,
+  contentOffsetX = 0,
+}: TaskProgressOverlayProps): React.ReactElement | null {
   const { isAtBottom, scrollToBottom } = useStickToBottomContext()
   const liveItems = React.useMemo(
     () => aggregateTaskItems(activities, false),
@@ -182,6 +189,7 @@ export function TaskProgressOverlay({ activities, streaming, contextCompaction }
     return (
       <Button
         className="absolute bottom-[26px] left-1/2 size-10 -translate-x-1/2 rounded-md border border-border/60 bg-background/85 shadow-sm backdrop-blur-sm transition-[background-color,transform] duration-200 hover:bg-accent/80 active:scale-[0.96]"
+        style={{ marginLeft: contentOffsetX }}
         onClick={() => scrollToBottom()}
         type="button"
         variant="ghost"
@@ -195,7 +203,8 @@ export function TaskProgressOverlay({ activities, streaming, contextCompaction }
     <div className={cn(
       'pointer-events-none absolute bottom-[22px] left-1/2 z-10 flex -translate-x-1/2 items-center gap-1 transition-opacity duration-200',
       fading && 'opacity-0',
-    )}>
+    )}
+    style={{ marginLeft: contentOffsetX }}>
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
           <button

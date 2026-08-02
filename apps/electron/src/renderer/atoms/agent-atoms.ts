@@ -7,10 +7,19 @@
 
 import { atom } from 'jotai'
 import { atomFamily, atomWithStorage } from 'jotai/utils'
-import type { AgentSessionMeta, AgentEvent, AgentWorkspace, AgentPendingFile, AgentRuntimeModelCatalog, AgentRuntimeExecutionGraph, AgentTurnChangeStats, RetryAttempt, PromaPermissionMode, PermissionRequest, AskUserRequest, ExitPlanModeRequest, ThinkingConfig, ThinkingEffortLevel, SDKMessage, UnstagedChangesResult } from '@proma/shared'
+import type { AgentSessionMeta, AgentEvent, AgentWorkspace, AgentPendingFile, AgentRuntimeModelCatalog, AgentRuntimeExecutionGraph, AgentRuntimeExecutionNode, AgentRuntimeSubagentTranscript, AgentRuntimeTodoItem, AgentTurnChangeStats, RetryAttempt, PromaPermissionMode, PermissionRequest, AskUserRequest, ExitPlanModeRequest, ThinkingConfig, ThinkingEffortLevel, SDKMessage, UnstagedChangesResult, GitRepoStatus } from '@proma/shared'
 import { PROMA_DEFAULT_PERMISSION_MODE } from '@proma/shared'
 import { calculateDockBadgeCount, countPendingRequests } from '@/lib/dock-badge-count'
 import type { AgentQueuedMessage } from '@/lib/agent-message-queue'
+import type { SessionExecutionNode } from '@/lib/session-execution-nodes'
+import {
+  advanceFloatingPanelPlanState,
+  createFloatingPlanSignature,
+  FLOATING_EXECUTION_NODE_COMPLETION_DELAY_MS,
+  FLOATING_EXECUTION_NODE_COMPLETION_STAGGER_MS,
+  isFloatingExecutionNodeTerminal,
+} from '@/lib/session-floating-runtime-lifecycle'
+import type { AgentFloatingPanelPlanState } from '@/lib/session-floating-runtime-lifecycle'
 
 /** 活动状态 */
 export type ActivityStatus = 'pending' | 'running' | 'completed' | 'error' | 'backgrounded'
@@ -344,21 +353,479 @@ export const agentTurnChangeStatsAtom = atom<
 /** 侧面板是否打开（全局共享，所有会话共用一个状态） */
 export const agentSidePanelOpenAtom = atomWithStorage<boolean>('proma-agent-sidepanel-open', true)
 
+export const AGENT_SIDE_PANEL_MIN_WIDTH = 300
+export const AGENT_SIDE_PANEL_MAX_WIDTH = 560
+
 /** 侧面板宽度（全局共享，用户拖拽后持久化） */
-export const agentSidePanelWidthAtom = atomWithStorage<number>('proma-agent-sidepanel-width', 280)
+export const agentSidePanelWidthAtom = atomWithStorage<number>(
+  'proma-agent-sidepanel-width',
+  AGENT_SIDE_PANEL_MAX_WIDTH,
+)
 
 /** @deprecated 保留以兼容旧代码，但实际所有 session 都读全局 atom */
 export const agentSidePanelOpenMapAtom = atom<Map<string, boolean>>(new Map())
 
-export type AgentSidePanelTab =
+export type AgentSidePanelStaticTab =
   | 'session'
   | 'workspace'
   | 'changes'
+  | 'plan'
   | 'execution'
   | 'chat'
 
+export type AgentExecutionNodeTab = `execution-node:${string}`
+
+export type AgentSidePanelTab =
+  | AgentSidePanelStaticTab
+  | AgentExecutionNodeTab
+
+const EXECUTION_NODE_TAB_PREFIX = 'execution-node:'
+
+/** 为执行节点创建独立的右侧动态 Tab ID。 */
+export function createAgentExecutionNodeTab(
+  nodeId: string,
+  runtimeSessionId?: string,
+): AgentExecutionNodeTab {
+  if (!runtimeSessionId) return `${EXECUTION_NODE_TAB_PREFIX}${nodeId}`
+  return `${EXECUTION_NODE_TAB_PREFIX}${encodeURIComponent(runtimeSessionId)}::${encodeURIComponent(nodeId)}`
+}
+
+/** 判断右侧动态 Tab 是否为执行节点详情。 */
+export function isAgentExecutionNodeTab(tab: AgentSidePanelTab): tab is AgentExecutionNodeTab {
+  return tab.startsWith(EXECUTION_NODE_TAB_PREFIX)
+}
+
+/** 从执行节点动态 Tab 中还原节点 ID。 */
+export function getAgentExecutionNodeId(tab: AgentSidePanelTab): string | null {
+  if (!isAgentExecutionNodeTab(tab)) return null
+  const value = tab.slice(EXECUTION_NODE_TAB_PREFIX.length)
+  const separatorIndex = value.indexOf('::')
+  return separatorIndex < 0
+    ? value
+    : decodeURIComponent(value.slice(separatorIndex + 2))
+}
+
 /** 侧面板当前 Tab：会话文件 / 工作区文件 / 文件改动 / Chat（per-session Map） */
 export const agentDiffPanelTabAtom = atom<Map<string, AgentSidePanelTab>>(new Map())
+
+/** 右侧功能区已打开的动态 Tabs，按会话隔离并保留打开顺序。 */
+export const agentSidePanelTabsAtom = atom<Map<string, AgentSidePanelTab[]>>(new Map())
+
+/** 右侧功能区是否显示默认启动页，按会话隔离。 */
+export const agentSidePanelLauncherAtom = atom<Map<string, boolean>>(new Map())
+
+/** 执行详情需要自动定位并展开的节点 ID，按会话隔离。 */
+export const agentFocusedExecutionNodeAtom = atom<Map<string, string | null>>(new Map())
+
+export interface AgentExecutionNodeTabSnapshot {
+  node: SessionExecutionNode
+  runtimeSessionId?: string
+}
+
+/** 已打开节点 Tab 的身份与展示快照，避免 Runtime 切换后串到同 ID 的新节点。 */
+export const agentExecutionNodeTabSnapshotsAtom = atom<
+  Map<string, Map<AgentExecutionNodeTab, AgentExecutionNodeTabSnapshot>>
+>(new Map())
+
+/** 节点正文缓存；终态节点切换 Tab 后仍可查看已经加载过的完整内容。 */
+export const agentExecutionNodeTranscriptCacheAtom = atom<
+  Map<string, AgentRuntimeSubagentTranscript>
+>(new Map())
+
+/** 用户是否希望显示会话悬浮面板；自动隐藏不会改写该偏好。 */
+export const agentFloatingPanelEnabledAtom = atomWithStorage<boolean>(
+  'proma-agent-floating-panel-enabled',
+  true,
+)
+
+/** 用户在空间不足时主动要求强制显示悬浮面板的会话；不持久化。 */
+export const agentFloatingPanelForcedSessionsAtom = atom<Set<string>>(new Set<string>())
+
+/** 悬浮面板当前是否实际显示，供顶部开关区分“隐藏”和“被自动隐藏”。 */
+export const agentFloatingPanelVisibleSessionsAtom = atom<Set<string>>(new Set<string>())
+
+/** 悬浮面板计划的跨轮生命周期状态，按会话隔离且不影响输入框上方计划入口。 */
+export const agentFloatingPanelPlanStatesAtom = atom<
+  Map<string, AgentFloatingPanelPlanState>
+>(new Map())
+
+/** 独立于 SDK 流式状态的悬浮面板轮次标识，软空闲续轮也会更新。 */
+export const agentFloatingPanelTurnEpochsAtom = atom<Map<string, number>>(new Map())
+
+export interface BeginAgentFloatingPanelTurnInput {
+  sessionId: string
+  epoch: number
+}
+
+/** 标记一次真正开始发送给模型的新用户轮次。 */
+export const beginAgentFloatingPanelTurnAtom = atom(
+  null,
+  (get, set, input: BeginAgentFloatingPanelTurnInput) => {
+    if (get(agentFloatingPanelTurnEpochsAtom).get(input.sessionId) === input.epoch) {
+      return
+    }
+    const todos = get(agentRuntimeExecutionGraphsAtom).get(input.sessionId)?.todos ?? []
+    const nextPlanState = advanceFloatingPanelPlanState({
+      turnEpoch: input.epoch,
+      todos,
+    })
+
+    set(agentFloatingPanelTurnEpochsAtom, (previous) => {
+      const next = new Map(previous)
+      next.set(input.sessionId, input.epoch)
+      return next
+    })
+    set(agentFloatingPanelPlanStatesAtom, (previous) => {
+      const next = new Map(previous)
+      next.set(input.sessionId, nextPlanState)
+      return next
+    })
+  },
+)
+
+export interface AgentFloatingPanelExecutionNodeState {
+  node: SessionExecutionNode
+  expiresAt: number
+}
+
+/**
+ * 悬浮面板正在短暂展示的执行节点终态。
+ * 到期后直接删除记录，不保留历史隐藏节点，也不删除执行详情或子会话数据。
+ */
+export const agentFloatingPanelExecutionNodeStatesAtom = atom<
+  Map<string, Map<string, AgentFloatingPanelExecutionNodeState>>
+>(new Map())
+
+export interface AgentSidePanelRuntimeHistory {
+  /** 快照所属 Runtime；新的非空 Runtime 到达时整体替换旧 Runtime 数据。 */
+  runtimeSessionId?: string
+  /** 最近一次非空计划；执行图清空时仍供已打开的“计划”Tab 查看。 */
+  todos: AgentRuntimeTodoItem[]
+  /** CCB 原生节点完整快照；Collaboration 子会话继续从会话元数据实时投影。 */
+  nodes: SessionExecutionNode[]
+  updatedAt: number
+}
+
+/**
+ * 右侧“计划 / 子智能体”Tab 的会话级历史快照。
+ *
+ * 与悬浮面板的短暂终态展示分离：执行图重置或悬浮节点消失时，
+ * 已打开的右侧列表与节点详情仍保留完整数据和最终状态。
+ */
+export const agentSidePanelRuntimeHistoryAtom = atom<
+  Map<string, AgentSidePanelRuntimeHistory>
+>(new Map())
+
+export interface MergeAgentRuntimeExecutionGraphInput {
+  sessionId: string
+  graph: AgentRuntimeExecutionGraph
+  /** 查询发起时看到的 Runtime ID；期间已切换 Runtime 时丢弃旧响应。 */
+  baseRuntimeSessionId?: string | null
+}
+
+/** 统一合并执行图，避免异步查询覆盖更新的实时事件，并同步捕获 CCB 节点终态。 */
+export const mergeAgentRuntimeExecutionGraphAtom = atom(
+  null,
+  (get, set, input: MergeAgentRuntimeExecutionGraphInput) => {
+    const existing = get(agentRuntimeExecutionGraphsAtom).get(input.sessionId)
+    if (
+      input.baseRuntimeSessionId !== undefined
+      && (existing?.runtimeSessionId ?? null) !== input.baseRuntimeSessionId
+    ) {
+      return
+    }
+    if (
+      existing
+      && existing.runtimeSessionId === input.graph.runtimeSessionId
+      && existing.updatedAt > input.graph.updatedAt
+    ) {
+      return
+    }
+
+    const historyBeforeMerge = get(agentSidePanelRuntimeHistoryAtom)
+      .get(input.sessionId)
+    const previousNodes = new Map<string, AgentRuntimeExecutionNode>(
+      (historyBeforeMerge?.nodes ?? []).map((node) => [node.id, node]),
+    )
+    for (const node of existing?.nodes ?? []) {
+      previousNodes.set(node.id, node)
+    }
+    const terminalTransitions = input.graph.nodes.filter((node) => {
+      const previous = previousNodes.get(node.id)
+      return (
+        previous != null
+        && (previous.status === 'queued' || previous.status === 'running')
+        && isFloatingExecutionNodeTerminal(node)
+      )
+    })
+
+    set(agentRuntimeExecutionGraphsAtom, (previous) => {
+      const next = new Map(previous)
+      next.set(input.sessionId, input.graph)
+      return next
+    })
+
+    set(agentSidePanelRuntimeHistoryAtom, (previous) => {
+      const current = previous.get(input.sessionId)
+      const runtimeChanged = (
+        input.graph.runtimeSessionId != null
+        && current?.runtimeSessionId != null
+        && input.graph.runtimeSessionId !== current.runtimeSessionId
+      )
+      const hasRuntimeData = input.graph.nodes.length > 0 || input.graph.todos.length > 0
+      const base = runtimeChanged && hasRuntimeData ? undefined : current
+      const nodes = new Map((base?.nodes ?? []).map((node) => [node.id, node]))
+      for (const node of input.graph.nodes) {
+        nodes.set(node.id, { ...node, source: 'runtime' })
+      }
+
+      const next = new Map(previous)
+      next.set(input.sessionId, {
+        runtimeSessionId: input.graph.runtimeSessionId ?? base?.runtimeSessionId,
+        todos: input.graph.todos.length > 0
+          ? input.graph.todos
+          : (base?.todos ?? []),
+        nodes: Array.from(nodes.values()),
+        updatedAt: Math.max(base?.updatedAt ?? 0, input.graph.updatedAt),
+      })
+      return next
+    })
+
+    set(agentFloatingPanelPlanStatesAtom, (previous) => {
+      const current = previous.get(input.sessionId)
+      const suppressedSignature = current?.suppressedCompletedPlanSignature
+      if (!current || !suppressedSignature || input.graph.todos.length === 0) {
+        return previous
+      }
+      // 新一轮开始后的空图只是 Runtime 重置过程，不能据此让上一轮已完成计划重新出现。
+      // 只有观察到内容或状态确实不同的新计划后，才解除旧计划签名的屏蔽。
+      if (createFloatingPlanSignature(input.graph.todos) === suppressedSignature) {
+        return previous
+      }
+      const next = new Map(previous)
+      next.set(input.sessionId, {
+        ...current,
+        suppressedCompletedPlanSignature: undefined,
+      })
+      return next
+    })
+
+    if (terminalTransitions.length > 0) {
+      const completionBaseTime = Date.now()
+      set(agentFloatingPanelExecutionNodeStatesAtom, (previous) => {
+        const next = new Map(previous)
+        const sessionStates = new Map(previous.get(input.sessionId) ?? [])
+        terminalTransitions.forEach((node, index) => {
+          sessionStates.set(node.id, {
+            node: { ...node, source: 'runtime' },
+            expiresAt: (
+              completionBaseTime
+              + FLOATING_EXECUTION_NODE_COMPLETION_DELAY_MS
+              + index * FLOATING_EXECUTION_NODE_COMPLETION_STAGGER_MS
+            ),
+          })
+        })
+        next.set(input.sessionId, sessionStates)
+        return next
+      })
+    }
+  },
+)
+
+export interface AgentSessionGitSummary {
+  repoStatus: GitRepoStatus | null
+  filesChanged: number
+  additions: number
+  deletions: number
+  updatedAt: number
+}
+
+/** 会话悬浮面板使用的 Git 环境与总变更摘要缓存。 */
+export const agentSessionGitSummaryAtom = atom<Map<string, AgentSessionGitSummary>>(new Map())
+
+export interface OpenAgentSidePanelTabInput {
+  sessionId: string
+  tab: AgentSidePanelTab
+  focusedExecutionNodeId?: string | null
+  executionNodeSnapshot?: AgentExecutionNodeTabSnapshot
+}
+
+export interface ReorderAgentSidePanelTabsInput {
+  sessionId: string
+  source: AgentSidePanelTab
+  target: AgentSidePanelTab
+}
+
+/** 从右上角按钮打开右侧功能区：已有 Tabs 原样恢复，没有 Tabs 时显示启动页。 */
+export const openAgentSidePanelLauncherAtom = atom(
+  null,
+  (get, set, sessionId: string) => {
+    const wasOpen = get(agentSidePanelOpenAtom)
+    const openTabs = get(agentSidePanelTabsAtom).get(sessionId) ?? []
+    const activeTab = get(agentDiffPanelTabAtom).get(sessionId)
+
+    if (!wasOpen) {
+      set(agentSidePanelWidthAtom, AGENT_SIDE_PANEL_MAX_WIDTH)
+    }
+    set(agentSidePanelOpenAtom, true)
+    set(agentSidePanelLauncherAtom, (previous) => {
+      const next = new Map(previous)
+      next.set(sessionId, openTabs.length === 0)
+      return next
+    })
+    const fallbackTab = openTabs[0]
+    if (fallbackTab && (!activeTab || !openTabs.includes(activeTab))) {
+      set(agentDiffPanelTabAtom, (previous) => {
+        const next = new Map(previous)
+        next.set(sessionId, fallbackTab)
+        return next
+      })
+    }
+  },
+)
+
+/** 收起整个右侧功能区；已打开 Tabs、激活项和节点定位状态继续保留。 */
+export const closeAgentSidePanelAtom = atom(
+  null,
+  (_get, set, _sessionId: string) => {
+    set(agentSidePanelOpenAtom, false)
+  },
+)
+
+/** 关闭单个动态 Tab；关闭最后一个后自动返回默认启动页。 */
+export const closeAgentSidePanelTabAtom = atom(
+  null,
+  (get, set, input: OpenAgentSidePanelTabInput) => {
+    const currentTabs = get(agentSidePanelTabsAtom).get(input.sessionId) ?? []
+    const closedIndex = currentTabs.indexOf(input.tab)
+    if (closedIndex < 0) return
+    const nextTabs = currentTabs.filter((tab) => tab !== input.tab)
+
+    set(agentSidePanelTabsAtom, (previous) => {
+      const next = new Map(previous)
+      next.set(input.sessionId, nextTabs)
+      return next
+    })
+
+    if (input.tab === 'execution' || isAgentExecutionNodeTab(input.tab)) {
+      set(agentFocusedExecutionNodeAtom, (previous) => {
+        if (!previous.has(input.sessionId)) return previous
+        const next = new Map(previous)
+        next.delete(input.sessionId)
+        return next
+      })
+    }
+    if (isAgentExecutionNodeTab(input.tab)) {
+      const executionNodeTab = input.tab
+      set(agentExecutionNodeTabSnapshotsAtom, (previous) => {
+        const sessionSnapshots = previous.get(input.sessionId)
+        if (!sessionSnapshots?.has(executionNodeTab)) return previous
+        const next = new Map(previous)
+        const nextSessionSnapshots = new Map(sessionSnapshots)
+        nextSessionSnapshots.delete(executionNodeTab)
+        if (nextSessionSnapshots.size > 0) next.set(input.sessionId, nextSessionSnapshots)
+        else next.delete(input.sessionId)
+        return next
+      })
+    }
+
+    if (nextTabs.length === 0) {
+      set(agentSidePanelLauncherAtom, (previous) => {
+        const next = new Map(previous)
+        next.set(input.sessionId, true)
+        return next
+      })
+      set(agentDiffPanelTabAtom, (previous) => {
+        if (!previous.has(input.sessionId)) return previous
+        const next = new Map(previous)
+        next.delete(input.sessionId)
+        return next
+      })
+      return
+    }
+
+    const activeTab = get(agentDiffPanelTabAtom).get(input.sessionId)
+    if (activeTab === input.tab || !activeTab || !nextTabs.includes(activeTab)) {
+      const nextActiveTab = nextTabs[Math.min(closedIndex, nextTabs.length - 1)]
+      if (!nextActiveTab) return
+      set(agentDiffPanelTabAtom, (previous) => {
+        const next = new Map(previous)
+        next.set(input.sessionId, nextActiveTab)
+        return next
+      })
+    }
+  },
+)
+
+/** 调整动态 Tabs 的顺序并按会话保存。 */
+export const reorderAgentSidePanelTabsAtom = atom(
+  null,
+  (get, set, input: ReorderAgentSidePanelTabsInput) => {
+    if (input.source === input.target) return
+    const current = get(agentSidePanelTabsAtom).get(input.sessionId) ?? []
+    const sourceIndex = current.indexOf(input.source)
+    const targetIndex = current.indexOf(input.target)
+    if (sourceIndex < 0 || targetIndex < 0) return
+    const reordered = [...current]
+    reordered.splice(sourceIndex, 1)
+    reordered.splice(targetIndex, 0, input.source)
+    set(agentSidePanelTabsAtom, (previous) => {
+      const next = new Map(previous)
+      next.set(input.sessionId, reordered)
+      return next
+    })
+  },
+)
+
+/**
+ * 统一打开右侧功能 Tab。
+ *
+ * 悬浮面板、文件预览和侧边问答都通过该入口写入状态，
+ * 避免只切换 activeTab 却没有把 Tab 加入动态列表。
+ */
+export const openAgentSidePanelTabAtom = atom(
+  null,
+  (get, set, input: OpenAgentSidePanelTabInput) => {
+    if (!get(agentSidePanelOpenAtom)) {
+      set(agentSidePanelWidthAtom, AGENT_SIDE_PANEL_MAX_WIDTH)
+    }
+    set(agentSidePanelOpenAtom, true)
+    set(agentSidePanelLauncherAtom, (previous) => {
+      const next = new Map(previous)
+      next.set(input.sessionId, false)
+      return next
+    })
+    set(agentSidePanelTabsAtom, (previous) => {
+      const current = previous.get(input.sessionId) ?? []
+      if (current.includes(input.tab)) return previous
+      const next = new Map(previous)
+      next.set(input.sessionId, [...current, input.tab])
+      return next
+    })
+    set(agentDiffPanelTabAtom, (previous) => {
+      const next = new Map(previous)
+      next.set(input.sessionId, input.tab)
+      return next
+    })
+    if (input.tab === 'execution') {
+      set(agentFocusedExecutionNodeAtom, (previous) => {
+        const next = new Map(previous)
+        next.set(input.sessionId, input.focusedExecutionNodeId ?? null)
+        return next
+      })
+    }
+    if (isAgentExecutionNodeTab(input.tab) && input.executionNodeSnapshot) {
+      const executionNodeTab = input.tab
+      set(agentExecutionNodeTabSnapshotsAtom, (previous) => {
+        const next = new Map(previous)
+        const sessionSnapshots = new Map(previous.get(input.sessionId) ?? [])
+        sessionSnapshots.set(executionNodeTab, input.executionNodeSnapshot!)
+        next.set(input.sessionId, sessionSnapshots)
+        return next
+      })
+    }
+  },
+)
 
 /** Diff 视图模式：'split' | 'unified'，默认使用统一预览 */
 export const agentDiffViewModeAtom = atom<'split' | 'unified'>('unified')

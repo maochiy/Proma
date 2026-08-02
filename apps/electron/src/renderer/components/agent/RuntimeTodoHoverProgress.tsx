@@ -1,10 +1,11 @@
 import * as React from 'react'
 import { Check, Circle, CircleAlert, Loader2 } from 'lucide-react'
 import { useAtomValue, useSetAtom } from 'jotai'
-import type { AgentRuntimeTodoItem, AgentTurnChangeStats } from '@proma/shared'
+import type { AgentRuntimeTodoItem, AgentTurnChangeStats, AgentTurnChangedFile } from '@proma/shared'
 import {
   agentDiffRefreshVersionAtom,
   agentRuntimeExecutionGraphsAtom,
+  mergeAgentRuntimeExecutionGraphAtom,
   agentSessionStreamingStateAtomFamily,
   agentTurnChangeStatsAtom,
 } from '@/atoms/agent-atoms'
@@ -15,8 +16,43 @@ interface RuntimeTodoHoverProgressProps {
   sessionId: string
 }
 
-const FLOATING_PLAN_CARD_CLASS =
-  'rounded-[14px] border border-black/[0.07] bg-card text-card-foreground shadow-md dark:border-white/[0.10]'
+/**
+ * 悬浮卡片样式对齐 Codex 截图：
+ * - 较大圆角 + 轻边框 + 柔和阴影
+ * - 计划面板与文件改动面板共用
+ */
+const FLOATING_PANEL_CARD_CLASS =
+  'rounded-[16px] border border-black/[0.06] bg-card text-card-foreground shadow-[0_10px_30px_-12px_rgba(0,0,0,0.18)] dark:border-white/[0.10] dark:shadow-[0_14px_36px_-16px_rgba(0,0,0,0.75)]'
+
+/** 底部计划入口胶囊：高度固定时接近全圆角 */
+const FLOATING_ENTRY_PILL_CLASS =
+  'rounded-full border border-black/[0.06] bg-card text-card-foreground shadow-sm dark:border-white/[0.10]'
+
+/** 计划面板最多完整展示的条目数；超出后固定高度并支持无滚动条滚动。 */
+export const PLAN_PANEL_MAX_VISIBLE_ITEMS = 5
+
+/**
+ * 约等于 5 条单行步骤的高度：
+ * 每行 leading-5(20px)+py-0.5(4px)≈24px，space-y-0.5 间隔 2px * 4。
+ */
+export const PLAN_PANEL_SCROLL_MAX_HEIGHT_CLASS = 'max-h-[128px]'
+
+/** 文件改动悬浮面板最多完整展示的条目数。 */
+export const FILE_CHANGE_PANEL_MAX_VISIBLE_ITEMS = 5
+
+/** 约等于 5 条单行文件改动高度。 */
+export const FILE_CHANGE_PANEL_SCROLL_MAX_HEIGHT_CLASS = 'max-h-[128px]'
+
+/** 悬浮列表展示用文件名：优先 basename，与 Codex 风格一致。 */
+export function formatChangedFileDisplayName(path: string): string {
+  const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '')
+  const segments = normalized.split('/').filter(Boolean)
+  return segments.at(-1) || path
+}
+
+export function sortChangedFiles(files: AgentTurnChangedFile[]): AgentTurnChangedFile[] {
+  return [...files].sort((left, right) => left.path.localeCompare(right.path))
+}
 
 export function isCompleted(todo: AgentRuntimeTodoItem): boolean {
   return todo.status === 'completed'
@@ -70,9 +106,18 @@ export function formatPlanProgressLabel(
   return `第 ${stepNumber} / ${todos.length} 步`
 }
 
+/** 是否还有未完成步骤（pending / in_progress / blocked）。全部完成后不再展示旧计划。 */
+export function hasActiveRuntimeTodos(todos: AgentRuntimeTodoItem[]): boolean {
+  return todos.some((todo) => (
+    todo.status === 'pending'
+    || todo.status === 'in_progress'
+    || todo.status === 'blocked'
+  ))
+}
+
 /**
  * 计划入口可见性：
- * 1. 有 Todo 才显示
+ * 1. 有未完成 Todo 才显示（上一轮已全部完成的旧计划，新消息不再挂着）
  * 2. 仅本轮会话仍在执行（running）时显示；会话结束后整块入口/面板都隐藏
  * 3. 上下文压缩进行中时也隐藏（底部只展示压缩进度）
  *
@@ -89,7 +134,7 @@ export function shouldShowRuntimeTodoProgress(
     }
   },
 ): boolean {
-  if (todos.length === 0) return false
+  if (!hasActiveRuntimeTodos(todos)) return false
   // 会话已停：隐藏计划入口与悬浮面板，避免 idle 仍转圈「执行中」
   if (streamState?.running !== true) return false
   if (shouldSuppressAgentRunningIndicator(streamState)) return false
@@ -192,7 +237,7 @@ export function RuntimeTodoHoverProgress({
   sessionId,
 }: RuntimeTodoHoverProgressProps): React.ReactElement | null {
   const graphs = useAtomValue(agentRuntimeExecutionGraphsAtom)
-  const setGraphs = useSetAtom(agentRuntimeExecutionGraphsAtom)
+  const mergeGraph = useSetAtom(mergeAgentRuntimeExecutionGraphAtom)
   const graph = graphs.get(sessionId)
   const todos = React.useMemo(
     () => sortRuntimeTodos(graph?.todos ?? []),
@@ -211,24 +256,16 @@ export function RuntimeTodoHoverProgress({
   // 会话打开或流式结束后主动拉一次执行图，避免只依赖实时事件导致进度停在旧快照。
   React.useEffect(() => {
     let cancelled = false
+    const baseRuntimeSessionId = graph?.runtimeSessionId ?? null
 
     void (async () => {
       try {
         const next = await window.electronAPI.getAgentRuntimeExecutionGraph(sessionId)
         if (cancelled || !isUsableExecutionGraph(next)) return
-        setGraphs((previous) => {
-          const existing = previous.get(sessionId)
-          if (
-            existing
-            && existing.updatedAt === next.updatedAt
-            && existing.todos.length === next.todos.length
-            && existing.nodes.length === next.nodes.length
-          ) {
-            return previous
-          }
-          const updated = new Map(previous)
-          updated.set(sessionId, next)
-          return updated
+        mergeGraph({
+          sessionId,
+          graph: next,
+          baseRuntimeSessionId,
         })
       } catch {
         // Session 未打开时保留事件推送的最后快照。
@@ -238,7 +275,7 @@ export function RuntimeTodoHoverProgress({
     return () => {
       cancelled = true
     }
-  }, [isStreaming, sessionId, setGraphs])
+  }, [graph?.runtimeSessionId, isStreaming, mergeGraph, sessionId])
 
   const refreshChangeStats = React.useCallback(async (): Promise<void> => {
     const requestSequence = ++requestSequenceRef.current
@@ -315,65 +352,125 @@ export function RuntimeTodoHoverProgress({
   )
 
   return (
-    <div
-      className="group relative z-30 w-fit"
-    >
+    <div className="relative z-30 w-fit">
       <div
         className={cn(
-          'pointer-events-none invisible absolute bottom-full left-1/2 w-max max-w-[min(420px,calc(100vw-3rem))]',
-          '-translate-x-1/2 translate-y-1 pb-2 opacity-0 transition-[opacity,transform,visibility] duration-150',
-          'group-hover:pointer-events-auto group-hover:visible group-hover:translate-y-0 group-hover:opacity-100',
-        )}
-      >
-        <div className={cn(FLOATING_PLAN_CARD_CLASS, 'p-2.5')}>
-          <div className="space-y-0.5">
-            {todos.map((todo) => (
-              <div
-                key={todo.id}
-                className="flex max-w-full items-start gap-2 px-1.5 py-0.5 text-[13px] leading-5"
-              >
-                <span className="mt-0.5">
-                  <TodoStatusIcon todo={todo} />
-                </span>
-                <div className="min-w-0">
-                  <p className={cn(
-                    'break-words',
-                    isCompleted(todo) && 'text-muted-foreground line-through decoration-muted-foreground/45',
-                  )}>
-                    {todo.content}
-                  </p>
-                  {todo.status === 'in_progress' && (
-                    <p className="mt-0.5 text-[10px] text-sky-600 dark:text-sky-400">
-                      执行中{todo.activeForm ? ` · ${todo.activeForm}` : ''}
-                    </p>
-                  )}
-                  {(todo.owner || (todo.blockedBy?.length ?? 0) > 0) && (
-                    <p className="mt-0.5 text-[10px] text-muted-foreground">
-                      {todo.owner ? `负责人：${todo.owner}` : ''}
-                      {todo.owner && (todo.blockedBy?.length ?? 0) > 0 ? ' · ' : ''}
-                      {(todo.blockedBy?.length ?? 0) > 0
-                        ? `等待：${todo.blockedBy?.join('、')}`
-                        : ''}
-                    </p>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <div
-        className={cn(
-          FLOATING_PLAN_CARD_CLASS,
+          FLOATING_ENTRY_PILL_CLASS,
           'inline-flex h-9 cursor-default items-center gap-2 px-3.5 text-[13px] text-muted-foreground',
         )}
       >
-        <PlanCompletionRing percentage={progressPercentage} />
-        <span className="tabular-nums">{progressLabel}</span>
+        {/* 步骤区悬停展示计划面板，与文件改动区分离，避免两个面板同时弹出 */}
+        <span className="group/plan relative inline-flex items-center gap-2">
+          <div
+            className={cn(
+              'pointer-events-none invisible absolute bottom-full left-1/2 w-max max-w-[min(420px,calc(100vw-3rem))]',
+              '-translate-x-1/2 translate-y-1 pb-2 opacity-0 transition-[opacity,transform,visibility] duration-150',
+              'group-hover/plan:pointer-events-auto group-hover/plan:visible group-hover/plan:translate-y-0 group-hover/plan:opacity-100',
+            )}
+            data-plan-panel
+          >
+            <div className={cn(FLOATING_PANEL_CARD_CLASS, 'min-w-[220px] p-2.5')}>
+              <div
+                className={cn(
+                  'space-y-0.5',
+                  // 超过 5 条固定高度，支持滚动但不显示滚动条
+                  todos.length > PLAN_PANEL_MAX_VISIBLE_ITEMS && cn(
+                    PLAN_PANEL_SCROLL_MAX_HEIGHT_CLASS,
+                    'overflow-y-auto overscroll-contain scrollbar-none',
+                  ),
+                )}
+                data-plan-panel-scroll={todos.length > PLAN_PANEL_MAX_VISIBLE_ITEMS ? 'true' : 'false'}
+              >
+                {todos.map((todo) => (
+                  <div
+                    key={todo.id}
+                    className="flex max-w-full items-start gap-2 px-1.5 py-0.5 text-[13px] leading-5"
+                  >
+                    <span className="mt-0.5">
+                      <TodoStatusIcon todo={todo} />
+                    </span>
+                    <div className="min-w-0">
+                      <p className={cn(
+                        'break-words',
+                        isCompleted(todo) && 'text-muted-foreground line-through decoration-muted-foreground/45',
+                      )}>
+                        {todo.content}
+                      </p>
+                      {todo.status === 'in_progress' && (
+                        <p className="mt-0.5 text-[10px] text-sky-600 dark:text-sky-400">
+                          执行中{todo.activeForm ? ` · ${todo.activeForm}` : ''}
+                        </p>
+                      )}
+                      {(todo.owner || (todo.blockedBy?.length ?? 0) > 0) && (
+                        <p className="mt-0.5 text-[10px] text-muted-foreground">
+                          {todo.owner ? `负责人：${todo.owner}` : ''}
+                          {todo.owner && (todo.blockedBy?.length ?? 0) > 0 ? ' · ' : ''}
+                          {(todo.blockedBy?.length ?? 0) > 0
+                            ? `等待：${todo.blockedBy?.join('、')}`
+                            : ''}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+          <PlanCompletionRing percentage={progressPercentage} />
+          <span className="tabular-nums">{progressLabel}</span>
+        </span>
         {visibleChangeStats && (
-          <>
+          <span className="group/files relative inline-flex items-center gap-2">
             <span className="text-muted-foreground/45">·</span>
+            {/* 文件改动明细：悬停统计区展示，超过 5 条固定高度无滚动条滚动 */}
+            <div
+              className={cn(
+                'pointer-events-none invisible absolute bottom-full left-1/2 w-max max-w-[min(360px,calc(100vw-3rem))]',
+                '-translate-x-1/2 translate-y-1 pb-2 opacity-0 transition-[opacity,transform,visibility] duration-150',
+                'group-hover/files:pointer-events-auto group-hover/files:visible group-hover/files:translate-y-0 group-hover/files:opacity-100',
+              )}
+              data-file-change-panel
+            >
+              <div className={cn(FLOATING_PANEL_CARD_CLASS, 'min-w-[220px] p-2.5')}>
+                <div
+                  className={cn(
+                    'space-y-0.5',
+                    (changeStats.files?.length ?? 0) > FILE_CHANGE_PANEL_MAX_VISIBLE_ITEMS && cn(
+                      FILE_CHANGE_PANEL_SCROLL_MAX_HEIGHT_CLASS,
+                      'overflow-y-auto overscroll-contain scrollbar-none',
+                    ),
+                  )}
+                  data-file-change-panel-scroll={
+                    (changeStats.files?.length ?? 0) > FILE_CHANGE_PANEL_MAX_VISIBLE_ITEMS
+                      ? 'true'
+                      : 'false'
+                  }
+                >
+                  {sortChangedFiles(changeStats.files ?? []).map((file) => (
+                    <div
+                      key={file.path}
+                      className="flex max-w-full items-center gap-4 px-2 py-1 text-[13px] leading-5"
+                      title={file.path}
+                    >
+                      <span className="min-w-0 flex-1 truncate text-foreground/90">
+                        {formatChangedFileDisplayName(file.path)}
+                      </span>
+                      <span className="inline-flex shrink-0 items-center gap-1.5 tabular-nums">
+                        {file.additions > 0 && (
+                          <span className="text-emerald-500">+{file.additions}</span>
+                        )}
+                        {file.deletions > 0 && (
+                          <span className="text-red-500">-{file.deletions}</span>
+                        )}
+                        {file.additions <= 0 && file.deletions <= 0 && (
+                          <span className="text-muted-foreground/70">·</span>
+                        )}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
             <span className="tabular-nums">{changeStats.filesChanged} 个文件已更改</span>
             {changeStats.additions > 0 && (
               <span className="tabular-nums text-emerald-500">
@@ -385,7 +482,7 @@ export function RuntimeTodoHoverProgress({
                 -{changeStats.deletions}
               </span>
             )}
-          </>
+          </span>
         )}
       </div>
     </div>

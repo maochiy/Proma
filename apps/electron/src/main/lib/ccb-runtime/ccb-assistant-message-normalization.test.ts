@@ -1,8 +1,32 @@
 import { describe, expect, test } from 'bun:test'
 import type { SDKMessage } from '@proma/shared'
-import { normalizeCcbAssistantMessage } from './ccb-assistant-message-normalization'
+import {
+  normalizeCcbAssistantMessage,
+  normalizeCcbMessage,
+} from './ccb-assistant-message-normalization'
 
-describe('CCB Assistant 消息归一化', () => {
+describe('CCB SDK 消息归一化', () => {
+  test('Given CCB 子智能体发送提示词是字符串 When 归一化 Then 转换为标准用户正文块', () => {
+    const message = {
+      type: 'user',
+      parent_tool_use_id: null,
+      uuid: 'ccb-prompt',
+      message: {
+        role: 'user',
+        content: '请完整检查当前项目',
+      },
+    } as unknown as SDKMessage
+
+    expect(normalizeCcbMessage(message)).toMatchObject({
+      type: 'user',
+      uuid: 'ccb-prompt',
+      message: {
+        role: 'user',
+        content: [{ type: 'text', text: '请完整检查当前项目' }],
+      },
+    })
+  })
+
   test('Given 空 thinking 块错误携带正文 When 归一化 Then 转换为标准 text 块', () => {
     const message = {
       type: 'assistant',

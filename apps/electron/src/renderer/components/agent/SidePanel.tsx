@@ -6,8 +6,8 @@
  */
 
 import * as React from 'react'
-import { useAtom, useAtomValue, useSetAtom } from 'jotai'
-import { X, FolderOpen, ExternalLink, ChevronRight, MoreHorizontal, FolderSearch, Pencil, FolderInput, Info, FolderHeart, MessageSquarePlus } from 'lucide-react'
+import { useAtomValue, useSetAtom } from 'jotai'
+import { X, FolderOpen, ExternalLink, ChevronRight, MoreHorizontal, FolderSearch, Pencil, FolderInput, Info, FolderHeart, MessageSquarePlus, FileDiff, PanelRightClose } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import {
@@ -22,6 +22,7 @@ import { DiffPanelTabBar } from '@/components/diff/DiffPanelTabBar'
 import { DiffChangesList } from '@/components/diff/DiffChangesList'
 import { ChatView } from '@/components/chat/ChatView'
 import { RuntimeExecutionPanel } from './RuntimeExecutionPanel'
+import { RuntimePlanPanel } from './RuntimePlanPanel'
 import { FilePanelAddButton } from './FilePanelAddButton'
 import { FilePanelDropTarget } from './FilePanelDropTarget'
 import { referenceFilePaths } from './file-panel-actions'
@@ -39,6 +40,15 @@ import {
   agentDiffRefreshVersionAtom,
   fileBrowserAutoRevealAtom,
   agentSelectedWorktreeAtom,
+  agentRuntimeExecutionGraphsAtom,
+  agentExecutionNodeTabSnapshotsAtom,
+  agentSidePanelRuntimeHistoryAtom,
+  agentSessionsAtom,
+  agentStreamingStatesAtom,
+  createAgentExecutionNodeTab,
+  getAgentExecutionNodeId,
+  isAgentExecutionNodeTab,
+  openAgentSidePanelTabAtom,
 } from '@/atoms/agent-atoms'
 import type { AgentSidePanelTab } from '@/atoms/agent-atoms'
 import { agentSideChatMapAtom } from '@/atoms/chat-atoms'
@@ -46,7 +56,17 @@ import { interfaceVariantAtom } from '@/atoms/theme'
 import { previewFileMapAtom } from '@/atoms/preview-atoms'
 import { useOpenPreview } from '@/components/diff/preview-opener'
 import { detectIsWindows } from '@/lib/platform'
-import type { FileEntry, AgentPendingFile } from '@proma/shared'
+import { getAvailableAgentSidePanelTabs } from '@/lib/agent-side-panel-tabs'
+import {
+  buildSessionExecutionNodes,
+  isSessionExecutionNodeDetailRunning,
+} from '@/lib/session-execution-nodes'
+import type {
+  AgentPendingFile,
+  AgentRuntimeExecutionNode,
+  FileEntry,
+} from '@proma/shared'
+import { RuntimeExecutionNodePanel } from './RuntimeExecutionNodePanel'
 
 function getPathBasename(filePath: string): string {
   return filePath.split(/[\\/]/).filter(Boolean).pop() || filePath
@@ -65,14 +85,33 @@ interface SidePanelProps {
   sessionPath: string | null
   activeTab: AgentSidePanelTab
   onTabChange: (tab: AgentSidePanelTab) => void
+  openTabs: AgentSidePanelTab[]
+  launcherVisible: boolean
+  onOpenTab: (tab: AgentSidePanelTab) => void
+  onCloseTab: (tab: AgentSidePanelTab) => void
+  onReorderTabs: (source: AgentSidePanelTab, target: AgentSidePanelTab) => void
+  onClosePanel: () => void
   width?: number
 }
 
 const filePanelActionButtonClass = 'h-6 w-6 flex-shrink-0 rounded-md text-muted-foreground/75 hover:bg-accent/70 hover:text-foreground [&_svg]:size-3.5'
 
-export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, width = 280 }: SidePanelProps): React.ReactElement {
+export function SidePanel({
+  sessionId,
+  sessionPath,
+  activeTab,
+  onTabChange,
+  openTabs,
+  launcherVisible,
+  onOpenTab,
+  onCloseTab,
+  onReorderTabs,
+  onClosePanel,
+  width = 280,
+}: SidePanelProps): React.ReactElement {
   // per-session 侧面板状态（默认打开）
-  const [isOpen, setIsOpen] = useAtom(agentSidePanelOpenAtom)
+  const isOpen = useAtomValue(agentSidePanelOpenAtom)
+  const openSidePanelTab = useSetAtom(openAgentSidePanelTabAtom)
   const isWindows = React.useMemo(() => detectIsWindows(), [])
 
   // Tab 系统
@@ -394,6 +433,7 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
   const autoRevealSignal = useAtomValue(fileBrowserAutoRevealAtom)
   const consumedTabRevealTsRef = React.useRef(0)
   React.useEffect(() => {
+    if (!isOpen) return
     if (!autoRevealSignal || autoRevealSignal.select) return
     if (autoRevealSignal.sessionId !== sessionId) return
     if (autoRevealSignal.ts <= consumedTabRevealTsRef.current) return
@@ -409,8 +449,8 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
     const targetTab = inSession ? 'session' : inWorkspace ? 'workspace' : null
     if (!targetTab) return
     consumedTabRevealTsRef.current = autoRevealSignal.ts
-    if (activeTab !== targetTab) onTabChange(targetTab)
-  }, [autoRevealSignal, sessionId, sessionPath, workspaceFilesPath, attachedDirs, attachedFiles, wsAttachedDirs, wsAttachedFiles, activeTab, onTabChange])
+    if (activeTab !== targetTab || !openTabs.includes(targetTab)) onOpenTab(targetTab)
+  }, [autoRevealSignal, sessionId, sessionPath, workspaceFilesPath, attachedDirs, attachedFiles, wsAttachedDirs, wsAttachedFiles, activeTab, isOpen, openTabs, onOpenTab])
 
   // RightSidePanel 完全由用户控制，不因 Agent 文件变更自动打开
 
@@ -423,9 +463,76 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
   const sideChatMap = useAtomValue(agentSideChatMapAtom)
   const setSideChatMap = useSetAtom(agentSideChatMapAtom)
   const sideChatConversationId = sideChatMap.get(sessionId) ?? null
-  const effectiveActiveTab: AgentSidePanelTab = activeTab === 'chat' && !sideChatConversationId
-    ? 'session'
-    : activeTab
+  const executionGraph = useAtomValue(agentRuntimeExecutionGraphsAtom).get(sessionId)
+  const runtimeHistory = useAtomValue(agentSidePanelRuntimeHistoryAtom).get(sessionId)
+  const executionNodeTabSnapshots = useAtomValue(agentExecutionNodeTabSnapshotsAtom)
+    .get(sessionId)
+  const agentSessions = useAtomValue(agentSessionsAtom)
+  const agentStreamingStates = useAtomValue(agentStreamingStatesAtom)
+  const effectiveExecutionGraph = React.useMemo(() => {
+    const nodes = new Map<string, AgentRuntimeExecutionNode>(
+      (runtimeHistory?.nodes ?? []).map((node) => [node.id, node]),
+    )
+    for (const node of executionGraph?.nodes ?? []) nodes.set(node.id, node)
+    return {
+      runtimeSessionId: executionGraph?.runtimeSessionId,
+      nodes: Array.from(nodes.values()),
+      todos: executionGraph?.todos.length
+        ? executionGraph.todos
+        : (runtimeHistory?.todos ?? []),
+      updatedAt: Math.max(
+        executionGraph?.updatedAt ?? 0,
+        runtimeHistory?.updatedAt ?? 0,
+      ),
+    }
+  }, [executionGraph, runtimeHistory])
+  const executionNodes = React.useMemo(
+    () => buildSessionExecutionNodes({
+      sessionId,
+      runtimeGraph: effectiveExecutionGraph,
+      sessions: agentSessions,
+      liveRuntimeNodeIds: new Set(
+        (executionGraph?.nodes ?? []).map((node) => node.id),
+      ),
+    }),
+    [agentSessions, effectiveExecutionGraph, executionGraph?.nodes, sessionId],
+  )
+  const hasExecutionGraph = executionNodes.length > 0
+  const hasPlan = effectiveExecutionGraph.todos.length > 0
+  const availableTabs = React.useMemo(() => {
+    return getAvailableAgentSidePanelTabs({
+      openTabs,
+      hasExecutionGraph,
+      hasPlan,
+      hasSideChat: Boolean(sideChatConversationId),
+    })
+  }, [hasExecutionGraph, hasPlan, openTabs, sideChatConversationId])
+  const activeExecutionNodeId = getAgentExecutionNodeId(activeTab)
+  const activeExecutionNodeSnapshot = activeExecutionNodeId && isAgentExecutionNodeTab(activeTab)
+    ? executionNodeTabSnapshots?.get(activeTab)
+    : undefined
+  // 优先使用实时节点，执行图暂时移除节点后才回退到打开 Tab 时保存的快照。
+  const activeExecutionNode = (
+    activeExecutionNodeId
+      ? executionNodes.find((node) => node.id === activeExecutionNodeId)
+      : undefined
+  ) ?? activeExecutionNodeSnapshot?.node
+  const activeExecutionNodeRunning = activeExecutionNode
+    ? isSessionExecutionNodeDetailRunning(
+        activeExecutionNode,
+        agentStreamingStates.get(sessionId)?.running === true,
+        activeExecutionNode.transcriptSessionId
+          ? agentStreamingStates.get(activeExecutionNode.transcriptSessionId)?.running
+          : undefined,
+      )
+    : false
+  const getTabLabel = React.useCallback((tab: AgentSidePanelTab): string | undefined => {
+    const nodeId = getAgentExecutionNodeId(tab)
+    if (!nodeId || !isAgentExecutionNodeTab(tab)) return undefined
+    const node = executionNodeTabSnapshots?.get(tab)?.node
+      ?? executionNodes.find((item) => item.id === nodeId)
+    return node?.name || node?.description || '执行节点'
+  }, [executionNodeTabSnapshots, executionNodes])
 
   const handleCloseChatTab = React.useCallback(() => {
     setSideChatMap((prev) => {
@@ -434,10 +541,13 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
       next.delete(sessionId)
       return next
     })
-    if (activeTab === 'chat') {
-      onTabChange('session')
-    }
-  }, [activeTab, onTabChange, sessionId, setSideChatMap])
+    onCloseTab('chat')
+  }, [onCloseTab, sessionId, setSideChatMap])
+
+  React.useEffect(() => {
+    if (sideChatConversationId || !openTabs.includes('chat')) return
+    onCloseTab('chat')
+  }, [onCloseTab, openTabs, sideChatConversationId])
 
   return (
     <div
@@ -458,227 +568,344 @@ export function SidePanel({ sessionId, sessionPath, activeTab, onTabChange, widt
           isOpen ? 'opacity-100' : 'opacity-0 pointer-events-none',
         )}
         >
-          <DiffPanelTabBar
-            activeTab={effectiveActiveTab}
-            onTabChange={onTabChange}
-            onClose={() => setIsOpen(false)}
-            onCloseChat={handleCloseChatTab}
-            showChatTab={Boolean(sideChatConversationId)}
-            isWindows={isWindows}
-          />
-
-          {effectiveActiveTab === 'chat' ? (
-            sideChatConversationId ? (
-              <div className="min-h-0 flex-1 overflow-hidden">
-                <ChatView conversationId={sideChatConversationId} />
+          {launcherVisible ? (
+            <>
+              <div className="relative flex h-[34px] shrink-0 items-center justify-end tabbar-bg">
+                <div className={cn('absolute inset-0 titlebar-drag-region', isWindows && 'right-[126px]')} />
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <button
+                      type="button"
+                      className="titlebar-no-drag relative mr-1 flex size-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+                      aria-label="折叠右侧功能区"
+                      onClick={onClosePanel}
+                    >
+                      <PanelRightClose className="size-4" />
+                    </button>
+                  </TooltipTrigger>
+                  <TooltipContent side="bottom">折叠功能区</TooltipContent>
+                </Tooltip>
               </div>
-            ) : (
-              <div className="flex-1 flex items-center justify-center text-muted-foreground text-xs">暂无问答会话</div>
-            )
-          ) : effectiveActiveTab === 'execution' ? (
-            <RuntimeExecutionPanel sessionId={sessionId} />
-          ) : effectiveActiveTab === 'changes' ? (
-            sessionPath ? (
-              <DiffChangesList
-                key={sessionId}
-                dirPath={sessionPath}
-                sessionId={sessionId}
-                sessionPath={sessionPath}
-                workspaceFilesPath={workspaceFilesPath || undefined}
-                extraPaths={fileAccessPathsMemo}
-                refreshVersion={diffRefreshVersion}
-                selectedFilePath={selectedFilePath}
-                onFileClick={handleDiffFileClick}
-                workspaceSlug={workspaceSlug || undefined}
-                worktreeRepoPaths={worktreeRepoPathsMemo}
-              />
-            ) : (
-              <div className="flex-1 flex items-center justify-center text-muted-foreground text-xs">等待会话初始化...</div>
-            )
-          ) : effectiveActiveTab === 'session' ? (
-            <div className="flex-1 min-h-0 flex flex-col pt-0.5 mx-2 mb-2">
-              {sessionPath ? (
-                <>
-                  <div className="flex items-center gap-1 px-2 h-[32px] flex-shrink-0">
-                    <FolderOpen className="size-3 text-muted-foreground" />
-                    <span className="text-[11px] font-medium text-muted-foreground">会话文件</span>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Info className="size-3 text-muted-foreground/50 cursor-help" />
-                      </TooltipTrigger>
-                      <TooltipContent side="bottom" className="max-w-[200px]">
-                        <p>当前会话的专属文件，仅本次对话的 Agent 可以访问</p>
-                      </TooltipContent>
-                    </Tooltip>
-                    <span className="text-[10px] text-muted-foreground/70 truncate flex-1 min-w-0" title={sessionPath}>
-                      {breadcrumb}
-                    </span>
-                    <FilePanelAddButton
-                      scope="session"
-                      className={filePanelActionButtonClass}
-                      onSaveFiles={handleSaveSessionFiles}
-                      onReferenceFiles={handleSessionFilesAttached}
-                      onReferenceDirectories={handleSessionDirectoriesDropped}
-                    />
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className={filePanelActionButtonClass}
-                          onClick={() => window.electronAPI.openFile(sessionPath).catch(console.error)}
-                        >
-                          <FolderSearch />
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent side="bottom">
-                        <p>在 Finder 中打开</p>
-                      </TooltipContent>
-                    </Tooltip>
-                  </div>
-                  <FileSearchBar
-                    workspaceFilesPath={null}
-                    sessionPath={sessionPath}
-                    sessionAttachedDirs={attachedDirs}
-                    workspaceAttachedDirs={[]}
-                    placeholder="搜索会话文件..."
-                    sessionId={sessionId}
-                    onFilePreview={handleFilePreview}
-                  />
-                  <FilePanelDropTarget
-                    onSaveFiles={handleSaveSessionFiles}
-                    onReferenceFiles={handleSessionFilesAttached}
-                    onAddDirectories={handleSessionDirectoriesDropped}
-                  >
-                    <div className="scrollbar-none min-h-0 flex-1 overflow-y-auto">
-                      {attachedFiles.length > 0 && (
-                        <AttachedFilesSection
-                          attachedFiles={attachedFiles}
-                          onDetach={handleDetachFile}
-                          onAddToChat={handleAddToChat}
-                          onFilePreview={handleFilePreview}
-                          allowedPaths={basePathsRef.current}
-                          sessionId={sessionId}
-                        />
-                      )}
-                      {attachedDirs.length > 0 && (
-                        <AttachedDirsSection
-                          scope="session"
-                          attachedDirs={attachedDirs}
-                          onDetach={handleDetachDirectory}
-                          refreshVersion={filesVersion}
-                          onAddToChat={handleAddToChat}
-                          onFilePreview={handleFilePreview}
-                          allowedPaths={basePathsRef.current}
-                          sessionId={sessionId}
-                        />
-                      )}
-                      {hasSessionAttachedItems && (
-                        <div className="mb-1 px-3 pt-2 text-[11px] font-medium text-muted-foreground">工作文件（存储于该工作区目录）</div>
-                      )}
-                      <FileBrowser rootPath={sessionPath} hideToolbar embedded hideEmpty={hasSessionAttachedItems} onAddToChat={handleAddToChat} onFilePreview={handleFilePreview} />
-                    </div>
-                  </FilePanelDropTarget>
-                </>
-              ) : (
-                <div className="flex-1 flex items-center justify-center text-muted-foreground text-xs">等待会话初始化...</div>
-              )}
-            </div>
+              <SidePanelLauncher onOpenTab={onOpenTab} />
+            </>
           ) : (
-            <div className="flex-1 min-h-0 flex flex-col pt-0.5">
-              <div className="flex-1 min-h-0 flex flex-col mx-2 mb-2">
-                <div className="flex items-center gap-1 px-2 h-[32px] flex-shrink-0">
-                  <FolderHeart className="size-3 text-muted-foreground" />
-                  <span className="text-[11px] font-medium text-muted-foreground">工作区文件</span>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Info className="size-3 text-muted-foreground/50 cursor-help" />
-                    </TooltipTrigger>
-                    <TooltipContent side="bottom" className="max-w-[220px]">
-                      <p>工作区内所有会话可访问的文件和文件夹，每个新对话都可以自动读取</p>
-                    </TooltipContent>
-                  </Tooltip>
-                  <div className="flex-1" />
-                  <FilePanelAddButton
-                    scope="workspace"
-                    disabled={!workspaceFilesPath || !workspaceSlug}
-                    className={filePanelActionButtonClass}
-                    onSaveFiles={handleSaveWorkspaceFiles}
-                    onReferenceFiles={handleWorkspaceFilesAttached}
-                    onReferenceDirectories={handleWorkspaceDirectoriesDropped}
+            <>
+              <DiffPanelTabBar
+                activeTab={activeTab}
+                openTabs={openTabs}
+                availableTabs={availableTabs}
+                onTabChange={onTabChange}
+                onTabClose={(tab) => {
+                  if (tab === 'chat') handleCloseChatTab()
+                  else onCloseTab(tab)
+                }}
+                onTabAdd={onOpenTab}
+                onTabReorder={onReorderTabs}
+                getTabLabel={getTabLabel}
+                onClose={onClosePanel}
+                isWindows={isWindows}
+              />
+
+              {activeExecutionNodeId ? (
+                activeExecutionNode ? (
+                  <RuntimeExecutionNodePanel
+                    cacheKey={`${sessionId}:${activeTab}`}
+                    sessionId={sessionId}
+                    sessionPath={sessionPath}
+                    node={activeExecutionNode}
+                    running={activeExecutionNodeRunning}
                   />
-                  {workspaceFilesPath && (
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
+                ) : (
+                  <div className="flex flex-1 items-center justify-center px-6 text-center text-xs text-muted-foreground">
+                    该执行节点已不存在或尚未同步。
+                  </div>
+                )
+              ) : activeTab === 'chat' ? (
+                sideChatConversationId ? (
+                  <div className="min-h-0 flex-1 overflow-hidden">
+                    <ChatView conversationId={sideChatConversationId} />
+                  </div>
+                ) : (
+                  <div className="flex-1 flex items-center justify-center text-muted-foreground text-xs">暂无问答会话</div>
+                )
+              ) : activeTab === 'execution' ? (
+                <RuntimeExecutionPanel
+                  sessionId={sessionId}
+                  onOpenNode={(node, runtimeSessionId) => {
+                    const tab = createAgentExecutionNodeTab(node.id, runtimeSessionId)
+                    openSidePanelTab({
+                      sessionId,
+                      tab,
+                      executionNodeSnapshot: {
+                        node,
+                        runtimeSessionId,
+                      },
+                    })
+                  }}
+                />
+              ) : activeTab === 'plan' ? (
+                <RuntimePlanPanel sessionId={sessionId} />
+              ) : activeTab === 'changes' ? (
+                sessionPath ? (
+                  <DiffChangesList
+                    key={sessionId}
+                    dirPath={sessionPath}
+                    sessionId={sessionId}
+                    sessionPath={sessionPath}
+                    workspaceFilesPath={workspaceFilesPath || undefined}
+                    extraPaths={fileAccessPathsMemo}
+                    refreshVersion={diffRefreshVersion}
+                    selectedFilePath={selectedFilePath}
+                    onFileClick={handleDiffFileClick}
+                    workspaceSlug={workspaceSlug || undefined}
+                    worktreeRepoPaths={worktreeRepoPathsMemo}
+                  />
+                ) : (
+                  <div className="flex-1 flex items-center justify-center text-muted-foreground text-xs">等待会话初始化...</div>
+                )
+              ) : activeTab === 'session' ? (
+                <div className="flex-1 min-h-0 flex flex-col pt-0.5 mx-2 mb-2">
+                  {sessionPath ? (
+                    <>
+                      <div className="flex items-center gap-1 px-2 h-[32px] flex-shrink-0">
+                        <FolderOpen className="size-3 text-muted-foreground" />
+                        <span className="text-[11px] font-medium text-muted-foreground">会话文件</span>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Info className="size-3 text-muted-foreground/50 cursor-help" />
+                          </TooltipTrigger>
+                          <TooltipContent side="bottom" className="max-w-[200px]">
+                            <p>当前会话的专属文件，仅本次对话的 Agent 可以访问</p>
+                          </TooltipContent>
+                        </Tooltip>
+                        <span className="text-[10px] text-muted-foreground/70 truncate flex-1 min-w-0" title={sessionPath}>
+                          {breadcrumb}
+                        </span>
+                        <FilePanelAddButton
+                          scope="session"
                           className={filePanelActionButtonClass}
-                          onClick={() => window.electronAPI.openFile(workspaceFilesPath).catch(console.error)}
-                        >
-                          <FolderSearch />
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent side="bottom">
-                        <p>在 Finder 中打开工作区文件目录</p>
-                      </TooltipContent>
-                    </Tooltip>
+                          onSaveFiles={handleSaveSessionFiles}
+                          onReferenceFiles={handleSessionFilesAttached}
+                          onReferenceDirectories={handleSessionDirectoriesDropped}
+                        />
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className={filePanelActionButtonClass}
+                              onClick={() => window.electronAPI.openFile(sessionPath).catch(console.error)}
+                            >
+                              <FolderSearch />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent side="bottom">
+                            <p>在 Finder 中打开</p>
+                          </TooltipContent>
+                        </Tooltip>
+                      </div>
+                      <FileSearchBar
+                        workspaceFilesPath={null}
+                        sessionPath={sessionPath}
+                        sessionAttachedDirs={attachedDirs}
+                        workspaceAttachedDirs={[]}
+                        placeholder="搜索会话文件..."
+                        sessionId={sessionId}
+                        onFilePreview={handleFilePreview}
+                      />
+                      <FilePanelDropTarget
+                        onSaveFiles={handleSaveSessionFiles}
+                        onReferenceFiles={handleSessionFilesAttached}
+                        onAddDirectories={handleSessionDirectoriesDropped}
+                      >
+                        <div className="scrollbar-none min-h-0 flex-1 overflow-y-auto">
+                          {attachedFiles.length > 0 && (
+                            <AttachedFilesSection
+                              attachedFiles={attachedFiles}
+                              onDetach={handleDetachFile}
+                              onAddToChat={handleAddToChat}
+                              onFilePreview={handleFilePreview}
+                              allowedPaths={basePathsRef.current}
+                              sessionId={sessionId}
+                            />
+                          )}
+                          {attachedDirs.length > 0 && (
+                            <AttachedDirsSection
+                              scope="session"
+                              attachedDirs={attachedDirs}
+                              onDetach={handleDetachDirectory}
+                              refreshVersion={filesVersion}
+                              onAddToChat={handleAddToChat}
+                              onFilePreview={handleFilePreview}
+                              allowedPaths={basePathsRef.current}
+                              sessionId={sessionId}
+                            />
+                          )}
+                          {hasSessionAttachedItems && (
+                            <div className="mb-1 px-3 pt-2 text-[11px] font-medium text-muted-foreground">工作文件（存储于该工作区目录）</div>
+                          )}
+                          <FileBrowser rootPath={sessionPath} hideToolbar embedded hideEmpty={hasSessionAttachedItems} onAddToChat={handleAddToChat} onFilePreview={handleFilePreview} />
+                        </div>
+                      </FilePanelDropTarget>
+                    </>
+                  ) : (
+                    <div className="flex-1 flex items-center justify-center text-muted-foreground text-xs">等待会话初始化...</div>
                   )}
                 </div>
-                <FileSearchBar
-                  workspaceFilesPath={workspaceFilesPath}
-                  sessionPath={null}
-                  sessionAttachedDirs={[]}
-                  workspaceAttachedDirs={wsAttachedDirs}
-                  placeholder="搜索工作区文件..."
-                  sessionId={sessionId}
-                  onFilePreview={handleFilePreview}
-                />
-                <FilePanelDropTarget
-                  disabled={!workspaceFilesPath || !workspaceSlug}
-                  onSaveFiles={handleSaveWorkspaceFiles}
-                  onReferenceFiles={handleWorkspaceFilesAttached}
-                  onAddDirectories={handleWorkspaceDirectoriesDropped}
-                >
-                  <div className="scrollbar-none min-h-0 flex-1 overflow-y-auto pb-1">
-                    {wsAttachedFiles.length > 0 && (
-                      <AttachedFilesSection
-                        attachedFiles={wsAttachedFiles}
-                        onDetach={handleDetachWorkspaceFile}
-                        onAddToChat={handleAddToChat}
-                        onFilePreview={handleFilePreview}
-                        allowedPaths={basePathsRef.current}
-                        sessionId={sessionId}
-                      />
-                    )}
-                    {wsAttachedDirs.length > 0 && (
-                      <AttachedDirsSection
+              ) : (
+                <div className="flex-1 min-h-0 flex flex-col pt-0.5">
+                  <div className="flex-1 min-h-0 flex flex-col mx-2 mb-2">
+                    <div className="flex items-center gap-1 px-2 h-[32px] flex-shrink-0">
+                      <FolderHeart className="size-3 text-muted-foreground" />
+                      <span className="text-[11px] font-medium text-muted-foreground">工作区文件</span>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Info className="size-3 text-muted-foreground/50 cursor-help" />
+                        </TooltipTrigger>
+                        <TooltipContent side="bottom" className="max-w-[220px]">
+                          <p>工作区内所有会话可访问的文件和文件夹，每个新对话都可以自动读取</p>
+                        </TooltipContent>
+                      </Tooltip>
+                      <div className="flex-1" />
+                      <FilePanelAddButton
                         scope="workspace"
-                        attachedDirs={wsAttachedDirs}
-                        onDetach={handleDetachWorkspaceDirectory}
-                        refreshVersion={filesVersion}
-                        onAddToChat={handleAddToChat}
-                        onFilePreview={handleFilePreview}
-                        allowedPaths={basePathsRef.current}
-                        sessionId={sessionId}
+                        disabled={!workspaceFilesPath || !workspaceSlug}
+                        className={filePanelActionButtonClass}
+                        onSaveFiles={handleSaveWorkspaceFiles}
+                        onReferenceFiles={handleWorkspaceFilesAttached}
+                        onReferenceDirectories={handleWorkspaceDirectoriesDropped}
                       />
-                    )}
-                    {workspaceFilesPath && (
-                      <>
-                        {hasWorkspaceAttachedItems && (
-                          <div className="mb-1 px-3 pt-2 text-[11px] font-medium text-muted-foreground">工作文件（存储于该工作区目录）</div>
+                      {workspaceFilesPath && (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="icon"
+                              className={filePanelActionButtonClass}
+                              onClick={() => window.electronAPI.openFile(workspaceFilesPath).catch(console.error)}
+                            >
+                              <FolderSearch />
+                            </Button>
+                          </TooltipTrigger>
+                          <TooltipContent side="bottom">
+                            <p>在 Finder 中打开工作区文件目录</p>
+                          </TooltipContent>
+                        </Tooltip>
+                      )}
+                    </div>
+                    <FileSearchBar
+                      workspaceFilesPath={workspaceFilesPath}
+                      sessionPath={null}
+                      sessionAttachedDirs={[]}
+                      workspaceAttachedDirs={wsAttachedDirs}
+                      placeholder="搜索工作区文件..."
+                      sessionId={sessionId}
+                      onFilePreview={handleFilePreview}
+                    />
+                    <FilePanelDropTarget
+                      disabled={!workspaceFilesPath || !workspaceSlug}
+                      onSaveFiles={handleSaveWorkspaceFiles}
+                      onReferenceFiles={handleWorkspaceFilesAttached}
+                      onAddDirectories={handleWorkspaceDirectoriesDropped}
+                    >
+                      <div className="scrollbar-none min-h-0 flex-1 overflow-y-auto pb-1">
+                        {wsAttachedFiles.length > 0 && (
+                          <AttachedFilesSection
+                            attachedFiles={wsAttachedFiles}
+                            onDetach={handleDetachWorkspaceFile}
+                            onAddToChat={handleAddToChat}
+                            onFilePreview={handleFilePreview}
+                            allowedPaths={basePathsRef.current}
+                            sessionId={sessionId}
+                          />
                         )}
-                        <FileBrowser rootPath={workspaceFilesPath} hideToolbar embedded hideEmpty={hasWorkspaceAttachedItems} onAddToChat={handleAddToChat} onFilePreview={handleFilePreview} />
-                      </>
-                    )}
+                        {wsAttachedDirs.length > 0 && (
+                          <AttachedDirsSection
+                            scope="workspace"
+                            attachedDirs={wsAttachedDirs}
+                            onDetach={handleDetachWorkspaceDirectory}
+                            refreshVersion={filesVersion}
+                            onAddToChat={handleAddToChat}
+                            onFilePreview={handleFilePreview}
+                            allowedPaths={basePathsRef.current}
+                            sessionId={sessionId}
+                          />
+                        )}
+                        {workspaceFilesPath && (
+                          <>
+                            {hasWorkspaceAttachedItems && (
+                              <div className="mb-1 px-3 pt-2 text-[11px] font-medium text-muted-foreground">工作文件（存储于该工作区目录）</div>
+                            )}
+                            <FileBrowser rootPath={workspaceFilesPath} hideToolbar embedded hideEmpty={hasWorkspaceAttachedItems} onAddToChat={handleAddToChat} onFilePreview={handleFilePreview} />
+                          </>
+                        )}
+                      </div>
+                    </FilePanelDropTarget>
                   </div>
-                </FilePanelDropTarget>
-              </div>
-            </div>
+                </div>
+              )}
+            </>
           )}
-        </div>
+      </div>
+    </div>
+  )
+}
+
+const SIDE_PANEL_LAUNCHER_ENTRIES: Array<{
+  tab: AgentSidePanelTab
+  title: string
+  description: string
+  icon: React.ReactNode
+}> = [
+  {
+    tab: 'session',
+    title: '会话文件',
+    description: '查看当前会话的专属文件',
+    icon: <FolderOpen className="size-4" />,
+  },
+  {
+    tab: 'workspace',
+    title: '工作区文件',
+    description: '查看工作区共享文件',
+    icon: <FolderHeart className="size-4" />,
+  },
+  {
+    tab: 'changes',
+    title: '文件改动',
+    description: '查看当前工作树的全部变更',
+    icon: <FileDiff className="size-4" />,
+  },
+]
+
+export function SidePanelLauncher({
+  onOpenTab,
+}: {
+  onOpenTab: (tab: AgentSidePanelTab) => void
+}): React.ReactElement {
+  return (
+    <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto px-6 py-8">
+      <div className="w-full max-w-[320px] space-y-1">
+        {SIDE_PANEL_LAUNCHER_ENTRIES.map((entry) => (
+          <button
+            key={entry.tab}
+            type="button"
+            className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition-colors hover:bg-muted/55"
+            onClick={() => onOpenTab(entry.tab)}
+          >
+            <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted/70 text-muted-foreground">
+              {entry.icon}
+            </span>
+            <span className="min-w-0">
+              <span className="block text-sm font-medium">{entry.title}</span>
+              <span className="mt-0.5 block text-[11px] text-muted-foreground">
+                {entry.description}
+              </span>
+            </span>
+          </button>
+        ))}
+      </div>
     </div>
   )
 }

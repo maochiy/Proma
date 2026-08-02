@@ -34,7 +34,7 @@ permissions:
 
 env:
   CCB_RUNTIME_REPOSITORY: maochiy/claude-code
-  CCB_RUNTIME_COMMIT: bce2730f8833c8e12d83a230fe656ffc64858ccc
+  CCB_RUNTIME_COMMIT: b61a4c28acf14d49340339df213e210ff2818bf4
   RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
 
 jobs:

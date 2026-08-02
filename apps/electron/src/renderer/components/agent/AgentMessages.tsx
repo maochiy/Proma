@@ -30,11 +30,11 @@ import { tabMinimapCacheAtom } from '@/atoms/tab-atoms'
 import { channelsAtom } from '@/atoms/chat-atoms'
 import { ScrollPositionManager } from '@/hooks/useScrollPositionMemory'
 import { cn } from '@/lib/utils'
-import { Spinner } from '@/components/ui/spinner'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { groupIntoTurns, MessageGroupRenderer, getGroupId, getGroupPreview, extractUserText, parseAttachedFiles as sdkParseAttachedFiles, isImageFile as sdkIsImageFile, type MessageGroup } from './SDKMessageRenderer'
 import { buildLiveGroupSet } from './live-group-set'
 import { shouldSuppressAgentRunningIndicator } from '@/lib/agent-running-state'
+import { AgentRunningIndicator } from './AgentRunningIndicator'
 import { ContentBlock } from './ContentBlock'
 import { parseThinkTagsFromText } from './thinking-tag-parser'
 import { AgentHistorySelectionLayer } from './AgentHistorySelectionLayer'
@@ -189,6 +189,8 @@ export function getContextCompactionProgress(
 /** AgentMessages 属性接口 */
 interface AgentMessagesProps {
   sessionId: string
+  /** 会话悬浮面板占位后，正文整体水平偏移量。 */
+  contentOffsetX?: number
   /** 用户在前端选择的模型 ID（用于显示渠道配置的 Model Name） */
   sessionModelId?: string
   /** 消息是否已完成首次加载 */
@@ -467,34 +469,7 @@ export function DurationBadge({ durationMs, usage }: { durationMs: number; usage
   )
 }
 
-/** Agent 运行指示器 — Shimmer Spinner + 无括号的运行时间 */
-function AgentRunningIndicator({ startedAt }: { startedAt?: number }): React.ReactElement {
-  const [elapsed, setElapsed] = React.useState(0)
-
-  React.useEffect(() => {
-    const start = startedAt ?? Date.now()
-    const update = (): void => setElapsed((Date.now() - start) / 1000)
-    update()
-    const timer = setInterval(update, 100)
-    return () => clearInterval(timer)
-  }, [startedAt])
-
-  const formatTime = (seconds: number): string => {
-    if (seconds < 60) return `${seconds.toFixed(1)}s`
-    const m = Math.floor(seconds / 60)
-    const s = seconds % 60
-    return `${m}m ${s.toFixed(1)}s`
-  }
-
-  return (
-    <div className="flex items-center gap-2 min-h-[28px]">
-      <Spinner size="sm" className="text-primary/75" />
-      <span className="text-[13px] font-light text-muted-foreground/75 tabular-nums">Agent Running {formatTime(elapsed)}</span>
-    </div>
-  )
-}
-
-export function AgentMessages({ sessionId, sessionModelId, messagesLoaded, persistedSDKMessages, streaming, streamState, liveMessages, sessionPath, attachedDirs, stoppedByUser, onRetry, onRetryInNewSession, onFork, onRewind, onCompact }: AgentMessagesProps): React.ReactElement {
+export function AgentMessages({ sessionId, contentOffsetX = 0, sessionModelId, messagesLoaded, persistedSDKMessages, streaming, streamState, liveMessages, sessionPath, attachedDirs, stoppedByUser, onRetry, onRetryInNewSession, onFork, onRewind, onCompact }: AgentMessagesProps): React.ReactElement {
   const userProfile = useAtomValue(userProfileAtom)
   const setMinimapCache = useSetAtom(tabMinimapCacheAtom)
   const channels = useAtomValue(channelsAtom)
@@ -714,7 +689,10 @@ export function AgentMessages({ sessionId, sessionModelId, messagesLoaded, persi
     <div ref={historySelectionRootRef} className="relative flex min-h-0 flex-1 flex-col">
       <Conversation resize={ready && !transitioning ? 'smooth' : 'instant'} className={ready ? (skipFadeIn ? 'opacity-100' : 'opacity-100 transition-opacity duration-200') : 'opacity-0'}>
         <ScrollPositionManager id={sessionId} ready={ready} />
-        <ConversationContent>
+        <ConversationContent
+          className="transition-transform duration-200 motion-reduce:transition-none"
+          style={{ transform: `translateX(${contentOffsetX}px)` }}
+        >
           {!hasContent && !streaming ? (
             <EmptyState />
           ) : (
@@ -798,15 +776,19 @@ export function AgentMessages({ sessionId, sessionModelId, messagesLoaded, persi
             </>
           )}
         </ConversationContent>
-        <ScrollMinimap items={minimapItems} />
+        <ScrollMinimap items={minimapItems} rightOffset={Math.max(0, -contentOffsetX)} />
         <TaskProgressOverlay
           key={sessionId}
           activities={[]}
           streaming={streaming}
           contextCompaction={contextCompaction}
+          contentOffsetX={contentOffsetX}
         />
         {allUserMessagesData.length > 0 && (
-          <StickyUserMessage userMessages={allUserMessagesData} />
+          <StickyUserMessage
+            userMessages={allUserMessagesData}
+            contentOffsetX={contentOffsetX}
+          />
         )}
       </Conversation>
       <AgentHistorySelectionLayer sessionId={sessionId} rootRef={historySelectionRootRef} />

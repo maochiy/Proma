@@ -1,0 +1,379 @@
+import { describe, expect, test } from 'bun:test'
+import { createStore, Provider } from 'jotai'
+import { renderToStaticMarkup } from 'react-dom/server'
+import type { AgentRuntimeExecutionGraph, AgentSessionMeta } from '@proma/shared'
+import {
+  type AgentFloatingPanelExecutionNodeState,
+  agentFloatingPanelExecutionNodeStatesAtom,
+  agentFloatingPanelPlanStatesAtom,
+  agentRuntimeExecutionGraphsAtom,
+  agentSessionsAtom,
+  agentStreamingStatesAtom,
+} from '@/atoms/agent-atoms'
+import { createFloatingPlanSignature } from '@/lib/session-floating-runtime-lifecycle'
+import {
+  allocateFloatingRuntimeListRows,
+  SessionFloatingPanel,
+} from './SessionFloatingPanel'
+
+const SESSION_ID = 'floating-panel-test'
+
+const EXECUTION_GRAPH: AgentRuntimeExecutionGraph = {
+  nodes: [
+    {
+      id: 'main-task',
+      kind: 'shell',
+      status: 'completed',
+      description: '构建主任务',
+      transcriptAvailable: false,
+    },
+    {
+      id: 'subagent-1',
+      kind: 'subagent',
+      name: '布局分析',
+      status: 'running',
+      description: '分析会话区动态布局',
+      transcriptAvailable: true,
+    },
+  ],
+  todos: [
+    {
+      id: '1',
+      content: '完成悬浮面板布局',
+      status: 'completed',
+    },
+    {
+      id: '2',
+      content: '实现动态功能区',
+      status: 'in_progress',
+      activeForm: '重组右侧 Tabs',
+    },
+    {
+      id: '3',
+      content: '验证计划入口',
+      status: 'pending',
+    },
+  ],
+  updatedAt: 1,
+}
+
+function renderFloatingPanel(
+  running: boolean,
+  sessions: AgentSessionMeta[] = [],
+  graph: AgentRuntimeExecutionGraph = EXECUTION_GRAPH,
+): string {
+  const store = createStore()
+  store.set(agentRuntimeExecutionGraphsAtom, new Map([[SESSION_ID, graph]]))
+  store.set(agentSessionsAtom, sessions)
+  const executionStates = new Map<string, AgentFloatingPanelExecutionNodeState>()
+  for (const node of graph.nodes) {
+    executionStates.set(node.id, {
+      node: { ...node, source: 'runtime' },
+      expiresAt: Date.now() + 10_000,
+    })
+  }
+  for (const session of sessions) {
+    if (session.parentSessionId !== SESSION_ID || !session.sourceDelegationId) continue
+    executionStates.set(`delegation:${session.id}`, {
+      node: {
+        id: `delegation:${session.id}`,
+        kind: 'subagent',
+        name: session.title,
+        description: session.delegationGoal ?? session.title,
+        status: session.delegationStatus === 'completed'
+          ? 'completed'
+          : 'running',
+        transcriptAvailable: true,
+        source: 'delegation',
+        transcriptSessionId: session.id,
+      },
+      expiresAt: Date.now() + 10_000,
+    })
+  }
+  store.set(agentFloatingPanelExecutionNodeStatesAtom, new Map([[
+    SESSION_ID,
+    executionStates,
+  ]]))
+  store.set(agentStreamingStatesAtom, new Map([[
+    SESSION_ID,
+    {
+      running,
+      content: '',
+      toolActivities: [],
+    },
+  ]]))
+
+  return renderToStaticMarkup(
+    <Provider store={store}>
+      <SessionFloatingPanel sessionId={SESSION_ID} sessionPath={null} />
+    </Provider>,
+  )
+}
+
+describe('SessionFloatingPanel 会话悬浮面板', () => {
+  test('Given 悬浮面板渲染 When 检查外层容器 Then 圆角与输入框保持一致', () => {
+    const html = renderFloatingPanel(false)
+
+    expect(html).toContain('!rounded-[24px]')
+    expect(html).toContain('max-h-[min(380px,calc(100%-72px))]')
+    expect(html).not.toContain('h-[380px]')
+  })
+
+  test('Given 会话存在计划和节点 When 渲染 Then 二者共用无滚动条区域且节点只显示名称', () => {
+    const html = renderFloatingPanel(true)
+
+    expect(html).toContain('环境信息')
+    expect(html).toContain('分支')
+    expect(html).toContain('计划')
+    expect(html).not.toContain('执行进度')
+    expect(html).toContain('1 / 3')
+    expect(html).toContain('完成悬浮面板布局')
+    expect(html).toContain('实现动态功能区')
+    expect(html).toContain('验证计划入口')
+    expect(html).toContain('执行完成')
+    expect(html).toContain('执行中')
+    expect(html).toContain('未执行')
+    expect(html).toContain('data-session-plan-progress="readonly"')
+    expect(html).toContain('子智能体 · 2')
+    expect(html).toContain('构建主任务')
+    expect(html).toContain('布局分析')
+    expect(html).not.toContain('分析会话区动态布局')
+    expect(html).toContain('data-session-floating-runtime-region')
+    expect(html).not.toContain('data-session-floating-scroll-region')
+  })
+
+  test('Given 会话已经停止但执行图残留 running When 渲染 Then 显示未执行且不旋转', () => {
+    const html = renderFloatingPanel(false)
+
+    expect(html).toContain('未执行')
+    expect(html).not.toContain('animate-spin')
+  })
+
+  test('Given Proma collaboration 创建了子会话 When 渲染 Then 与 CCB 原生节点合并展示', () => {
+    const html = renderFloatingPanel(true, [{
+      id: 'child-session-1',
+      title: '分析右侧动态 Tabs',
+      parentSessionId: SESSION_ID,
+      sourceDelegationId: 'delegation-1',
+      delegationRole: 'explore',
+      delegationStatus: 'completed',
+      delegationGoal: '检查动态 Tab 的打开与关闭逻辑',
+      createdAt: 10,
+      updatedAt: 20,
+    }])
+
+    expect(html).toContain('子智能体 · 3')
+    expect(html).toContain('分析右侧动态 Tabs')
+    expect(html).not.toContain('检查动态 Tab 的打开与关闭逻辑')
+  })
+
+  test('Given 没有计划和执行节点 When 渲染 Then 不显示空区块标题和占位提示', () => {
+    const html = renderFloatingPanel(false, [], {
+      nodes: [],
+      todos: [],
+      updatedAt: 1,
+    })
+
+    expect(html).not.toContain('data-session-plan-progress')
+    expect(html).not.toContain('子智能体 · 0')
+    expect(html).not.toContain('当前没有执行节点')
+  })
+
+  test('Given 新一轮开始且上一轮计划已完成 When 旧图仍未刷新 Then 悬浮面板不显示旧计划', () => {
+    const store = createStore()
+    store.set(agentRuntimeExecutionGraphsAtom, new Map([[SESSION_ID, {
+      nodes: [],
+      todos: [{ id: '1', content: '上一轮计划', status: 'completed' }],
+      updatedAt: 100,
+    }]]))
+    store.set(agentFloatingPanelPlanStatesAtom, new Map([[SESSION_ID, {
+      observedTurnEpoch: 200,
+      suppressedCompletedPlanSignature: createFloatingPlanSignature([
+        { id: '1', content: '上一轮计划', status: 'completed' },
+      ]),
+    }]]))
+    store.set(agentSessionsAtom, [])
+    store.set(agentStreamingStatesAtom, new Map([[
+      SESSION_ID,
+      {
+        running: true,
+        content: '',
+        toolActivities: [],
+        startedAt: 200,
+      },
+    ]]))
+
+    const html = renderToStaticMarkup(
+      <Provider store={store}>
+        <SessionFloatingPanel sessionId={SESSION_ID} sessionPath={null} />
+      </Provider>,
+    )
+
+    expect(html).not.toContain('上一轮计划')
+    expect(html).not.toContain('data-session-plan-progress')
+  })
+
+  test('Given 执行节点终态保留时间已经到期 When 渲染悬浮面板 Then 不再显示该节点', () => {
+    const store = createStore()
+    store.set(agentRuntimeExecutionGraphsAtom, new Map([[SESSION_ID, {
+      nodes: [{
+        id: 'completed-node',
+        kind: 'subagent',
+        name: '已经完成的节点',
+        description: '历史节点',
+        status: 'completed',
+        transcriptAvailable: true,
+      }],
+      todos: [],
+      updatedAt: 100,
+    }]]))
+    store.set(agentFloatingPanelExecutionNodeStatesAtom, new Map([[
+      SESSION_ID,
+      new Map([[
+        'completed-node',
+        {
+          node: {
+            id: 'completed-node',
+            kind: 'subagent',
+            name: '已经完成的节点',
+            description: '历史节点',
+            status: 'completed',
+            transcriptAvailable: true,
+            source: 'runtime',
+          },
+          expiresAt: Date.now() - 1,
+        },
+      ]]),
+    ]]))
+    store.set(agentSessionsAtom, [])
+    store.set(agentStreamingStatesAtom, new Map())
+
+    const html = renderToStaticMarkup(
+      <Provider store={store}>
+        <SessionFloatingPanel sessionId={SESSION_ID} sessionPath={null} />
+      </Provider>,
+    )
+
+    expect(html).not.toContain('已经完成的节点')
+    expect(html).not.toContain('子智能体 · 1')
+  })
+
+  test('Given CCB 节点仍在排队且父会话已停止 When 渲染 Then 节点仍显示且不会被当作终态关闭', () => {
+    const html = renderFloatingPanel(false, [], {
+      nodes: [{
+        id: 'queued-node',
+        kind: 'subagent',
+        name: '等待执行的 CCB 节点',
+        description: '等待调度',
+        status: 'queued',
+        transcriptAvailable: true,
+      }],
+      todos: [],
+      updatedAt: 100,
+    })
+
+    expect(html).toContain('子智能体 · 1')
+    expect(html).toContain('等待执行的 CCB 节点')
+  })
+
+  test('Given 计划超过 5 条且子智能体超过 4 个 When 渲染 Then 两区截断并分别显示查看全部', () => {
+    const graph: AgentRuntimeExecutionGraph = {
+      nodes: Array.from({ length: 6 }, (_, index) => ({
+        id: `node-${index + 1}`,
+        kind: 'subagent',
+        name: `子智能体 ${index + 1}`,
+        description: `执行任务 ${index + 1}`,
+        status: index === 0 ? 'running' : 'queued',
+        transcriptAvailable: true,
+      })),
+      todos: Array.from({ length: 7 }, (_, index) => ({
+        id: `${index + 1}`,
+        content: `计划步骤 ${index + 1}`,
+        status: index === 0 ? 'in_progress' : 'pending',
+      })),
+      updatedAt: 1,
+    }
+
+    const html = renderFloatingPanel(true, [], graph)
+
+    expect(html).toContain('data-session-plan-view-all')
+    expect(html).toContain('data-session-subagent-view-all')
+    expect(html).toContain('子智能体 · 6')
+    expect(html).not.toContain('overflow-y-auto')
+    expect(
+      allocateFloatingRuntimeListRows(graph.todos.length, graph.nodes.length),
+    ).toEqual({
+      visiblePlanItems: 3,
+      visibleSubagentItems: 2,
+    })
+  })
+
+  test('Given CCB 节点仍为 running 但父会话已停止 When 渲染 Then 保留节点但不显示旋转状态', () => {
+    const html = renderFloatingPanel(false, [], {
+      nodes: [{
+        id: 'running-node',
+        kind: 'subagent',
+        name: '仍在运行的 CCB 节点',
+        description: '独立执行',
+        status: 'running',
+        transcriptAvailable: true,
+      }],
+      todos: [],
+      updatedAt: 100,
+    })
+
+    expect(html).toContain('仍在运行的 CCB 节点')
+    expect(html).not.toContain('animate-spin')
+  })
+
+  test('Given Collaboration 子会话刚完成 When 终态保留时间未到 Then 先显示完成状态', () => {
+    const html = renderFloatingPanel(false, [{
+      id: 'completed-child',
+      title: '已完成的协作节点',
+      parentSessionId: SESSION_ID,
+      sourceDelegationId: 'delegation-completed',
+      delegationStatus: 'completed',
+      createdAt: 10,
+      updatedAt: 20,
+    }], {
+      nodes: [],
+      todos: [],
+      updatedAt: 100,
+    })
+
+    expect(html).toContain('已完成的协作节点')
+    expect(html).toContain('text-emerald-500')
+  })
+
+  test('Given 执行节点变化导致 updatedAt 变化 When Todo 签名未变化 Then 已完成旧计划仍保持隐藏', () => {
+    const todos = [{ id: '1', content: '签名稳定的旧计划', status: 'completed' as const }]
+    const store = createStore()
+    store.set(agentRuntimeExecutionGraphsAtom, new Map([[SESSION_ID, {
+      nodes: [{
+        id: 'new-node',
+        kind: 'subagent',
+        name: '新节点',
+        description: '只改变执行图',
+        status: 'running',
+        transcriptAvailable: true,
+      }],
+      todos,
+      updatedAt: 999,
+    }]]))
+    store.set(agentFloatingPanelPlanStatesAtom, new Map([[SESSION_ID, {
+      observedTurnEpoch: 200,
+      suppressedCompletedPlanSignature: createFloatingPlanSignature(todos),
+    }]]))
+    store.set(agentSessionsAtom, [])
+    store.set(agentStreamingStatesAtom, new Map())
+
+    const html = renderToStaticMarkup(
+      <Provider store={store}>
+        <SessionFloatingPanel sessionId={SESSION_ID} sessionPath={null} />
+      </Provider>,
+    )
+
+    expect(html).not.toContain('签名稳定的旧计划')
+    expect(html).toContain('新节点')
+  })
+})

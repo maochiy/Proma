@@ -171,6 +171,7 @@ export async function getAgentTurnChangeStats(
     let additions = 0
     let deletions = 0
     let successfulRepositories = 0
+    const files: AgentTurnChangeStats['files'] = []
 
     for (const baseline of state.repositories) {
       const current = await createGitWorkingTreeSnapshot(
@@ -185,6 +186,14 @@ export async function getAgentTurnChangeStats(
       filesChanged += stats.filesChanged
       additions += stats.additions
       deletions += stats.deletions
+      for (const file of stats.files) {
+        files.push({
+          // 多仓库时保留相对路径；单文件名展示由渲染层处理
+          path: file.path,
+          additions: file.additions,
+          deletions: file.deletions,
+        })
+      }
     }
 
     if (successfulRepositories === 0) return null
@@ -195,6 +204,7 @@ export async function getAgentTurnChangeStats(
       filesChanged,
       additions,
       deletions,
+      files,
       updatedAt: Date.now(),
     }
   })()

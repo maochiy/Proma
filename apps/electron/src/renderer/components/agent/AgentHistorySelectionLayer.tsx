@@ -16,7 +16,7 @@ import {
   selectedModelAtom,
 } from '@/atoms/chat-atoms'
 import { quotedSelectionMapAtom } from '@/atoms/preview-atoms'
-import { agentDiffPanelTabAtom, agentSidePanelOpenAtom } from '@/atoms/agent-atoms'
+import { openAgentSidePanelTabAtom } from '@/atoms/agent-atoms'
 import { SelectionActionPopover } from '@/components/selection/SelectionActionPopover'
 import { SELECTION_ACTION_POPOVER_SELECTOR } from '@/lib/quoted-selection'
 
@@ -61,8 +61,7 @@ export function AgentHistorySelectionLayer({
   const setConversations = useSetAtom(conversationsAtom)
   const setConversationDrafts = useSetAtom(conversationDraftsAtom)
   const setSideChatMap = useSetAtom(agentSideChatMapAtom)
-  const setSidePanelOpen = useSetAtom(agentSidePanelOpenAtom)
-  const setSidePanelTabMap = useSetAtom(agentDiffPanelTabAtom)
+  const openSidePanelTab = useSetAtom(openAgentSidePanelTabAtom)
   const [selection, setSelection] = React.useState<AgentHistorySelection | null>(null)
   const pointerSelectingRef = React.useRef(false)
   const captureTimerRef = React.useRef<number | null>(null)
@@ -249,12 +248,7 @@ export function AgentHistorySelectionLayer({
         next.set(sessionId, conversation.id)
         return next
       })
-      setSidePanelOpen(true)
-      setSidePanelTabMap((prev) => {
-        const next = new Map(prev)
-        next.set(sessionId, 'chat')
-        return next
-      })
+      openSidePanelTab({ sessionId, tab: 'chat' })
       window.getSelection()?.removeAllRanges()
       clearSelection()
     } catch (error) {
@@ -272,8 +266,7 @@ export function AgentHistorySelectionLayer({
     setConversations,
     setQuotedSelectionMap,
     setSideChatMap,
-    setSidePanelOpen,
-    setSidePanelTabMap,
+    openSidePanelTab,
   ])
 
   return (

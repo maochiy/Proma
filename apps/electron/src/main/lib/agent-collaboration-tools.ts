@@ -338,7 +338,24 @@ function markDelegationFinished(
   record.error = fields.error
   record.resultSummary = fields.resultSummary
   updateAgentSessionMeta(record.childSessionId, { delegationStatus: status })
+  emitDelegationStatusChanged(record)
   record.resolveCompletion()
+}
+
+/** 将协作子会话状态直接推给父会话，避免 Renderer 等待目录刷新时显示陈旧状态。 */
+function emitDelegationStatusChanged(record: DelegationRecord): void {
+  if (!_eventBusRef) return
+  _eventBusRef.emit(record.parentSessionId, {
+    kind: 'proma_event',
+    event: {
+      type: 'delegation_status_changed',
+      parentSessionId: record.parentSessionId,
+      childSessionId: record.childSessionId,
+      delegationId: record.delegationId,
+      status: record.status,
+      updatedAt: record.completedAt ?? record.startedAt,
+    },
+  })
 }
 
 function getDelegationSummary(record: DelegationRecord): Record<string, unknown> {
@@ -1015,6 +1032,7 @@ export async function injectAgentCollaborationMcpServer(
           record.resolveCompletion = completionHandle.resolveCompletion
 
           updateAgentSessionMeta(record.childSessionId, { delegationStatus: 'running' })
+          emitDelegationStatusChanged(record)
 
           runRegisteredHeadlessAgent(
             {

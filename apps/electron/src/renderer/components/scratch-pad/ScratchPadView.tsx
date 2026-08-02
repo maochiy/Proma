@@ -17,11 +17,10 @@ import { FileDown, List, ListTodo, PanelRight, X } from 'lucide-react'
 import { toast } from 'sonner'
 import { scratchPadContentAtom, scratchPadLoadedAtom, tabsAtom, activeTabIdAtom } from '@/atoms/tab-atoms'
 import {
-  agentDiffPanelTabAtom,
-  agentSidePanelOpenAtom,
   currentAgentSessionIdAtom,
   currentAgentWorkspaceIdAtom,
   agentWorkspacesAtom,
+  openAgentSidePanelTabAtom,
 } from '@/atoms/agent-atoms'
 import { agentSideChatMapAtom, conversationsAtom, conversationDraftsAtom, selectedModelAtom } from '@/atoms/chat-atoms'
 import { appModeAtom } from '@/atoms/app-mode'
@@ -148,8 +147,7 @@ function ScratchPadEditor({ variant }: ScratchPadEditorProps): React.ReactElemen
   const setConversations = useSetAtom(conversationsAtom)
   const setConversationDrafts = useSetAtom(conversationDraftsAtom)
   const setAgentSideChatMap = useSetAtom(agentSideChatMapAtom)
-  const setAgentSidePanelOpen = useSetAtom(agentSidePanelOpenAtom)
-  const setAgentSidePanelTabMap = useSetAtom(agentDiffPanelTabAtom)
+  const openAgentSidePanelTab = useSetAtom(openAgentSidePanelTabAtom)
   const setCurrentAgentSessionId = useSetAtom(currentAgentSessionIdAtom)
   const setAppMode = useSetAtom(appModeAtom)
 
@@ -441,12 +439,7 @@ function ScratchPadEditor({ variant }: ScratchPadEditorProps): React.ReactElemen
         next.set(sessionId, conversation.id)
         return next
       })
-      setAgentSidePanelOpen(true)
-      setAgentSidePanelTabMap((prev) => {
-        const next = new Map(prev)
-        next.set(sessionId, 'chat')
-        return next
-      })
+      openAgentSidePanelTab({ sessionId, tab: 'chat' })
       window.getSelection()?.removeAllRanges()
       clearSelection()
     } catch (error) {
@@ -461,8 +454,7 @@ function ScratchPadEditor({ variant }: ScratchPadEditorProps): React.ReactElemen
     selectedChatModel,
     selection,
     setAgentSideChatMap,
-    setAgentSidePanelOpen,
-    setAgentSidePanelTabMap,
+    openAgentSidePanelTab,
     setAppMode,
     setConversationDrafts,
     setConversations,

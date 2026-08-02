@@ -5,6 +5,7 @@ import {
   replaceAgentSessionInFreshnessOrder,
   upsertAgentSession,
   mergeFetchedAgentSessions,
+  applyAgentDelegationStatusChange,
 } from './agent-session-list'
 
 function makeSession(
@@ -122,5 +123,32 @@ describe('mergeFetchedAgentSessions', () => {
     const result = mergeFetchedAgentSessions(sessions, sessions)
     expect(result.map((s) => s.id)).toEqual(['a', 'b'])
     expect(result).toHaveLength(2)
+  })
+})
+
+describe('applyAgentDelegationStatusChange', () => {
+  test('Given Proma 子会话完成事件 When 即时应用 Then 只更新目标状态且不重排列表', () => {
+    const parent = makeSession('parent', 30)
+    const child = makeSession('child', 20, {
+      parentSessionId: 'parent',
+      sourceDelegationId: 'delegation-1',
+      delegationStatus: 'running',
+    })
+
+    const result = applyAgentDelegationStatusChange(
+      [parent, child],
+      {
+        childSessionId: 'child',
+        status: 'completed',
+        updatedAt: 40,
+      },
+    )
+
+    expect(result.map((session) => session.id)).toEqual(['parent', 'child'])
+    expect(result[1]).toMatchObject({
+      delegationStatus: 'completed',
+      updatedAt: 40,
+    })
+    expect(result[0]).toBe(parent)
   })
 })

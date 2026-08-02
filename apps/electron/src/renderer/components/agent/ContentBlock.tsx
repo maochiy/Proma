@@ -16,11 +16,26 @@ import {
   Loader2,
   Brain,
   MessageSquareText,
+  Bot,
+  CheckCircle2,
+  Circle,
 } from 'lucide-react'
-import { useAtomValue } from 'jotai'
+import { useAtomValue, useSetAtom } from 'jotai'
 import { thinkingExpandedAtom } from '@/atoms/chat-atoms'
-import { agentRuntimeExecutionGraphsAtom } from '@/atoms/agent-atoms'
+import {
+  agentRuntimeExecutionGraphsAtom,
+  agentSessionsAtom,
+  createAgentExecutionNodeTab,
+  openAgentSidePanelTabAtom,
+} from '@/atoms/agent-atoms'
 import { cn } from '@/lib/utils'
+import {
+  buildSessionExecutionNodes,
+  extractDelegationReferences,
+  extractDelegationTitles,
+  summarizeCollaborationDelegations,
+} from '@/lib/session-execution-nodes'
+import type { SessionExecutionNode } from '@/lib/session-execution-nodes'
 import { MessageResponse } from '@/components/ai-elements/message'
 import { getToolIcon, extractFilePath } from './tool-utils'
 import { getToolPhrase } from './tool-phrase'
@@ -324,6 +339,28 @@ function TaskListCollapsedSummary({ tasks }: { tasks: ParsedTaskListItem[] }): R
   )
 }
 
+const COLLABORATION_DELEGATION_TOOLS = new Set([
+  'mcp__collaboration__delegate_agent',
+  'mcp__collaboration__delegate_agents',
+])
+
+const COLLABORATION_COMPACT_RESULT_TOOLS = new Set([
+  ...COLLABORATION_DELEGATION_TOOLS,
+  'mcp__collaboration__wait_for_delegations',
+  'mcp__collaboration__list_delegations',
+  'mcp__collaboration__get_delegation_results',
+])
+
+function collaborationNodeStatusIcon(
+  status: SessionExecutionNode['status'],
+): React.ReactNode {
+  if (status === 'running') return <Loader2 className="size-3.5 animate-spin text-sky-500" />
+  if (status === 'completed') return <CheckCircle2 className="size-3.5 text-emerald-500" />
+  if (status === 'failed') return <XCircle className="size-3.5 text-destructive" />
+  if (status === 'stopped') return <XCircle className="size-3.5 text-muted-foreground" />
+  return <Circle className="size-3.5 text-muted-foreground/60" />
+}
+
 // ===== 工具调用块 =====
 
 interface ToolUseBlockProps {
@@ -342,6 +379,8 @@ interface ToolUseBlockProps {
 function ToolUseBlock({ block, allMessages, animate = false, index = 0, dimmed = false, childBlocks, basePath, isStreaming, sessionId }: ToolUseBlockProps): React.ReactElement {
   const [expanded, setExpanded] = React.useState(false)
   const executionGraphs = useAtomValue(agentRuntimeExecutionGraphsAtom)
+  const sessions = useAtomValue(agentSessionsAtom)
+  const openSidePanelTab = useSetAtom(openAgentSidePanelTabAtom)
   const toolResult = useToolResult(block.id, allMessages)
   const resultText = toolResult?.result
   const isError = toolResult?.isError === true
@@ -355,11 +394,46 @@ function ToolUseBlock({ block, allMessages, animate = false, index = 0, dimmed =
     return parseTaskListResult(resultText)
   }, [block.name, resultText, isError])
   const isAgentTool = block.name === 'Agent' || block.name === 'Task'
+  const isCollaborationDelegationTool = COLLABORATION_DELEGATION_TOOLS.has(block.name)
+  const collaborationResultSummary = React.useMemo(() => {
+    if (isError || !COLLABORATION_COMPACT_RESULT_TOOLS.has(block.name)) return undefined
+    return summarizeCollaborationDelegations(resultText)
+  }, [block.name, isError, resultText])
+  const canExpandResult = shouldShowResult && !collaborationResultSummary
   const hasChildren = isAgentTool && childBlocks && childBlocks.length > 0
   const subAgentMeta = useSubAgentMeta(block.id, allMessages)
   const runtimeNode = sessionId
     ? executionGraphs.get(sessionId)?.nodes.find(node => node.toolUseId === block.id)
     : undefined
+  const collaborationNodes = React.useMemo(() => {
+    if (!sessionId || !isCollaborationDelegationTool) return []
+    const allDelegationNodes = buildSessionExecutionNodes({
+      sessionId,
+      runtimeGraph: executionGraphs.get(sessionId),
+      sessions,
+    }).filter((node) => node.source === 'delegation')
+    const references = extractDelegationReferences(resultText)
+    if (references.delegationIds.size > 0 || references.childSessionIds.size > 0) {
+      return allDelegationNodes.filter((node) => (
+        (node.delegationId && references.delegationIds.has(node.delegationId))
+        || (node.transcriptSessionId && references.childSessionIds.has(node.transcriptSessionId))
+      ))
+    }
+    const requestedTitles = extractDelegationTitles(block.input)
+    if (requestedTitles.size > 0) {
+      return allDelegationNodes.filter((node) => (
+        !!node.name && requestedTitles.has(node.name)
+      ))
+    }
+    return allDelegationNodes
+  }, [
+    block.input,
+    executionGraphs,
+    isCollaborationDelegationTool,
+    resultText,
+    sessionId,
+    sessions,
+  ])
 
   // Agent/Task 子代理内容默认折叠
   const [childrenExpanded, setChildrenExpanded] = React.useState(false)
@@ -387,6 +461,97 @@ function ToolUseBlock({ block, allMessages, animate = false, index = 0, dimmed =
 
   // 子代理工具调用统计
   const childToolCount = childBlocks?.filter((b) => b.type === 'tool_use').length ?? 0
+
+  // ===== Proma collaboration 委派：直接展示本次创建的子会话节点 =====
+  if (isCollaborationDelegationTool) {
+    return (
+      <div
+        className={cn(animate && 'animate-in fade-in duration-150 fill-mode-both')}
+        style={animate ? { animationDelay: delay } : undefined}
+      >
+        <button
+          type="button"
+          className="flex w-full items-center gap-2 py-0.5 text-left transition-opacity hover:opacity-70"
+          onClick={() => {
+            if (canExpandResult) setExpanded((previous) => !previous)
+          }}
+        >
+          {!isCompleted && isStreaming ? (
+            <Loader2 className="size-3.5 shrink-0 animate-spin text-primary/50" />
+          ) : isError ? (
+            <XCircle className="size-3.5 shrink-0 text-destructive/70" />
+          ) : (
+            <Bot className="size-3.5 shrink-0 text-muted-foreground" />
+          )}
+          <span className="min-w-0 flex-1 truncate text-[14px] text-muted-foreground">
+            {displayLabel}
+          </span>
+          {collaborationNodes.length > 0 && (
+            <span className="shrink-0 text-[11px] text-muted-foreground/65">
+              执行节点 · {collaborationNodes.length}
+            </span>
+          )}
+          {canExpandResult && (
+            <ChevronRight
+              className={cn(
+                'size-3 shrink-0 text-muted-foreground/45 transition-transform duration-150',
+                expanded && 'rotate-90',
+              )}
+            />
+          )}
+        </button>
+
+        {collaborationResultSummary && (
+          <p className="ml-5.5 mt-1 text-[11px] text-muted-foreground/65">
+            {collaborationResultSummary}
+          </p>
+        )}
+
+        {collaborationNodes.length > 0 && (
+          <div className="ml-5.5 mt-1.5 space-y-1 border-l-2 border-primary/15 pl-3">
+            {collaborationNodes.map((node) => (
+              <button
+                key={node.id}
+                type="button"
+                className="flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-accent/55"
+                onClick={() => {
+                  if (!sessionId) return
+                  openSidePanelTab({
+                    sessionId,
+                    tab: createAgentExecutionNodeTab(node.id),
+                  })
+                }}
+              >
+                <span className="mt-0.5">{collaborationNodeStatusIcon(node.status)}</span>
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-xs font-medium">
+                    {node.name || node.description}
+                  </span>
+                  {node.name && node.description !== node.name && (
+                    <span className="mt-0.5 block line-clamp-2 text-[10px] leading-4 text-muted-foreground">
+                      {node.description}
+                    </span>
+                  )}
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
+
+        {expanded && canExpandResult && resultText && (
+          <div className="ml-5.5 mt-1 border-l-2 border-border/30 pl-3">
+            <ToolResultRenderer
+              toolName={block.name}
+              input={block.input}
+              result={resultText}
+              isError={isError}
+              basePath={basePath}
+            />
+          </div>
+        )}
+      </div>
+    )
+  }
 
   // ===== Agent/Task 工具：特殊渲染 =====
   if (isAgentTool) {
@@ -460,6 +625,7 @@ function ToolUseBlock({ block, allMessages, animate = false, index = 0, dimmed =
               <RuntimeSubagentDetails
                 sessionId={sessionId}
                 node={runtimeNode}
+                running={runtimeNode.status === 'running' && isStreaming === true}
                 className="rounded-lg bg-muted/30 p-2.5"
               />
             )}
@@ -501,7 +667,9 @@ function ToolUseBlock({ block, allMessages, animate = false, index = 0, dimmed =
           'inline-flex max-w-full items-center gap-2 py-0.5 text-left transition-opacity group',
           'hover:opacity-70',
         )}
-        onClick={() => setExpanded(!expanded)}
+        onClick={() => {
+          if (canExpandResult) setExpanded(!expanded)
+        }}
       >
         {!isCompleted && isStreaming ? (
           <Loader2 className="size-3.5 animate-spin text-primary/50 shrink-0" />
@@ -541,19 +709,30 @@ function ToolUseBlock({ block, allMessages, animate = false, index = 0, dimmed =
           </span>
         )}
 
-        <ChevronRight
-          className={cn(
-            'shrink-0 size-3 text-muted-foreground/45 transition-transform duration-150',
-            expanded && 'rotate-90',
-          )}
-        />
+        {collaborationResultSummary && (
+          <>
+            <span className="shrink-0 text-muted-foreground/35">·</span>
+            <span className="min-w-0 truncate text-[13px] text-muted-foreground/65">
+              {collaborationResultSummary}
+            </span>
+          </>
+        )}
+
+        {canExpandResult && (
+          <ChevronRight
+            className={cn(
+              'shrink-0 size-3 text-muted-foreground/45 transition-transform duration-150',
+              expanded && 'rotate-90',
+            )}
+          />
+        )}
 
         {isPreviewable && (
           <PreviewOpenButton filePath={filePath} />
         )}
       </button>
 
-      {shouldShowResult && resultText && expanded && (
+      {canExpandResult && resultText && expanded && (
         <div className={cn(
           'ml-5.5 mt-1 mb-2 pl-3 border-l-2 border-border/30',
           animate && 'animate-in fade-in slide-in-from-top-1 duration-150',

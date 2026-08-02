@@ -46,6 +46,10 @@ import {
   agentWorkspacesAtom,
   workspaceCapabilitiesVersionAtom,
   agentDiffPanelTabAtom,
+  agentSidePanelTabsAtom,
+  agentSidePanelLauncherAtom,
+  agentFocusedExecutionNodeAtom,
+  agentSessionGitSummaryAtom,
   agentDiffRefreshVersionAtom,
   agentDiffUnseenChangesAtom,
   agentDiffUnseenFilesAtom,
@@ -866,6 +870,10 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
   const setPreviewFile = useSetAtom(previewFileMapAtom)
   const setAgentSideChatMap = useSetAtom(agentSideChatMapAtom)
   const setDiffPanelTab = useSetAtom(agentDiffPanelTabAtom)
+  const setSidePanelTabs = useSetAtom(agentSidePanelTabsAtom)
+  const setSidePanelLauncher = useSetAtom(agentSidePanelLauncherAtom)
+  const setFocusedExecutionNode = useSetAtom(agentFocusedExecutionNodeAtom)
+  const setSessionGitSummary = useSetAtom(agentSessionGitSummaryAtom)
   const setDiffRefreshVersion = useSetAtom(agentDiffRefreshVersionAtom)
   const setDiffUnseen = useSetAtom(agentDiffUnseenChangesAtom)
   const setDiffUnseenFiles = useSetAtom(agentDiffUnseenFilesAtom)
@@ -903,6 +911,10 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
       return changed ? map : prev
     })
     setDiffPanelTab(deleteKey)
+    setSidePanelTabs(deleteKey)
+    setSidePanelLauncher(deleteKey)
+    setFocusedExecutionNode(deleteKey)
+    setSessionGitSummary(deleteKey)
     setDiffRefreshVersion(deleteKey)
     setDiffUnseen(deleteKey)
     setDiffUnseenFiles(deleteKey)

@@ -427,11 +427,19 @@ export interface GitWorkingTreeSnapshot {
   pathspecs: string[]
 }
 
+/** 两棵 Git Tree 之间的单个文件统计。 */
+export interface GitTreeChangedFile {
+  path: string
+  additions: number
+  deletions: number
+}
+
 /** 两棵 Git Tree 之间的文件和行数统计。 */
 export interface GitTreeChangeStats {
   filesChanged: number
   additions: number
   deletions: number
+  files: GitTreeChangedFile[]
 }
 
 function normalizeSnapshotPathspecs(pathspecs: string[]): string[] {
@@ -519,24 +527,41 @@ export async function getGitTreeChangeStats(
     ...baseline.pathspecs,
   ], baseline.gitRoot, { quiet: true })
   if (numstat === null) return null
-  if (!numstat) return { filesChanged: 0, additions: 0, deletions: 0 }
+  if (!numstat) return { filesChanged: 0, additions: 0, deletions: 0, files: [] }
 
   let filesChanged = 0
   let additions = 0
   let deletions = 0
+  const files: GitTreeChangedFile[] = []
 
   for (const line of numstat.split('\n')) {
     if (!line) continue
     const parts = line.split('\t')
     if (parts.length < 3) continue
     filesChanged += 1
-    const fileAdditions = Number.parseInt(parts[0]!, 10)
-    const fileDeletions = Number.parseInt(parts[1]!, 10)
-    if (Number.isFinite(fileAdditions)) additions += fileAdditions
-    if (Number.isFinite(fileDeletions)) deletions += fileDeletions
+    const rawAdditions = parts[0]!
+    const rawDeletions = parts[1]!
+    // 二进制文件 numstat 为 "-"；重命名第三列为 "old => new"
+    const fileAdditions = rawAdditions === '-' ? 0 : Number.parseInt(rawAdditions, 10)
+    const fileDeletions = rawDeletions === '-' ? 0 : Number.parseInt(rawDeletions, 10)
+    const pathField = parts.slice(2).join('\t')
+    const path = pathField.includes(' => ')
+      ? pathField.split(' => ').at(-1)!.trim()
+      : pathField.trim()
+    const safeAdditions = Number.isFinite(fileAdditions) ? fileAdditions : 0
+    const safeDeletions = Number.isFinite(fileDeletions) ? fileDeletions : 0
+    additions += safeAdditions
+    deletions += safeDeletions
+    if (path) {
+      files.push({
+        path,
+        additions: safeAdditions,
+        deletions: safeDeletions,
+      })
+    }
   }
 
-  return { filesChanged, additions, deletions }
+  return { filesChanged, additions, deletions, files }
 }
 
 /** 查找 Git 仓库根目录，先向上后向下搜索，失败返回 null */

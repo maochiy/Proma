@@ -78,6 +78,22 @@ describe('Agent 本轮文件改动统计', () => {
       additions: 4,
       deletions: 1,
     })
+    expect(stats?.files?.map((file) => file.path).sort()).toEqual([
+      'deleted.txt',
+      'new.txt',
+      'preexisting-untracked.txt',
+      'tracked.txt',
+    ])
+    expect(stats?.files?.find((file) => file.path === 'new.txt')).toEqual({
+      path: 'new.txt',
+      additions: 2,
+      deletions: 0,
+    })
+    expect(stats?.files?.find((file) => file.path === 'deleted.txt')).toEqual({
+      path: 'deleted.txt',
+      additions: 0,
+      deletions: 1,
+    })
   })
 
   test('Given 已创建本轮基线 When 工作树没有继续变化 Then 返回零改动', async () => {

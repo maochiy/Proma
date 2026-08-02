@@ -19,7 +19,8 @@ import {
 interface PendingRequest {
   resolve: (value: unknown) => void
   reject: (error: Error) => void
-  timer: ReturnType<typeof setTimeout>
+  timer?: ReturnType<typeof setTimeout>
+  dispose?: () => void
 }
 
 type EventListener = (envelope: CcbRuntimeEnvelope<CcbRuntimeEvent>) => void
@@ -103,8 +104,12 @@ export class CcbDesktopRuntimeClient {
     payload: CcbRuntimeCommand,
     sessionId?: string,
     timeoutMs = 30_000,
+    signal?: AbortSignal,
   ): Promise<T> {
     if (!this.controlPort) await this.start()
+    if (signal?.aborted) {
+      throw new Error(`CCB Runtime 请求已取消: ${payload.type}`)
+    }
     const requestId = randomUUID()
     const envelope: CcbRuntimeEnvelope<CcbRuntimeCommand> = {
       protocolVersion: CCB_PROTOCOL_VERSION,
@@ -115,14 +120,34 @@ export class CcbDesktopRuntimeClient {
     }
     assertCcbCommandEnvelope(envelope)
     return new Promise<T>((resolve, reject) => {
-      const timer = setTimeout(() => {
+      const abortRequest = (): void => {
+        const pending = this.pending.get(requestId)
+        if (!pending) return
         this.pending.delete(requestId)
-        reject(new Error(`CCB Runtime 请求超时: ${payload.type}`))
-      }, timeoutMs)
+        if (pending.timer) clearTimeout(pending.timer)
+        pending.dispose?.()
+        reject(new Error(`CCB Runtime 请求已取消: ${payload.type}`))
+      }
+      // timeoutMs <= 0 表示等待 Runtime 的 response.success / response.failure
+      // 通知。调用方仍可通过 AbortSignal 设置独立 watchdog，Host 退出时
+      // cleanup() 也会立即拒绝全部 pending 请求，避免留下永久挂起项。
+      const timer = timeoutMs > 0
+        ? setTimeout(() => {
+            const pending = this.pending.get(requestId)
+            if (!pending) return
+            this.pending.delete(requestId)
+            pending.dispose?.()
+            reject(new Error(`CCB Runtime 请求超时: ${payload.type}`))
+          }, timeoutMs)
+        : undefined
+      if (signal) signal.addEventListener('abort', abortRequest, { once: true })
       this.pending.set(requestId, {
         resolve: value => resolve(value as T),
         reject,
         timer,
+        dispose: signal
+          ? () => signal.removeEventListener('abort', abortRequest)
+          : undefined,
       })
       this.controlPort!.postMessage(envelope)
     })
@@ -229,7 +254,8 @@ export class CcbDesktopRuntimeClient {
       const pending = this.pending.get(payload.responseTo)
       if (pending) {
         this.pending.delete(payload.responseTo)
-        clearTimeout(pending.timer)
+        if (pending.timer) clearTimeout(pending.timer)
+        pending.dispose?.()
         if (payload.type === 'response.success') pending.resolve(payload.result)
         else pending.reject(new Error(payload.error.message))
       }
@@ -250,7 +276,8 @@ export class CcbDesktopRuntimeClient {
 
   private cleanup(error: Error): void {
     for (const pending of this.pending.values()) {
-      clearTimeout(pending.timer)
+      if (pending.timer) clearTimeout(pending.timer)
+      pending.dispose?.()
       pending.reject(error)
     }
     this.pending.clear()

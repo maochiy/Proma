@@ -13,6 +13,12 @@ import {
   currentAgentSessionIdAtom,
   agentSessionPathMapAtom,
   agentDiffPanelTabAtom,
+  agentSidePanelLauncherAtom,
+  agentSidePanelTabsAtom,
+  closeAgentSidePanelTabAtom,
+  closeAgentSidePanelAtom,
+  openAgentSidePanelTabAtom,
+  reorderAgentSidePanelTabsAtom,
 } from '@/atoms/agent-atoms'
 import type { AgentSidePanelTab } from '@/atoms/agent-atoms'
 import { SidePanel } from '@/components/agent/SidePanel'
@@ -22,7 +28,13 @@ export function RightSidePanel({ width }: { width?: number }): React.ReactElemen
   const currentSessionId = useAtomValue(currentAgentSessionIdAtom)
   const sessionPathMap = useAtomValue(agentSessionPathMapAtom)
   const diffPanelTabMap = useAtomValue(agentDiffPanelTabAtom)
+  const sidePanelTabsMap = useAtomValue(agentSidePanelTabsAtom)
+  const launcherMap = useAtomValue(agentSidePanelLauncherAtom)
   const setDiffPanelTabMap = useSetAtom(agentDiffPanelTabAtom)
+  const openSidePanelTab = useSetAtom(openAgentSidePanelTabAtom)
+  const closeSidePanelTab = useSetAtom(closeAgentSidePanelTabAtom)
+  const reorderSidePanelTabs = useSetAtom(reorderAgentSidePanelTabsAtom)
+  const closeSidePanel = useSetAtom(closeAgentSidePanelAtom)
 
   const setActiveTab = React.useCallback((tab: AgentSidePanelTab) => {
     if (!currentSessionId) return
@@ -33,12 +45,35 @@ export function RightSidePanel({ width }: { width?: number }): React.ReactElemen
     })
   }, [currentSessionId, setDiffPanelTabMap])
 
+  const handleOpenTab = React.useCallback((tab: AgentSidePanelTab) => {
+    if (!currentSessionId) return
+    openSidePanelTab({ sessionId: currentSessionId, tab })
+  }, [currentSessionId, openSidePanelTab])
+
+  const handleCloseTab = React.useCallback((tab: AgentSidePanelTab) => {
+    if (!currentSessionId) return
+    closeSidePanelTab({ sessionId: currentSessionId, tab })
+  }, [closeSidePanelTab, currentSessionId])
+
+  const handleReorderTabs = React.useCallback((
+    source: AgentSidePanelTab,
+    target: AgentSidePanelTab,
+  ) => {
+    if (!currentSessionId || source === target) return
+    reorderSidePanelTabs({ sessionId: currentSessionId, source, target })
+  }, [currentSessionId, reorderSidePanelTabs])
+
   if (appMode !== 'agent' || !currentSessionId) {
     return null
   }
 
   const sessionPath = sessionPathMap.get(currentSessionId) ?? null
-  const activeTab = diffPanelTabMap.get(currentSessionId) ?? 'session'
+  const openTabs = sidePanelTabsMap.get(currentSessionId) ?? []
+  const launcherVisible = launcherMap.get(currentSessionId) ?? openTabs.length === 0
+  const storedActiveTab = diffPanelTabMap.get(currentSessionId)
+  const activeTab = storedActiveTab && openTabs.includes(storedActiveTab)
+    ? storedActiveTab
+    : (openTabs[0] ?? 'session')
 
   return (
     <SidePanel
@@ -46,6 +81,12 @@ export function RightSidePanel({ width }: { width?: number }): React.ReactElemen
       sessionPath={sessionPath}
       activeTab={activeTab}
       onTabChange={setActiveTab}
+      openTabs={openTabs}
+      launcherVisible={launcherVisible}
+      onOpenTab={handleOpenTab}
+      onCloseTab={handleCloseTab}
+      onReorderTabs={handleReorderTabs}
+      onClosePanel={() => closeSidePanel(currentSessionId)}
       width={width}
     />
   )

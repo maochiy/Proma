@@ -45,6 +45,8 @@ import {
   agentDiffRefreshVersionAtom,
   askUserDraftsAtom,
   agentRuntimeExecutionGraphsAtom,
+  beginAgentFloatingPanelTurnAtom,
+  mergeAgentRuntimeExecutionGraphAtom,
 } from '@/atoms/agent-atoms'
 import {
   notificationsEnabledAtom,
@@ -63,7 +65,11 @@ import { toast } from 'sonner'
 import type { AgentStreamEvent, AgentStreamCompletePayload, AgentEvent, AgentStreamPayload, SDKAssistantMessage, SDKUserMessage, SDKSystemMessage, SDKContentBlock, SDKUserContentBlock, PromaEvent, AgentSessionMeta, AgentRuntimeExecutionGraph, ProviderType } from '@proma/shared'
 import { pickRuntimeReportedContextWindow } from '@proma/shared'
 import { buildExternalAgentRunActivation } from '@/lib/external-agent-run'
-import { upsertAgentSession, mergeFetchedAgentSessions } from '@/lib/agent-session-list'
+import {
+  applyAgentDelegationStatusChange,
+  upsertAgentSession,
+  mergeFetchedAgentSessions,
+} from '@/lib/agent-session-list'
 import { reconcileAgentRunActivity } from '@/lib/agent-running-state'
 import {
   getAgentCompletionMarkers,
@@ -439,6 +445,11 @@ export function useGlobalAgentListeners(): void {
     }
 
     const activateExternalAgentRun = (event: Extract<PromaEvent, { type: 'external_run_started' }>): void => {
+      store.set(beginAgentFloatingPanelTurnAtom, {
+        sessionId: event.sessionId,
+        epoch: event.startedAt,
+      })
+
       const applyActivation = (sessions: AgentSessionMeta[]): void => {
         const activation = buildExternalAgentRunActivation({
           tabs: store.get(tabsAtom),
@@ -658,6 +669,33 @@ export function useGlobalAgentListeners(): void {
           activateExternalAgentRun(payload.event)
         }
 
+        if (
+          payload.kind === 'proma_event'
+          && payload.event.type === 'delegation_status_changed'
+        ) {
+          const event = payload.event
+          const currentSessions = store.get(agentSessionsAtom)
+          const childKnown = currentSessions.some(
+            (session) => session.id === event.childSessionId,
+          )
+          store.set(agentSessionsAtom, (previous) =>
+            applyAgentDelegationStatusChange(previous, {
+              childSessionId: event.childSessionId,
+              status: event.status,
+              updatedAt: event.updatedAt,
+            }),
+          )
+          if (!childKnown) {
+            window.electronAPI.listAgentSessions()
+              .then((sessions) => {
+                store.set(agentSessionsAtom, (previous) =>
+                  mergeFetchedAgentSessions(previous, sessions),
+                )
+              })
+              .catch(console.error)
+          }
+        }
+
         // 自动任务会话被用户接管（毕业）：向用户提示，后续定时运行将新建独立会话
         if (payload.kind === 'proma_event' && payload.event.type === 'automation_graduated') {
           toast('已接管自动任务会话，后续定时运行将创建新会话。', { duration: 3000 })
@@ -684,10 +722,9 @@ export function useGlobalAgentListeners(): void {
           } else if (msgRecord.type === 'runtime_execution_graph') {
             const graph = msgRecord.graph as AgentRuntimeExecutionGraph | undefined
             if (graph) {
-              store.set(agentRuntimeExecutionGraphsAtom, (prev) => {
-                const next = new Map(prev)
-                next.set(sessionId, graph)
-                return next
+              store.set(mergeAgentRuntimeExecutionGraphAtom, {
+                sessionId,
+                graph,
               })
             }
           } else if (msgRecord.type === 'system' && msgRecord.subtype === 'thinking_tokens') {

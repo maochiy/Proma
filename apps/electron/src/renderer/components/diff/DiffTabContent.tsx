@@ -13,10 +13,9 @@ import { File as PierreFile } from '@pierre/diffs/react'
 import { toast } from 'sonner'
 import { cn } from '@/lib/utils'
 import {
-  agentDiffPanelTabAtom,
   agentDiffViewModeAtom,
   agentDiffRefreshVersionAtom,
-  agentSidePanelOpenAtom,
+  openAgentSidePanelTabAtom,
 } from '@/atoms/agent-atoms'
 import { resolvedThemeAtom } from '@/atoms/theme'
 import { previewCodeWrapAtom, quotedSelectionMapAtom } from '@/atoms/preview-atoms'
@@ -331,8 +330,7 @@ export function DiffTabContent({ filePath, dirPath, sessionId, gitRoot, previewO
   const setConversations = useSetAtom(conversationsAtom)
   const setConversationDrafts = useSetAtom(conversationDraftsAtom)
   const setSideChatMap = useSetAtom(agentSideChatMapAtom)
-  const setSidePanelOpen = useSetAtom(agentSidePanelOpenAtom)
-  const setSidePanelTabMap = useSetAtom(agentDiffPanelTabAtom)
+  const openSidePanelTab = useSetAtom(openAgentSidePanelTabAtom)
   const [previewSelection, setPreviewSelection] = React.useState<PreviewTextSelection | null>(null)
   const filePathRef = React.useRef(filePath)
   filePathRef.current = filePath
@@ -1024,12 +1022,7 @@ export function DiffTabContent({ filePath, dirPath, sessionId, gitRoot, previewO
         next.set(sessionId, conversation.id)
         return next
       })
-      setSidePanelOpen(true)
-      setSidePanelTabMap((prev) => {
-        const next = new Map(prev)
-        next.set(sessionId, 'chat')
-        return next
-      })
+      openSidePanelTab({ sessionId, tab: 'chat' })
       window.getSelection()?.removeAllRanges()
       clearPreviewSelection()
     } catch (error) {
@@ -1047,8 +1040,7 @@ export function DiffTabContent({ filePath, dirPath, sessionId, gitRoot, previewO
     setConversations,
     setQuotedSelectionMap,
     setSideChatMap,
-    setSidePanelOpen,
-    setSidePanelTabMap,
+    openSidePanelTab,
   ])
 
   // persistRef 始终持有最新 persistMarkdownDraft，供 setTimeout / unmount cleanup 调用。

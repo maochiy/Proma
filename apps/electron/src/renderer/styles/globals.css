@@ -1149,44 +1149,48 @@
   border: 1px solid hsl(var(--border) / 0.3);
 }
 
-/* 隐藏滚动条但保留滚动功能 */
+/* 应用内统一隐藏原生滚动条，但保留滚轮、触控板和键盘滚动。 */
+html,
+body,
+body * {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+html::-webkit-scrollbar,
+body::-webkit-scrollbar,
+body *::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+/* 兼容局部滚动容器及历史类名。 */
 .scrollbar-none,
-.scrollbar-none > * {
+.scrollbar-none > *,
+.scrollbar-thin,
+.scrollbar-thin > * {
   scrollbar-width: none;
   -ms-overflow-style: none;
 }
 .scrollbar-none::-webkit-scrollbar,
-.scrollbar-none > *::-webkit-scrollbar {
+.scrollbar-none > *::-webkit-scrollbar,
+.scrollbar-thin::-webkit-scrollbar,
+.scrollbar-thin > *::-webkit-scrollbar {
+  width: 0;
+  height: 0;
   display: none;
 }
 
-/* 纤细滚动条 */
-.scrollbar-thin,
-.scrollbar-thin > * {
-  scrollbar-width: thin;
-  scrollbar-color: hsl(var(--muted-foreground) / 0.3) transparent;
+/* use-stick-to-bottom 的实际滚动视口由 Content 在内部生成，不是根容器本身。 */
+.conversation-scroll-viewport {
+  scrollbar-gutter: auto !important;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
-.scrollbar-thin::-webkit-scrollbar,
-.scrollbar-thin > *::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-.scrollbar-thin::-webkit-scrollbar-track,
-.scrollbar-thin > *::-webkit-scrollbar-track {
-  background: transparent;
-}
-.scrollbar-thin::-webkit-scrollbar-thumb,
-.scrollbar-thin > *::-webkit-scrollbar-thumb {
-  background-color: hsl(var(--muted-foreground) / 0.3);
-  border-radius: 3px;
-}
-.scrollbar-thin::-webkit-scrollbar-thumb:hover,
-.scrollbar-thin > *::-webkit-scrollbar-thumb:hover {
-  background-color: hsl(var(--muted-foreground) / 0.5);
-}
-.scrollbar-thin::-webkit-scrollbar-corner,
-.scrollbar-thin > *::-webkit-scrollbar-corner {
-  background: transparent;
+.conversation-scroll-viewport::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
 }
 
 /* 滚动区域上下渐隐遮罩 */
@@ -1217,34 +1221,6 @@
   /* 与 Tailwind font-mono / @pierre/diffs 默认保持一致，跨平台命中系统等宽字体 */
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, 'Cascadia Code', 'JetBrains Mono', 'Fira Code', Consolas, 'Courier New', monospace;
   background-color: hsl(var(--code-bg)) !important;
-}
-
-.code-block-wrapper pre.shiki,
-.mermaid-block-scroll {
-  scrollbar-width: thin;
-  scrollbar-color: hsl(var(--muted-foreground) / 0.3) transparent;
-}
-
-:is(.code-block-wrapper pre.shiki, .mermaid-block-scroll)::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
-
-:is(.code-block-wrapper pre.shiki, .mermaid-block-scroll)::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-:is(.code-block-wrapper pre.shiki, .mermaid-block-scroll)::-webkit-scrollbar-thumb {
-  background-color: hsl(var(--muted-foreground) / 0.3);
-  border-radius: 999px;
-}
-
-:is(.code-block-wrapper pre.shiki, .mermaid-block-scroll)::-webkit-scrollbar-thumb:hover {
-  background-color: hsl(var(--muted-foreground) / 0.5);
-}
-
-:is(.code-block-wrapper pre.shiki, .mermaid-block-scroll)::-webkit-scrollbar-corner {
-  background: transparent;
 }
 
 .code-block-wrapper pre.shiki code {

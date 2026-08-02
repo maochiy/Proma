@@ -1,4 +1,7 @@
-import type { AgentSessionMeta } from '@proma/shared'
+import type {
+  AgentDelegationStatus,
+  AgentSessionMeta,
+} from '@proma/shared'
 
 interface AgentSessionTreeLike {
   session: Pick<AgentSessionMeta, 'id'>
@@ -79,6 +82,34 @@ export function mergeFetchedAgentSessions(
   )
 
   return sortAgentSessionsByUpdatedAtDesc([...fetched, ...survivingLocalOnly])
+}
+
+/** 即时应用协作子会话状态事件，不改变会话排序和其它会话数据。 */
+export function applyAgentDelegationStatusChange(
+  sessions: readonly AgentSessionMeta[],
+  input: {
+    childSessionId: string
+    status: AgentDelegationStatus
+    updatedAt: number
+  },
+): AgentSessionMeta[] {
+  let changed = false
+  const next = sessions.map((session) => {
+    if (session.id !== input.childSessionId) return session
+    if (
+      session.delegationStatus === input.status
+      && session.updatedAt >= input.updatedAt
+    ) {
+      return session
+    }
+    changed = true
+    return {
+      ...session,
+      delegationStatus: input.status,
+      updatedAt: Math.max(session.updatedAt, input.updatedAt),
+    }
+  })
+  return changed ? next : sessions as AgentSessionMeta[]
 }
 
 /** 收集可见会话树里的父/子会话 id，用于判断当前会话是否已显示在侧栏中。 */

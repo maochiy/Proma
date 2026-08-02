@@ -29,6 +29,11 @@ import { assertCcbRuntimeModelCatalog } from './protocol-validation'
 import type { CcbRuntimeModelCatalog } from './protocol'
 import { sanitizeCcbSessionEnvironment } from './runtime-security'
 import { getCcbUserConfigDir } from './user-config'
+import {
+  buildFallbackModelCatalog,
+  createModelCatalogWatchdog,
+  isFallbackModelCatalog,
+} from './model-catalog-fallback'
 
 interface CachedModelCatalog {
   fingerprint: string
@@ -198,28 +203,44 @@ async function loadAgentRuntimeModelCatalog(
   requestSessionId: string,
   resultChannelId: string,
 ): Promise<AgentRuntimeModelCatalog> {
-  const result = await ccbDesktopRuntimeClient.request<CcbRuntimeModelCatalog>(
-    {
-      type: 'session.resolveModelCatalog',
-      cwd,
-      environment: {
-        variables: context.environment,
-        configDir: getCcbUserConfigDir(),
+  const watchdog = createModelCatalogWatchdog()
+  try {
+    const result = await ccbDesktopRuntimeClient.request<CcbRuntimeModelCatalog>(
+      {
+        type: 'session.resolveModelCatalog',
+        cwd,
+        environment: {
+          variables: context.environment,
+          configDir: getCcbUserConfigDir(),
+        },
+        providerConfiguration: context.providerConfiguration,
       },
-      providerConfiguration: context.providerConfiguration,
-    },
-    requestSessionId,
-    30_000,
-  )
-  assertCcbRuntimeModelCatalog(result)
-  const runtime = ccbDesktopRuntimeClient.getRuntimeInfo()
-  return {
-    channelId: resultChannelId,
-    defaultModel: result.defaultModel,
-    models: result.models,
-    contextPolicy: result.contextPolicy,
-    runtimeVersion: runtime?.runtimeVersion,
-    runtimeArtifactCommit: runtime?.gitCommit,
+      requestSessionId,
+      0,
+      watchdog.signal,
+    )
+    assertCcbRuntimeModelCatalog(result)
+    const runtime = ccbDesktopRuntimeClient.getRuntimeInfo()
+    return {
+      channelId: resultChannelId,
+      defaultModel: result.defaultModel,
+      models: result.models,
+      contextPolicy: result.contextPolicy,
+      runtimeVersion: runtime?.runtimeVersion,
+      runtimeArtifactCommit: runtime?.gitCommit,
+    }
+  } catch (error) {
+    console.warn(
+      `[CCB Runtime] 模型目录解析失败，改用本地保守目录: channel=${resultChannelId}, 原因=${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    )
+    return buildFallbackModelCatalog(
+      resultChannelId,
+      context.providerConfiguration,
+    )
+  } finally {
+    watchdog.dispose()
   }
 }
 
@@ -247,9 +268,20 @@ export async function resolveAgentRuntimeModelCatalog(
             cwd,
             `__native-model-catalog__:${cwd}`,
             CCB_NATIVE_CHANNEL_ID,
-          ).catch(error => {
+          ).then(catalog => {
             const current = catalogCache.get(nativeCacheKey)
-            if (current?.promise === nativePromise) catalogCache.delete(nativeCacheKey)
+            if (
+              current?.promise === nativePromise
+              && isFallbackModelCatalog(catalog)
+            ) {
+              catalogCache.delete(nativeCacheKey)
+            }
+            return catalog
+          }).catch(error => {
+            const current = catalogCache.get(nativeCacheKey)
+            if (current?.promise === nativePromise) {
+              catalogCache.delete(nativeCacheKey)
+            }
             throw error
           })
     if (nativeCached?.fingerprint !== nativeContext.fingerprint) {
@@ -285,7 +317,13 @@ export async function resolveAgentRuntimeModelCatalog(
     cwd,
     `__model-catalog__:${channel.id}`,
     channel.id,
-  ).catch(
+  ).then(catalog => {
+    const current = catalogCache.get(cacheKey)
+    if (current?.promise === promise && isFallbackModelCatalog(catalog)) {
+      catalogCache.delete(cacheKey)
+    }
+    return catalog
+  }).catch(
     error => {
       const current = catalogCache.get(cacheKey)
       if (current?.promise === promise) catalogCache.delete(cacheKey)
@@ -352,7 +390,15 @@ export async function resolveDraftAgentRuntimeModelCatalog(
     process.cwd(),
     '__model-catalog-draft__',
     '__draft__',
-  ).catch(error => {
+  ).then(catalog => {
+    if (
+      draftCatalogCache?.promise === promise
+      && isFallbackModelCatalog(catalog)
+    ) {
+      draftCatalogCache = undefined
+    }
+    return catalog
+  }).catch(error => {
     if (draftCatalogCache?.promise === promise) draftCatalogCache = undefined
     throw error
   })

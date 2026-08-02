@@ -20,20 +20,7 @@ import ClaudeDarkLogo from '@/assets/models/claude_dark.png'
 
 // OpenAI / GPT 系列
 import OpenAILogo from '@/assets/models/openai.png'
-import GPT4Logo from '@/assets/models/gpt_4.png'
-import GPT35Logo from '@/assets/models/gpt_3.5.png'
-import GPTDarkLogo from '@/assets/models/gpt_dark.png'
 import GPTo1Logo from '@/assets/models/gpt_o1.png'
-import GPTImageLogo from '@/assets/models/gpt_image_1.png'
-import GPT5Logo from '@/assets/models/gpt-5.png'
-import GPT5ChatLogo from '@/assets/models/gpt-5-chat.png'
-import GPT5MiniLogo from '@/assets/models/gpt-5-mini.png'
-import GPT5NanoLogo from '@/assets/models/gpt-5-nano.png'
-import GPT5CodexLogo from '@/assets/models/gpt-5-codex.png'
-import GPT51Logo from '@/assets/models/gpt-5.1.png'
-import GPT51ChatLogo from '@/assets/models/gpt-5.1-chat.png'
-import GPT51CodexLogo from '@/assets/models/gpt-5.1-codex.png'
-import GPT51CodexMiniLogo from '@/assets/models/gpt-5.1-codex-mini.png'
 
 // DeepSeek
 import DeepSeekLogo from '@/assets/models/deepseek.png'
@@ -133,23 +120,12 @@ import type { ProviderType } from '@proma/shared'
  * 匹配顺序即为优先级，更具体的规则排前面。
  */
 const MODEL_LOGO_MAP: Record<string, string> = {
-  // === GPT 系列（具体型号优先） ===
-  'gpt-image': GPTImageLogo,
-  'gpt-3': GPT35Logo,
-  'gpt-4': GPT4Logo,
+  // === OpenAI ===
+  // 所有 GPT 型号统一显示 OpenAI 品牌图标
+  gpt: OpenAILogo,
   o1: GPTo1Logo,
   o3: GPTo1Logo,
   o4: GPTo1Logo,
-  'gpt-5-mini': GPT5MiniLogo,
-  'gpt-5-nano': GPT5NanoLogo,
-  'gpt-5-chat': GPT5ChatLogo,
-  'gpt-5-codex': GPT5CodexLogo,
-  'gpt-5\\.1-codex-mini': GPT51CodexMiniLogo,
-  'gpt-5\\.1-codex': GPT51CodexLogo,
-  'gpt-5\\.1-chat': GPT51ChatLogo,
-  'gpt-5\\.1': GPT51Logo,
-  'gpt-5': GPT5Logo,
-  gpts: GPT4Logo,
 
   // === Claude / Anthropic ===
   '(claude|anthropic-)': ClaudeLogo,

@@ -10,7 +10,7 @@
 
 import * as React from 'react'
 import { useAtom, useAtomValue, useSetAtom, useStore } from 'jotai'
-import { PanelRight } from 'lucide-react'
+import { PanelRight, PanelTop } from 'lucide-react'
 import {
   tabsAtom,
   activeTabIdAtom,
@@ -21,7 +21,12 @@ import type { SessionIndicatorStatus } from '@/atoms/agent-atoms'
 import { currentConversationIdAtom } from '@/atoms/chat-atoms'
 import {
   agentSessionsAtom,
+  agentFloatingPanelEnabledAtom,
+  agentFloatingPanelForcedSessionsAtom,
+  agentFloatingPanelVisibleSessionsAtom,
   agentSidePanelOpenAtom,
+  closeAgentSidePanelAtom,
+  openAgentSidePanelLauncherAtom,
   agentWorkspacesAtom,
   currentAgentSessionIdAtom,
   currentAgentWorkspaceIdAtom,
@@ -37,6 +42,7 @@ import { TabBarItem } from './TabBarItem'
 import { useCloseTab } from '@/hooks/useCloseTab'
 import { detectIsWindows, WINDOW_CONTROLS_INSET_RIGHT, WINDOW_CONTROLS_PADDING_RIGHT } from '@/lib/platform'
 import { registerShortcut } from '@/lib/shortcut-registry'
+import { resolveSessionFloatingPanelToggle } from '@/lib/session-floating-layout'
 import { cn } from '@/lib/utils'
 
 export function TabBar(): React.ReactElement {
@@ -229,14 +235,56 @@ function TabBarInner({
   // 文件面板切换（全局共享）：活动 Tab 是 Agent 且面板关闭时，在 TabBar 右上角展示"打开"按钮。
   // 该按钮的 absolute 定位与 DiffPanelTabBar.PanelRightClose 的 mr-1 mb-[3px] 坐标耦合，
   // 若右侧关闭按钮样式变化，这里需同步调整。
-  const [isPanelOpen, setSidePanelOpen] = useAtom(agentSidePanelOpenAtom)
+  const isPanelOpen = useAtomValue(agentSidePanelOpenAtom)
+  const [floatingPanelEnabled, setFloatingPanelEnabled] = useAtom(agentFloatingPanelEnabledAtom)
+  const floatingPanelVisibleSessions = useAtomValue(agentFloatingPanelVisibleSessionsAtom)
+  const setFloatingPanelForcedSessions = useSetAtom(agentFloatingPanelForcedSessionsAtom)
+  const openSidePanelLauncher = useSetAtom(openAgentSidePanelLauncherAtom)
+  const closeSidePanel = useSetAtom(closeAgentSidePanelAtom)
   const activeTab = React.useMemo(() => tabs.find((t) => t.id === activeTabId), [tabs, activeTabId])
   const showOpenPanelButton = !isPanelOpen && activeTab?.type === 'agent'
+  const showFloatingPanelButton = activeTab?.type === 'agent'
+  const activeAgentSessionId = activeTab?.type === 'agent' ? activeTab.sessionId : null
+  const floatingPanelActuallyVisible = activeAgentSessionId !== null
+    && floatingPanelVisibleSessions.has(activeAgentSessionId)
+
+  const toggleFloatingPanel = React.useCallback(() => {
+    if (activeAgentSessionId === null) return
+
+    const nextState = resolveSessionFloatingPanelToggle({
+      enabled: floatingPanelEnabled,
+      actuallyVisible: floatingPanelActuallyVisible,
+    })
+    setFloatingPanelEnabled(nextState.enabled)
+
+    setFloatingPanelForcedSessions((previous) => {
+      const isForced = previous.has(activeAgentSessionId)
+      if (isForced === nextState.forceVisible) return previous
+
+      const next = new Set(previous)
+      if (nextState.forceVisible) {
+        next.add(activeAgentSessionId)
+      } else {
+        next.delete(activeAgentSessionId)
+      }
+      return next
+    })
+  }, [
+    activeAgentSessionId,
+    floatingPanelActuallyVisible,
+    floatingPanelEnabled,
+    setFloatingPanelEnabled,
+    setFloatingPanelForcedSessions,
+  ])
 
   const togglePanel = React.useCallback(() => {
     if (activeTab?.type !== 'agent') return
-    setSidePanelOpen((v) => !v)
-  }, [setSidePanelOpen, activeTab])
+    if (isPanelOpen) {
+      closeSidePanel(activeTab.sessionId)
+    } else {
+      openSidePanelLauncher(activeTab.sessionId)
+    }
+  }, [activeTab, closeSidePanel, isPanelOpen, openSidePanelLauncher])
 
   React.useEffect(() => {
     return registerShortcut('toggle-right-panel', togglePanel)
@@ -386,7 +434,7 @@ function TabBarInner({
           "relative flex items-end flex-1 min-w-0 overflow-x-auto scrollbar-none",
           // Windows 始终避开 WindowControls（~126px）；非 Windows 打开按钮时给 scroll 预留空间
           isWindows && WINDOW_CONTROLS_PADDING_RIGHT,
-          !isWindows && showOpenPanelButton && "pr-10",
+          !isWindows && showFloatingPanelButton && (showOpenPanelButton ? "pr-20" : "pr-10"),
         )}
       >
         {tabs.map((tab) => (
@@ -415,11 +463,63 @@ function TabBarInner({
         ))}
       </div>
 
+      {showFloatingPanelButton && (
+        <AgentFloatingPanelButton
+          enabled={floatingPanelActuallyVisible}
+          isWindows={isWindows}
+          hasPanelOpenButton={showOpenPanelButton}
+          onToggle={toggleFloatingPanel}
+        />
+      )}
+
       {/* 打开文件面板按钮：与文件面板打开时的 PanelRightClose 同坐标，避免开/关之间按钮位置跳变。
           Windows 上需让出右上角 WindowControls 区域（126px）。 */}
       {showOpenPanelButton && (
         <AgentPanelOpenButton isWindows={isWindows} onToggle={togglePanel} />
       )}
+    </div>
+  )
+}
+
+/** 会话悬浮信息面板开关，固定在会话顶部右侧。 */
+function AgentFloatingPanelButton({
+  enabled,
+  isWindows,
+  hasPanelOpenButton,
+  onToggle,
+}: {
+  enabled: boolean
+  isWindows: boolean
+  hasPanelOpenButton: boolean
+  onToggle: () => void
+}): React.ReactElement {
+  return (
+    <div
+      className={cn(
+        'absolute flex titlebar-no-drag',
+        isWindows
+          ? cn('top-[37px] h-7 z-[52]', hasPanelOpenButton ? 'right-9' : 'right-1')
+          : cn('inset-y-0 items-end pb-[3px] z-10', hasPanelOpenButton ? 'right-9' : 'right-1'),
+      )}
+    >
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon"
+            className={cn('relative h-7 w-7', enabled && 'bg-muted/65 text-foreground')}
+            aria-label={enabled ? '隐藏会话信息面板' : '显示会话信息面板'}
+            aria-pressed={enabled}
+            onClick={onToggle}
+          >
+            <PanelTop className="size-3.5" />
+          </Button>
+        </TooltipTrigger>
+        <TooltipContent side="bottom">
+          {enabled ? '隐藏会话信息面板' : '显示会话信息面板'}
+        </TooltipContent>
+      </Tooltip>
     </div>
   )
 }

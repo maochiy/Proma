@@ -38,9 +38,14 @@ export function Conversation({ className, ...props }: ConversationProps): React.
 
 export type ConversationContentProps = ComponentProps<typeof StickToBottom.Content>
 
-export function ConversationContent({ className, ...props }: ConversationContentProps): React.ReactElement {
+export function ConversationContent({
+  className,
+  scrollClassName,
+  ...props
+}: ConversationContentProps): React.ReactElement {
   return (
     <StickToBottom.Content
+      scrollClassName={cn('conversation-scroll-viewport scrollbar-none', scrollClassName)}
       className={cn(
         'mx-auto flex min-h-full w-full max-w-[800px] flex-col gap-1 px-5 py-6 sm:px-8',
         className,

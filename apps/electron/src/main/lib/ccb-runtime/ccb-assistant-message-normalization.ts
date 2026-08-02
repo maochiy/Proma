@@ -23,14 +23,34 @@ function normalizeContentBlock(block: SDKContentBlock): SDKContentBlock {
   }
 }
 
+function normalizeCcbUserMessage(message: SDKMessage): SDKMessage {
+  if (message.type !== 'user') return message
+
+  const messageRecord = message as Record<string, unknown>
+  const innerMessage = readRecord(messageRecord.message)
+  if (!innerMessage || typeof innerMessage.content !== 'string') return message
+
+  return {
+    ...messageRecord,
+    message: {
+      ...innerMessage,
+      content: [{
+        type: 'text',
+        text: innerMessage.content,
+      }],
+    },
+  } as SDKMessage
+}
+
 /**
- * 修复 CCB OpenAI 流适配器产生的非法 assistant 内容块。
+ * 将 CCB Runtime wire message 归一化为 Proma Renderer 使用的 SDKMessage。
  *
- * DeepSeek v4 的正文 chunk 可能继续携带 `reasoning_content: ""`。旧版 CCB
- * 会因此重开空 thinking block，并把同一 chunk 的 text_delta 写入该块，
- * 最终形成 `{ type: "thinking", thinking: "", text: "正文" }`。
+ * - CCB Transcript 的 user content 是字符串，Proma 使用标准 text blocks。
+ * - DeepSeek v4 的正文 chunk 可能形成携带正文的非法空 thinking block。
  */
-export function normalizeCcbAssistantMessage(message: SDKMessage): SDKMessage {
+export function normalizeCcbMessage(message: SDKMessage): SDKMessage {
+  const normalizedUserMessage = normalizeCcbUserMessage(message)
+  if (normalizedUserMessage !== message) return normalizedUserMessage
   if (message.type !== 'assistant') return message
 
   const messageRecord = message as Record<string, unknown>
@@ -52,4 +72,11 @@ export function normalizeCcbAssistantMessage(message: SDKMessage): SDKMessage {
       content,
     },
   } as SDKMessage
+}
+
+/**
+ * 兼容旧调用方。该入口现在会同时归一化 CCB user 与 assistant 消息。
+ */
+export function normalizeCcbAssistantMessage(message: SDKMessage): SDKMessage {
+  return normalizeCcbMessage(message)
 }

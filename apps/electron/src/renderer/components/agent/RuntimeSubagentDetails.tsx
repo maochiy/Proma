@@ -17,6 +17,7 @@ import { cn } from '@/lib/utils'
 import { Button } from '@/components/ui/button'
 import { MessageResponse } from '@/components/ai-elements/message'
 import { extractToolResultText } from './task-progress'
+import { AgentRunningIndicator } from './AgentRunningIndicator'
 
 function formatUnknown(value: unknown): string {
   if (typeof value === 'string') return value
@@ -118,6 +119,7 @@ function TranscriptMessage({
 interface RuntimeSubagentDetailsProps {
   sessionId: string
   node: AgentRuntimeExecutionNode
+  running: boolean
   className?: string
 }
 
@@ -134,6 +136,7 @@ function formatElapsed(node: AgentRuntimeExecutionNode): string | undefined {
 export function RuntimeSubagentDetails({
   sessionId,
   node,
+  running,
   className,
 }: RuntimeSubagentDetailsProps): React.ReactElement {
   const [transcript, setTranscript] =
@@ -180,12 +183,12 @@ export function RuntimeSubagentDetails({
   }, [loadTranscript])
 
   React.useEffect(() => {
-    if (!canQueryTranscript || node.status !== 'running') return
+    if (!canQueryTranscript || !running) return
     const timer = window.setInterval(() => {
       void loadTranscript(false)
     }, 1_500)
     return () => window.clearInterval(timer)
-  }, [canQueryTranscript, loadTranscript, node.status])
+  }, [canQueryTranscript, loadTranscript, running])
 
   const elapsed = formatElapsed(node)
   const messages = transcript?.messages ?? []
@@ -246,7 +249,7 @@ export function RuntimeSubagentDetails({
           )}>
             {error
               ? error
-              : node.status === 'running' && canQueryTranscript
+              : running && canQueryTranscript
                 ? 'CCB 子 Agent 正在执行，Transcript 将自动刷新。'
                 : canQueryTranscript
                   ? 'CCB 暂未返回 Transcript，可手动重新读取。'
@@ -269,6 +272,8 @@ export function RuntimeSubagentDetails({
           )}
         </div>
       )}
+
+      {running && <AgentRunningIndicator startedAt={node.startedAt} />}
     </div>
   )
 }

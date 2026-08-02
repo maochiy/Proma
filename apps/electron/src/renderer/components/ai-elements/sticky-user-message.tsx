@@ -42,9 +42,13 @@ interface UserMessageData {
 
 interface StickyUserMessageProps {
   userMessages: UserMessageData[]
+  contentOffsetX?: number
 }
 
-export function StickyUserMessage({ userMessages }: StickyUserMessageProps): React.ReactElement {
+export function StickyUserMessage({
+  userMessages,
+  contentOffsetX = 0,
+}: StickyUserMessageProps): React.ReactElement {
   const { scrollRef, stopScroll, state: stickyState } = useStickToBottomContext()
   const userProfile = useAtomValue(userProfileAtom)
   const stickyEnabled = useAtomValue(stickyUserMessageEnabledAtom)
@@ -148,7 +152,10 @@ export function StickyUserMessage({ userMessages }: StickyUserMessageProps): Rea
       )}
     >
       {/* 复用 ConversationContent(px-8) + Message(px-2.5) 的 padding 链，保证与内容区等宽 */}
-      <div className="mx-8 px-2.5 pt-2">
+      <div
+        className="mx-8 px-2.5 pt-2 transition-transform duration-200 motion-reduce:transition-none"
+        style={{ transform: `translateX(${contentOffsetX}px)` }}
+      >
         <div
           className="sticky-user-banner ml-[46px] rounded-xl bg-[hsl(var(--input-surface))] shadow-sm cursor-pointer hover:bg-accent/50 transition-colors"
           onClick={scrollToOriginal}

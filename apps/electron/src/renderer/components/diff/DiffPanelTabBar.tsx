@@ -1,25 +1,37 @@
 /**
- * DiffPanelTabBar — 右侧面板顶部 Tab 栏
+ * DiffPanelTabBar — 右侧动态功能区 Tab 栏
  *
- * 切换「会话文件」「工作区文件」和「代码改动」三个视图。最右侧有关闭按钮。
+ * 只展示当前会话已经打开的功能；加号菜单用于打开尚未显示的功能。
  */
 
 import * as React from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
-import { PanelRightClose, X } from 'lucide-react'
+import { PanelRightClose, Plus, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { WINDOW_CONTROLS_INSET_RIGHT } from '@/lib/platform'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
-import { agentDiffUnseenChangesAtom, currentAgentSessionIdAtom } from '@/atoms/agent-atoms'
-import type { AgentSidePanelTab } from '@/atoms/agent-atoms'
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import {
+  agentDiffUnseenChangesAtom,
+  isAgentExecutionNodeTab,
+  currentAgentSessionIdAtom,
+} from '@/atoms/agent-atoms'
+import type {
+  AgentSidePanelStaticTab,
+  AgentSidePanelTab,
+} from '@/atoms/agent-atoms'
 import { interfaceVariantAtom } from '@/atoms/theme'
 
 interface DiffPanelTabBarProps {
   activeTab: AgentSidePanelTab
+  openTabs: AgentSidePanelTab[]
+  availableTabs: AgentSidePanelStaticTab[]
   onTabChange: (tab: AgentSidePanelTab) => void
+  onTabClose: (tab: AgentSidePanelTab) => void
+  onTabAdd: (tab: AgentSidePanelStaticTab) => void
+  onTabReorder: (source: AgentSidePanelTab, target: AgentSidePanelTab) => void
+  getTabLabel?: (tab: AgentSidePanelTab) => string | undefined
   onClose?: () => void
-  onCloseChat?: () => void
-  showChatTab?: boolean
   isWindows?: boolean
 }
 
@@ -28,12 +40,25 @@ interface PreviousTabState {
   activeTab: AgentSidePanelTab
 }
 
+export const AGENT_SIDE_PANEL_TAB_LABELS: Record<AgentSidePanelStaticTab, string> = {
+  session: '会话文件',
+  workspace: '工作区文件',
+  changes: '文件改动',
+  plan: '计划',
+  execution: '子智能体',
+  chat: '问答',
+}
+
 export function DiffPanelTabBar({
   activeTab,
+  openTabs,
+  availableTabs,
   onTabChange,
+  onTabClose,
+  onTabAdd,
+  onTabReorder,
+  getTabLabel,
   onClose,
-  onCloseChat,
-  showChatTab = false,
   isWindows = false,
 }: DiffPanelTabBarProps): React.ReactElement {
   const unseenMap = useAtomValue(agentDiffUnseenChangesAtom)
@@ -43,163 +68,147 @@ export function DiffPanelTabBar({
   const isClassic = interfaceVariant === 'classic'
   const unseenChanges = unseenMap.get(currentSessionId ?? '') ?? false
   const prevTabStateRef = React.useRef<PreviousTabState>({ sessionId: currentSessionId, activeTab })
+  const [draggingTab, setDraggingTab] = React.useState<AgentSidePanelTab | null>(null)
+  const [addMenuOpen, setAddMenuOpen] = React.useState(false)
+
+  React.useEffect(() => {
+    if (availableTabs.length === 0) setAddMenuOpen(false)
+  }, [availableTabs.length])
 
   const clearUnseen = React.useCallback((sessionId = currentSessionId) => {
     if (!sessionId) return
-    setUnseenMap((prev) => {
-      if (prev.get(sessionId) === false) return prev
-      const m = new Map(prev)
-      m.set(sessionId, false)
-      return m
+    setUnseenMap((previous) => {
+      if (previous.get(sessionId) === false) return previous
+      const next = new Map(previous)
+      next.set(sessionId, false)
+      return next
     })
   }, [currentSessionId, setUnseenMap])
 
-  // 同一会话内，从「文件改动」切走时，说明用户已经看过当前改动。
   React.useEffect(() => {
     const previous = prevTabStateRef.current
-    if (previous.sessionId === currentSessionId && previous.activeTab === 'changes' && activeTab !== 'changes') {
+    if (
+      previous.sessionId === currentSessionId
+      && previous.activeTab === 'changes'
+      && activeTab !== 'changes'
+    ) {
       clearUnseen(currentSessionId)
     }
     prevTabStateRef.current = { sessionId: currentSessionId, activeTab }
-  }, [activeTab, currentSessionId, clearUnseen])
+  }, [activeTab, clearUnseen, currentSessionId])
 
-  const handleChangesClick = () => {
-    clearUnseen()
-    if (activeTab !== 'changes') {
-      onTabChange('changes')
+  const handleTabChange = React.useCallback((tab: AgentSidePanelTab) => {
+    if (tab === 'changes') clearUnseen()
+    onTabChange(tab)
+  }, [clearUnseen, onTabChange])
+  const resolveTabLabel = React.useCallback((tab: AgentSidePanelTab): string => {
+    if (isAgentExecutionNodeTab(tab)) {
+      return getTabLabel?.(tab) ?? '执行节点'
     }
-  }
+    return AGENT_SIDE_PANEL_TAB_LABELS[tab]
+  }, [getTabLabel])
 
   return (
-    <div className="flex items-end h-[34px] tabbar-bg relative flex-shrink-0">
-      <div className={cn("absolute inset-0 titlebar-drag-region", isWindows && WINDOW_CONTROLS_INSET_RIGHT)} />
-      <div className="relative flex items-end flex-1 titlebar-no-drag">
-        <button
-          type="button"
-          onClick={() => onTabChange('session')}
-          className={cn(
-            'flex-1 px-3 h-[34px] text-xs transition-colors select-none cursor-pointer whitespace-nowrap overflow-hidden',
-            isClassic ? 'rounded-t-lg' : 'rounded-none',
-            'border-t border-l border-r',
-            activeTab === 'session'
-              ? isClassic
-                ? 'bg-content-area text-foreground border-border/50'
-                : 'app-tab-active text-foreground border-border/80'
-              : isClassic
-                ? 'text-muted-foreground border-transparent hover:text-foreground hover:bg-muted/50'
-                : 'app-tab-inactive text-muted-foreground border-transparent hover:text-foreground',
-          )}
-        >
-          会话文件
-        </button>
-        <button
-          type="button"
-          onClick={() => onTabChange('execution')}
-          className={cn(
-            'flex-1 px-2 h-[34px] text-xs transition-colors select-none cursor-pointer whitespace-nowrap overflow-hidden',
-            isClassic ? 'rounded-t-lg' : 'rounded-none',
-            'border-t border-l border-r',
-            activeTab === 'execution'
-              ? isClassic
-                ? 'bg-content-area text-foreground border-border/50'
-                : 'app-tab-active text-foreground border-border/80'
-              : isClassic
-                ? 'text-muted-foreground border-transparent hover:text-foreground hover:bg-muted/50'
-                : 'app-tab-inactive text-muted-foreground border-transparent hover:text-foreground',
-          )}
-        >
-          执行
-        </button>
-        <button
-          type="button"
-          onClick={() => onTabChange('workspace')}
-          className={cn(
-            'flex-1 px-3 h-[34px] text-xs transition-colors select-none cursor-pointer whitespace-nowrap overflow-hidden',
-            isClassic ? 'rounded-t-lg' : 'rounded-none',
-            'border-t border-l border-r',
-            activeTab === 'workspace'
-              ? isClassic
-                ? 'bg-content-area text-foreground border-border/50'
-                : 'app-tab-active text-foreground border-border/80'
-              : isClassic
-                ? 'text-muted-foreground border-transparent hover:text-foreground hover:bg-muted/50'
-                : 'app-tab-inactive text-muted-foreground border-transparent hover:text-foreground',
-          )}
-        >
-          工作区文件
-        </button>
-        <button
-          type="button"
-          onClick={handleChangesClick}
-          className={cn(
-            'flex-1 px-3 h-[34px] text-xs transition-colors select-none cursor-pointer relative whitespace-nowrap overflow-hidden',
-            isClassic ? 'rounded-t-lg' : 'rounded-none',
-            'border-t border-l border-r',
-            activeTab === 'changes'
-              ? isClassic
-                ? 'bg-content-area text-foreground border-border/50'
-                : 'app-tab-active text-foreground border-border/80'
-              : isClassic
-                ? 'text-muted-foreground border-transparent hover:text-foreground hover:bg-muted/50'
-                : 'app-tab-inactive text-muted-foreground border-transparent hover:text-foreground',
-          )}
-        >
-          <span className="inline-flex items-center gap-1">
-            {unseenChanges && activeTab !== 'changes' && (
-              <span className="size-2 rounded-full bg-primary ring-1 ring-background shrink-0" />
-            )}
-            文件改动
-          </span>
-        </button>
-        {showChatTab && (
-          <div
-            className={cn(
-              'flex-1 h-[34px] text-xs transition-colors select-none relative whitespace-nowrap overflow-hidden',
-              isClassic ? 'rounded-t-lg' : 'rounded-none',
-              'border-t border-l border-r',
-              activeTab === 'chat'
-                ? isClassic
-                  ? 'bg-content-area text-foreground border-border/50'
-                  : 'app-tab-active text-foreground border-border/80'
-                : isClassic
-                  ? 'text-muted-foreground border-transparent hover:text-foreground hover:bg-muted/50'
-                  : 'app-tab-inactive text-muted-foreground border-transparent hover:text-foreground',
-            )}
-          >
-            <div className="flex h-full items-center">
-              <button
-                type="button"
-                onClick={() => onTabChange('chat')}
-                className="min-w-0 flex-1 self-stretch px-2 text-left"
+    <div className="relative flex h-[34px] flex-shrink-0 items-end tabbar-bg">
+      <div className={cn('absolute inset-0 titlebar-drag-region', isWindows && WINDOW_CONTROLS_INSET_RIGHT)} />
+      <div className="relative flex min-w-0 flex-1 items-end titlebar-no-drag">
+        <div className="scrollbar-none flex w-fit min-w-0 max-w-[calc(100%-72px)] flex-none items-end overflow-x-auto">
+          {openTabs.map((tab) => {
+            const label = resolveTabLabel(tab)
+            return (
+              <div
+                key={tab}
+                draggable
+                onDragStart={() => setDraggingTab(tab)}
+                onDragEnd={() => setDraggingTab(null)}
+                onDragOver={(event) => event.preventDefault()}
+                onDrop={(event) => {
+                  event.preventDefault()
+                  if (draggingTab && draggingTab !== tab) onTabReorder(draggingTab, tab)
+                  setDraggingTab(null)
+                }}
+                className={cn(
+                  'group flex h-[34px] w-[120px] min-w-[96px] max-w-[168px] flex-none items-center border-l border-r border-t text-xs transition-colors',
+                  isClassic ? 'rounded-t-lg' : 'rounded-none',
+                  activeTab === tab
+                    ? isClassic
+                      ? 'border-border/50 bg-content-area text-foreground'
+                      : 'app-tab-active border-border/80 text-foreground'
+                    : isClassic
+                      ? 'border-transparent text-muted-foreground hover:bg-muted/50 hover:text-foreground'
+                      : 'app-tab-inactive border-transparent text-muted-foreground hover:text-foreground',
+                  draggingTab === tab && 'opacity-55',
+                )}
               >
-                <span className="block truncate text-center">问答</span>
-              </button>
-              {onCloseChat && (
                 <button
                   type="button"
-                  className="mr-1 inline-flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-muted/70 hover:text-foreground"
-                  aria-label="关闭问答 Tab"
-                  onClick={onCloseChat}
+                  className="min-w-0 flex-1 self-stretch px-2"
+                  onClick={() => handleTabChange(tab)}
+                >
+                  <span className="flex items-center justify-center gap-1 truncate">
+                    {tab === 'changes' && unseenChanges && activeTab !== 'changes' && (
+                      <span className="size-2 shrink-0 rounded-full bg-primary ring-1 ring-background" />
+                    )}
+                    <span className="truncate">{label}</span>
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  className="mr-1 inline-flex size-5 shrink-0 items-center justify-center rounded text-muted-foreground opacity-0 hover:bg-muted/70 hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100"
+                  aria-label={`关闭${label} Tab`}
+                  onClick={() => onTabClose(tab)}
                 >
                   <X className="size-3" />
                 </button>
-              )}
-            </div>
-          </div>
-        )}
-        {/* 右侧关闭按钮（常驻，三个 tab 下都可见） */}
+              </div>
+            )
+          })}
+        </div>
+
+        <Popover open={addMenuOpen} onOpenChange={setAddMenuOpen}>
+          <PopoverTrigger asChild>
+            <button
+              type="button"
+              className="titlebar-no-drag mb-[3px] ml-1 inline-flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted/55 hover:text-foreground disabled:opacity-35"
+              aria-label="打开其他功能"
+              disabled={availableTabs.length === 0}
+              onPointerDown={(event) => event.stopPropagation()}
+            >
+              <Plus className="size-4" />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent align="start" sideOffset={4} className="w-40 p-1">
+            {availableTabs.map((tab) => (
+              <button
+                key={tab}
+                type="button"
+                className="flex w-full items-center rounded-md px-2 py-1.5 text-left text-sm outline-none transition-colors hover:bg-accent/70 focus-visible:bg-accent/70"
+                onClick={() => {
+                  onTabAdd(tab)
+                  setAddMenuOpen(false)
+                }}
+              >
+                {AGENT_SIDE_PANEL_TAB_LABELS[tab]}
+              </button>
+            ))}
+          </PopoverContent>
+        </Popover>
+
         {onClose && (
           <Tooltip>
             <TooltipTrigger asChild>
               <button
                 type="button"
                 onClick={onClose}
-                className="flex items-center justify-center size-[28px] mr-1 mb-[3px] rounded text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors shrink-0"
+                className="mb-[3px] ml-auto mr-1 flex size-7 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
+                aria-label="折叠右侧功能区"
               >
                 <PanelRightClose className="size-4" />
               </button>
             </TooltipTrigger>
-            <TooltipContent side="bottom">折叠文件面板 ({navigator.platform.includes('Mac') ? '⌘⇧B' : 'Ctrl+Shift+B'})</TooltipContent>
+            <TooltipContent side="bottom">
+              折叠功能区 ({navigator.platform.includes('Mac') ? '⌘⇧B' : 'Ctrl+Shift+B'})
+            </TooltipContent>
           </Tooltip>
         )}
       </div>
