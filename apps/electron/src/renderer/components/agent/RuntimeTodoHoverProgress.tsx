@@ -5,13 +5,19 @@ import type { AgentRuntimeTodoItem, AgentTurnChangeStats, AgentTurnChangedFile }
 import {
   agentDiffRefreshVersionAtom,
   agentRuntimeExecutionGraphsAtom,
+  agentRuntimePlanLifecycleAtom,
   mergeAgentRuntimeExecutionGraphAtom,
   agentSessionStreamingStateAtomFamily,
   agentTurnChangeStatsAtom,
 } from '@/atoms/agent-atoms'
 import { shouldSuppressAgentRunningIndicator } from '@/lib/agent-running-state'
 import { cn } from '@/lib/utils'
-import { getRuntimePlanVisibleWindowStartIndex } from './runtime-plan-visible-window'
+import { getVisibleRuntimePlanTodos } from '@/lib/runtime-plan-lifecycle'
+import {
+  getRuntimePlanVisibleWindowStartIndex,
+  shouldAutoScrollRuntimePlanWindow,
+} from './runtime-plan-visible-window'
+import type { RuntimePlanScrollWindowState } from './runtime-plan-visible-window'
 
 interface RuntimeTodoHoverProgressProps {
   sessionId: string
@@ -119,11 +125,11 @@ export function hasActiveRuntimeTodos(todos: AgentRuntimeTodoItem[]): boolean {
 /**
  * 计划入口可见性：
  * 1. 有未完成 Todo 才显示（上一轮已全部完成的旧计划，新消息不再挂着）
- * 2. 仅本轮会话仍在执行（running）时显示；会话结束后整块入口/面板都隐藏
+ * 2. 会话结束后仅保留生命周期明确标记为“待继续”的计划
  * 3. 上下文压缩进行中时也隐藏（底部只展示压缩进度）
  *
  * 任务文件里残留 in_progress 在「执行中」时展示是正常的；
- * 会话已停时不应再展示转圈「执行中」，否则会误导成还在跑。
+ * 会话已停时只有中断计划可继续展示，且不再转圈。
  */
 export function shouldShowRuntimeTodoProgress(
   todos: AgentRuntimeTodoItem[],
@@ -134,10 +140,10 @@ export function shouldShowRuntimeTodoProgress(
       status: 'running' | 'success' | 'noop' | 'failed'
     }
   },
+  interruptedPlanVisible: boolean = false,
 ): boolean {
   if (!hasActiveRuntimeTodos(todos)) return false
-  // 会话已停：隐藏计划入口与悬浮面板，避免 idle 仍转圈「执行中」
-  if (streamState?.running !== true) return false
+  if (streamState?.running !== true && !interruptedPlanVisible) return false
   if (shouldSuppressAgentRunningIndicator(streamState)) return false
   return true
 }
@@ -157,7 +163,13 @@ export function shouldShowTurnChangeStats(
   return currentRunStartedAt == null || stats.startedAt === currentRunStartedAt
 }
 
-function TodoStatusIcon({ todo }: { todo: AgentRuntimeTodoItem }): React.ReactElement {
+function TodoStatusIcon({
+  todo,
+  activelyRunning,
+}: {
+  todo: AgentRuntimeTodoItem
+  activelyRunning: boolean
+}): React.ReactElement {
   if (todo.status === 'completed') {
     return (
       <span
@@ -170,6 +182,16 @@ function TodoStatusIcon({ todo }: { todo: AgentRuntimeTodoItem }): React.ReactEl
     )
   }
   if (todo.status === 'in_progress') {
+    if (!activelyRunning) {
+      return (
+        <Circle
+          aria-label="待继续"
+          data-plan-status-icon="interrupted"
+          className="size-4 shrink-0 text-muted-foreground"
+          strokeWidth={1.75}
+        />
+      )
+    }
     return (
       <Loader2
         aria-label="执行中"
@@ -240,18 +262,29 @@ export function RuntimeTodoHoverProgress({
   const graphs = useAtomValue(agentRuntimeExecutionGraphsAtom)
   const mergeGraph = useSetAtom(mergeAgentRuntimeExecutionGraphAtom)
   const graph = graphs.get(sessionId)
+  const planLifecycle = useAtomValue(agentRuntimePlanLifecycleAtom).get(sessionId)
+  const sourceTodos = getVisibleRuntimePlanTodos(
+    planLifecycle,
+    graph?.todos ?? [],
+  )
   const todos = React.useMemo(
-    () => sortRuntimeTodos(graph?.todos ?? []),
-    [graph?.todos],
+    () => sortRuntimeTodos(sourceTodos),
+    [sourceTodos],
   )
   const planPanelScrollRef = React.useRef<HTMLDivElement>(null)
   const planWindowStartIndex = getRuntimePlanVisibleWindowStartIndex(
     todos,
     PLAN_PANEL_MAX_VISIBLE_ITEMS,
   )
+  const planPanelWindowed = todos.length > PLAN_PANEL_MAX_VISIBLE_ITEMS
+  const previousPlanScrollWindowRef = React.useRef<RuntimePlanScrollWindowState | null>(null)
   const streamingState = useAtomValue(agentSessionStreamingStateAtomFamily(sessionId))
   const currentRunStartedAt = streamingState?.startedAt
   const isStreaming = streamingState?.running === true
+  const planActivelyRunning = (
+    isStreaming
+    && (planLifecycle == null || planLifecycle.current?.status === 'active')
+  )
   const diffRefreshVersions = useAtomValue(agentDiffRefreshVersionAtom)
   const diffRefreshVersion = diffRefreshVersions.get(sessionId) ?? 0
   const changeStatsMap = useAtomValue(agentTurnChangeStatsAtom)
@@ -346,9 +379,28 @@ export function RuntimeTodoHoverProgress({
     void refreshChangeStats()
   }, [diffRefreshVersion, refreshChangeStats, todos.length])
 
+  const showRuntimeTodoProgress = shouldShowRuntimeTodoProgress(
+    todos,
+    streamingState,
+    planLifecycle?.current?.status === 'interrupted'
+      && planLifecycle.current.visible,
+  )
+
   React.useEffect(() => {
+    const nextWindowState: RuntimePlanScrollWindowState = {
+      visible: showRuntimeTodoProgress,
+      windowed: planPanelWindowed,
+      startIndex: planWindowStartIndex,
+    }
+    const shouldAutoScroll = shouldAutoScrollRuntimePlanWindow(
+      previousPlanScrollWindowRef.current,
+      nextWindowState,
+    )
+    previousPlanScrollWindowRef.current = nextWindowState
+    if (!shouldAutoScroll) return
+
     const container = planPanelScrollRef.current
-    if (!container || todos.length <= PLAN_PANEL_MAX_VISIBLE_ITEMS) return
+    if (!container) return
 
     const firstVisibleItem = container.children.item(planWindowStartIndex)
     if (!(firstVisibleItem instanceof HTMLElement)) return
@@ -356,9 +408,13 @@ export function RuntimeTodoHoverProgress({
     const containerTop = container.getBoundingClientRect().top
     const itemTop = firstVisibleItem.getBoundingClientRect().top
     container.scrollTop += itemTop - containerTop
-  }, [planWindowStartIndex, todos])
+  }, [
+    planPanelWindowed,
+    planWindowStartIndex,
+    showRuntimeTodoProgress,
+  ])
 
-  if (!shouldShowRuntimeTodoProgress(todos, streamingState)) return null
+  if (!showRuntimeTodoProgress) return null
 
   const completedCount = completedTodoCount(todos)
   const stepNumber = currentStepNumber(todos, completedCount)
@@ -393,12 +449,12 @@ export function RuntimeTodoHoverProgress({
                 className={cn(
                   'space-y-0.5',
                   // 超过可见数量后保留完整列表与滚动能力，并自动跟随当前执行窗口。
-                  todos.length > PLAN_PANEL_MAX_VISIBLE_ITEMS && cn(
+                  planPanelWindowed && cn(
                     PLAN_PANEL_SCROLL_MAX_HEIGHT_CLASS,
                     'overflow-y-auto overscroll-contain scrollbar-none',
                   ),
                 )}
-                data-plan-panel-scroll={todos.length > PLAN_PANEL_MAX_VISIBLE_ITEMS ? 'true' : 'false'}
+                data-plan-panel-scroll={planPanelWindowed ? 'true' : 'false'}
               >
                 {todos.map((todo) => (
                   <div
@@ -406,7 +462,10 @@ export function RuntimeTodoHoverProgress({
                     className="flex max-w-full items-start gap-2 px-1.5 py-0.5 text-[13px] leading-5"
                   >
                     <span className="mt-0.5">
-                      <TodoStatusIcon todo={todo} />
+                      <TodoStatusIcon
+                        todo={todo}
+                        activelyRunning={planActivelyRunning}
+                      />
                     </span>
                     <div className="min-w-0">
                       <p className={cn(
@@ -416,8 +475,14 @@ export function RuntimeTodoHoverProgress({
                         {todo.content}
                       </p>
                       {todo.status === 'in_progress' && (
-                        <p className="mt-0.5 text-[10px] text-sky-600 dark:text-sky-400">
-                          执行中{todo.activeForm ? ` · ${todo.activeForm}` : ''}
+                        <p className={cn(
+                          'mt-0.5 text-[10px]',
+                          planActivelyRunning
+                            ? 'text-sky-600 dark:text-sky-400'
+                            : 'text-muted-foreground',
+                        )}>
+                          {planActivelyRunning ? '执行中' : '待继续'}
+                          {todo.activeForm ? ` · ${todo.activeForm}` : ''}
                         </p>
                       )}
                       {(todo.owner || (todo.blockedBy?.length ?? 0) > 0) && (

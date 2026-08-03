@@ -45,6 +45,7 @@ import { getTaskGetStatusLabel, parseTaskGetResult, type ParsedTaskGetResult } f
 import { parseTaskListResult, type ParsedTaskListItem } from './tool-result-renderers/task-list-result'
 import { formatDuration } from './AgentMessages'
 import { RuntimeSubagentDetails } from './RuntimeSubagentDetails'
+import { isParallelToolCallCancellation } from './tool-result-status'
 import type {
   SDKContentBlock,
   SDKMessage,
@@ -384,6 +385,8 @@ function ToolUseBlock({ block, allMessages, animate = false, index = 0, dimmed =
   const toolResult = useToolResult(block.id, allMessages)
   const resultText = toolResult?.result
   const isError = toolResult?.isError === true
+  const isCancelled = isParallelToolCallCancellation(resultText, isError)
+  const isActualError = isError && !isCancelled
   const shouldShowResult = !!resultText
   const taskGetSummary = React.useMemo(() => {
     if (block.name !== 'TaskGet' || !resultText || isError) return null
@@ -446,11 +449,14 @@ function ToolUseBlock({ block, allMessages, animate = false, index = 0, dimmed =
   // 运行中显示进行时短语，完成或非流式（已终止）显示完成态短语
   const displayLabel = (isCompleted || !isStreaming) ? phrase.label : phrase.loadingLabel
   const filePath = extractFilePath(block.input)
-  const isPreviewable = (
+  const isPreviewable = !isCancelled && (
     (block.name === 'Read' || block.name === 'Edit' || block.name === 'Write') &&
     isCompleted &&
     filePath
   )
+  const resolvedDisplayLabel = isCancelled
+    ? `${displayLabel} · 已取消`
+    : displayLabel
 
   const delay = animate && index < 10 ? `${index * 30}ms` : '0ms'
 
@@ -478,13 +484,15 @@ function ToolUseBlock({ block, allMessages, animate = false, index = 0, dimmed =
         >
           {!isCompleted && isStreaming ? (
             <Loader2 className="size-3.5 shrink-0 animate-spin text-primary/50" />
-          ) : isError ? (
+          ) : isActualError ? (
             <XCircle className="size-3.5 shrink-0 text-destructive/70" />
+          ) : isCancelled ? (
+            <XCircle className="size-3.5 shrink-0 text-muted-foreground/45" />
           ) : (
             <Bot className="size-3.5 shrink-0 text-muted-foreground" />
           )}
           <span className="min-w-0 flex-1 truncate text-[14px] text-muted-foreground">
-            {displayLabel}
+            {resolvedDisplayLabel}
           </span>
           {collaborationNodes.length > 0 && (
             <span className="shrink-0 text-[11px] text-muted-foreground/65">
@@ -544,7 +552,7 @@ function ToolUseBlock({ block, allMessages, animate = false, index = 0, dimmed =
               toolName={block.name}
               input={block.input}
               result={resultText}
-              isError={isError}
+              isError={isActualError}
               basePath={basePath}
             />
           </div>
@@ -578,8 +586,10 @@ function ToolUseBlock({ block, allMessages, animate = false, index = 0, dimmed =
           {/* 状态指示：仅流式中的未完成工具才显示 spinner */}
           {!isCompleted && isStreaming ? (
             <Loader2 className="size-3.5 animate-spin text-primary/50 shrink-0" />
-          ) : isError ? (
+          ) : isActualError ? (
             <XCircle className="size-3.5 text-destructive/70 shrink-0" />
+          ) : isCancelled ? (
+            <XCircle className="size-3.5 text-muted-foreground/45 shrink-0" />
           ) : null}
 
           <ToolIcon className={cn('size-3.5 shrink-0', dimmed ? 'text-muted-foreground/70' : 'text-muted-foreground')} />
@@ -587,7 +597,7 @@ function ToolUseBlock({ block, allMessages, animate = false, index = 0, dimmed =
           <span className={cn(
             'truncate text-[14px]',
             dimmed ? 'text-muted-foreground/70' : 'text-muted-foreground',
-          )}>{displayLabel}</span>
+          )}>{resolvedDisplayLabel}</span>
 
           {/* 子工具计数（折叠时显示） */}
           {childToolCount > 0 && !childrenExpanded && (
@@ -673,8 +683,10 @@ function ToolUseBlock({ block, allMessages, animate = false, index = 0, dimmed =
       >
         {!isCompleted && isStreaming ? (
           <Loader2 className="size-3.5 animate-spin text-primary/50 shrink-0" />
-        ) : isError ? (
+        ) : isActualError ? (
           <XCircle className="size-3.5 text-destructive/70 shrink-0" />
+        ) : isCancelled ? (
+          <XCircle className="size-3.5 text-muted-foreground/45 shrink-0" />
         ) : null}
 
         <ToolIcon className={cn('size-3.5 shrink-0', dimmed ? 'text-muted-foreground/70' : 'text-muted-foreground')} />
@@ -683,7 +695,7 @@ function ToolUseBlock({ block, allMessages, animate = false, index = 0, dimmed =
           'min-w-0 truncate text-[14px]',
           taskGetSummary || taskListSummary ? 'shrink-0' : '',
           dimmed ? 'text-muted-foreground/70' : 'text-muted-foreground',
-        )}>{displayLabel}</span>
+        )}>{resolvedDisplayLabel}</span>
 
         {phrase.diffStats && (isCompleted || !isStreaming) && (
           <span className="shrink-0 text-[14px] tabular-nums">
@@ -741,7 +753,7 @@ function ToolUseBlock({ block, allMessages, animate = false, index = 0, dimmed =
             toolName={block.name}
             input={block.input}
             result={resultText}
-            isError={isError}
+            isError={isActualError}
             basePath={basePath}
           />
         </div>

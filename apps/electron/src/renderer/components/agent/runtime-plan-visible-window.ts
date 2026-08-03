@@ -1,5 +1,11 @@
 import type { AgentRuntimeTodoItem } from '@proma/shared'
 
+export interface RuntimePlanScrollWindowState {
+  visible: boolean
+  windowed: boolean
+  startIndex: number
+}
+
 /**
  * 计算计划列表可见窗口的起点，不修改完整计划数据。
  *
@@ -38,4 +44,20 @@ export function selectRuntimePlanVisibleItems(
     visibleCount,
   )
   return todos.slice(startIndex, startIndex + visibleCount)
+}
+
+/**
+ * 只在可见窗口真正变化时自动调整滚动位置。
+ * 普通执行图刷新不能反复抢回滚动位置，否则用户无法手动查看前后步骤。
+ */
+export function shouldAutoScrollRuntimePlanWindow(
+  previous: RuntimePlanScrollWindowState | null,
+  next: RuntimePlanScrollWindowState,
+): boolean {
+  if (!next.visible || !next.windowed) return false
+  if (!previous) return true
+
+  return !previous.visible
+    || !previous.windowed
+    || previous.startIndex !== next.startIndex
 }

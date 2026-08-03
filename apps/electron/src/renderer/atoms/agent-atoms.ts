@@ -7,7 +7,7 @@
 
 import { atom } from 'jotai'
 import { atomFamily, atomWithStorage } from 'jotai/utils'
-import type { AgentSessionMeta, AgentEvent, AgentWorkspace, AgentPendingFile, AgentRuntimeModelCatalog, AgentRuntimeExecutionGraph, AgentRuntimeExecutionNode, AgentRuntimeSubagentTranscript, AgentRuntimeTodoItem, AgentTurnChangeStats, RetryAttempt, PromaPermissionMode, PermissionRequest, AskUserRequest, ExitPlanModeRequest, ThinkingConfig, ThinkingEffortLevel, SDKMessage, UnstagedChangesResult, GitRepoStatus } from '@proma/shared'
+import type { AgentSessionMeta, AgentEvent, AgentWorkspace, AgentPendingFile, AgentRuntimeModelCatalog, AgentRuntimeExecutionGraph, AgentRuntimeExecutionNode, AgentRuntimePlanSessionState, AgentRuntimeSubagentTranscript, AgentRuntimeTodoItem, AgentTurnChangeStats, RetryAttempt, PromaPermissionMode, PermissionRequest, AskUserRequest, ExitPlanModeRequest, ThinkingConfig, ThinkingEffortLevel, SDKMessage, UnstagedChangesResult, GitRepoStatus } from '@proma/shared'
 import { PROMA_DEFAULT_PERMISSION_MODE } from '@proma/shared'
 import { calculateDockBadgeCount, countPendingRequests } from '@/lib/dock-badge-count'
 import type { AgentQueuedMessage } from '@/lib/agent-message-queue'
@@ -20,6 +20,12 @@ import {
   isFloatingExecutionNodeTerminal,
 } from '@/lib/session-floating-runtime-lifecycle'
 import type { AgentFloatingPanelPlanState } from '@/lib/session-floating-runtime-lifecycle'
+import {
+  activateRuntimePlanTodo,
+  applyRuntimePlanGraph,
+  beginRuntimePlanTurn,
+  interruptRuntimePlan,
+} from '@/lib/runtime-plan-lifecycle'
 
 /** 活动状态 */
 export type ActivityStatus = 'pending' | 'running' | 'completed' | 'error' | 'backgrounded'
@@ -444,9 +450,17 @@ export const agentFloatingPanelForcedSessionsAtom = atom<Set<string>>(new Set<st
 /** 悬浮面板当前是否实际显示，供顶部开关区分“隐藏”和“被自动隐藏”。 */
 export const agentFloatingPanelVisibleSessionsAtom = atom<Set<string>>(new Set<string>())
 
-/** 悬浮面板计划的跨轮生命周期状态，按会话隔离且不影响输入框上方计划入口。 */
+/** 悬浮面板旧完成计划的签名屏蔽状态；计划显隐统一由生命周期 Atom 决定。 */
 export const agentFloatingPanelPlanStatesAtom = atom<
   Map<string, AgentFloatingPanelPlanState>
+>(new Map())
+
+/**
+ * 当前计划、隐藏的待继续计划及归档计划的统一生命周期状态。
+ * 三个计划入口都从这里读取，避免各自使用 session running 推断状态。
+ */
+export const agentRuntimePlanLifecycleAtom = atom<
+  Map<string, AgentRuntimePlanSessionState>
 >(new Map())
 
 /** 独立于 SDK 流式状态的悬浮面板轮次标识，软空闲续轮也会更新。 */
@@ -464,7 +478,10 @@ export const beginAgentFloatingPanelTurnAtom = atom(
     if (get(agentFloatingPanelTurnEpochsAtom).get(input.sessionId) === input.epoch) {
       return
     }
-    const todos = get(agentRuntimeExecutionGraphsAtom).get(input.sessionId)?.todos ?? []
+    const graphTodos = get(agentRuntimeExecutionGraphsAtom).get(input.sessionId)?.todos ?? []
+    const historyTodos = get(agentSidePanelRuntimeHistoryAtom)
+      .get(input.sessionId)?.todos ?? []
+    const todos = graphTodos.length > 0 ? graphTodos : historyTodos
     const nextPlanState = advanceFloatingPanelPlanState({
       turnEpoch: input.epoch,
       todos,
@@ -478,6 +495,56 @@ export const beginAgentFloatingPanelTurnAtom = atom(
     set(agentFloatingPanelPlanStatesAtom, (previous) => {
       const next = new Map(previous)
       next.set(input.sessionId, nextPlanState)
+      return next
+    })
+    set(agentRuntimePlanLifecycleAtom, (previous) => {
+      const next = new Map(previous)
+      const current = previous.get(input.sessionId)
+      const seeded = current ?? applyRuntimePlanGraph(
+        undefined,
+        todos,
+        Date.now(),
+      )
+      next.set(
+        input.sessionId,
+        beginRuntimePlanTurn(
+          seeded,
+          input.epoch,
+          Date.now(),
+        ),
+      )
+      return next
+    })
+  },
+)
+
+export const activateAgentRuntimePlanTodoAtom = atom(
+  null,
+  (_get, set, input: { sessionId: string; todoId: string }) => {
+    set(agentRuntimePlanLifecycleAtom, (previous) => {
+      const current = previous.get(input.sessionId)
+      const updated = activateRuntimePlanTodo(
+        current,
+        input.todoId,
+        Date.now(),
+      )
+      if (updated === current || updated == null) return previous
+      const next = new Map(previous)
+      next.set(input.sessionId, updated)
+      return next
+    })
+  },
+)
+
+export const interruptAgentRuntimePlanAtom = atom(
+  null,
+  (_get, set, sessionId: string) => {
+    set(agentRuntimePlanLifecycleAtom, (previous) => {
+      const current = previous.get(sessionId)
+      const updated = interruptRuntimePlan(current, Date.now())
+      if (updated === current || updated == null) return previous
+      const next = new Map(previous)
+      next.set(sessionId, updated)
       return next
     })
   },
@@ -562,6 +629,19 @@ export const mergeAgentRuntimeExecutionGraphAtom = atom(
     set(agentRuntimeExecutionGraphsAtom, (previous) => {
       const next = new Map(previous)
       next.set(input.sessionId, input.graph)
+      return next
+    })
+
+    set(agentRuntimePlanLifecycleAtom, (previous) => {
+      const current = previous.get(input.sessionId)
+      const updated = applyRuntimePlanGraph(
+        current,
+        input.graph.todos,
+        Date.now(),
+      )
+      if (updated === current || updated == null) return previous
+      const next = new Map(previous)
+      next.set(input.sessionId, updated)
       return next
     })
 

@@ -55,6 +55,7 @@ export function isSessionExecutionNodeActivelyRunning(
   childSessionRunning?: boolean,
 ): boolean {
   if (node.status !== 'running') return false
+  if (node.turnCompletionPolicy === 'detach') return false
   if (node.source === 'delegation') {
     if (childSessionRunning === true) return true
     if (node.runtimeWorkerState === 'busy' || node.runtimeWorkerState === 'starting') {
@@ -96,6 +97,7 @@ export function isSessionExecutionNodeDetailRunning(
   parentSessionRunning: boolean,
   childSessionRunning?: boolean,
 ): boolean {
+  if (node.turnCompletionPolicy === 'detach') return false
   if (node.source === 'delegation') return node.status === 'running'
   return isSessionExecutionNodeActivelyRunning(
     node,

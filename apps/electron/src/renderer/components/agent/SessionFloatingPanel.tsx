@@ -14,6 +14,7 @@ import {
   agentFloatingPanelExecutionNodeStatesAtom,
   agentFloatingPanelPlanStatesAtom,
   agentRuntimeExecutionGraphsAtom,
+  agentRuntimePlanLifecycleAtom,
   agentSidePanelRuntimeHistoryAtom,
   agentSessionsAtom,
   agentSessionGitSummaryAtom,
@@ -37,6 +38,7 @@ import {
   createFloatingPlanSignature,
   isFloatingExecutionNodeTerminal,
 } from '@/lib/session-floating-runtime-lifecycle'
+import { getVisibleRuntimePlanTodos } from '@/lib/runtime-plan-lifecycle'
 import {
   completedTodoCount,
   sortRuntimeTodos,
@@ -86,17 +88,26 @@ export function SessionFloatingPanel({
   const mergeGraph = useSetAtom(mergeAgentRuntimeExecutionGraphAtom)
   const graph = graphs.get(sessionId)
   const graphTodos = graph?.todos ?? EMPTY_TODOS
-  const planStates = useAtomValue(agentFloatingPanelPlanStatesAtom)
-  const planState = planStates.get(sessionId)
+  const planLifecycle = useAtomValue(agentRuntimePlanLifecycleAtom).get(sessionId)
+  const planState = useAtomValue(agentFloatingPanelPlanStatesAtom).get(sessionId)
+  // 生命周期尚未初始化时保留旧签名屏蔽作为启动期兜底；
+  // 一旦生命周期存在，三个入口只服从统一生命周期状态。
   const planSuppressed = (
-    graphTodos.length > 0
+    planLifecycle == null
+    && graphTodos.length > 0
     && planState?.suppressedCompletedPlanSignature != null
     && createFloatingPlanSignature(graphTodos)
       === planState.suppressedCompletedPlanSignature
   )
+  const visibleLifecycleTodos = getVisibleRuntimePlanTodos(
+    planLifecycle,
+    graphTodos,
+  )
   const todos = React.useMemo(
-    () => sortRuntimeTodos(planSuppressed ? EMPTY_TODOS : graphTodos),
-    [graphTodos, planSuppressed],
+    () => sortRuntimeTodos(
+      planSuppressed ? EMPTY_TODOS : visibleLifecycleTodos,
+    ),
+    [planSuppressed, visibleLifecycleTodos],
   )
   const sessions = useAtomValue(agentSessionsAtom)
   const runtimeHistory = useAtomValue(agentSidePanelRuntimeHistoryAtom)
@@ -423,7 +434,15 @@ export function SessionFloatingPanel({
                   {completedCount} / {todos.length}
                 </span>
               </div>
-              <RuntimePlanList todos={visibleTodos} running={running} compact />
+              <RuntimePlanList
+                todos={visibleTodos}
+                running={running}
+                planActive={
+                  planLifecycle == null
+                  || planLifecycle.current?.status === 'active'
+                }
+                compact
+              />
               {hasMoreTodos && (
                 <button
                   type="button"

@@ -212,6 +212,10 @@ import {
 } from './lib/agent-session-manager'
 import { runAgent, stopAgent, closeAgentSessionRuntime, generateAgentTitle, saveFilesToAgentSession, saveFilesToWorkspaceFiles, isAgentSessionActive, queueAgentMessage, updateAgentPermissionMode, updateAgentRuntimeConfig, invalidateAgentRuntimeConfiguration, getAgentRuntimeExecutionGraph, getAgentRuntimeSubagentTranscript, getAgentTurnChangeStats, rewindAgentSession, forkAgentRuntimeSession } from './lib/agent-service'
 import {
+  getAgentRuntimePlanStore,
+  saveAgentRuntimePlanStore,
+} from './lib/agent-runtime-plan-service'
+import {
   clearAgentRuntimeModelCatalogCache,
   resolveAgentRuntimeModelCatalog,
   resolveDraftAgentRuntimeModelCatalog,
@@ -2211,6 +2215,18 @@ export function registerIpcHandlers(): void {
     AGENT_IPC_CHANNELS.GET_RUNTIME_EXECUTION_GRAPH,
     async (_, sessionId: string) => {
       return getAgentRuntimeExecutionGraph(sessionId)
+    },
+  )
+
+  ipcMain.handle(
+    AGENT_IPC_CHANNELS.GET_RUNTIME_PLAN_STORE,
+    async () => getAgentRuntimePlanStore(),
+  )
+
+  ipcMain.handle(
+    AGENT_IPC_CHANNELS.SAVE_RUNTIME_PLAN_STORE,
+    async (_, store: import('@proma/shared').AgentRuntimePlanPersistedStore) => {
+      saveAgentRuntimePlanStore(store)
     },
   )
 

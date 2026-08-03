@@ -22,7 +22,7 @@ const ACTIVE_EXECUTION_NODE_STATUSES = new Set<
 /**
  * 维护会话悬浮面板自己的数据生命周期。
  *
- * - 计划：全部完成后保留到本轮结束；下一轮开始时才清空。若仍有未完成项则跨轮保留。
+ * - 计划：这里只处理旧完成计划回闪；统一显隐与待继续状态由计划生命周期 Atom 处理。
  * - 执行节点：仅在节点自身明确完成/失败/停止后短暂展示终态，再从悬浮面板关闭。
  */
 export function useSessionFloatingRuntimeLifecycle(sessionId: string): void {

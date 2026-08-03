@@ -128,6 +128,28 @@ describe('会话统一执行节点投影', () => {
     expect(isSessionExecutionNodeActivelyRunning(historyNode, true)).toBe(false)
   })
 
+  test('Given 长期监控节点仍在运行 When 父模型已经结束 Then 不投影为活跃执行节点', () => {
+    const monitorNode = buildSessionExecutionNodes({
+      sessionId: PARENT_ID,
+      runtimeGraph: {
+        nodes: [{
+          id: 'monitor-running',
+          kind: 'shell',
+          description: '监控推送日志',
+          status: 'running',
+          transcriptAvailable: false,
+          turnCompletionPolicy: 'detach',
+        }],
+        todos: [],
+        updatedAt: 1,
+      },
+      sessions: [],
+    })[0]!
+
+    expect(isSessionExecutionNodeActivelyRunning(monitorNode, true)).toBe(false)
+    expect(isSessionExecutionNodeDetailRunning(monitorNode, true)).toBe(false)
+  })
+
   test('Given Collaboration 缺少 Renderer 流状态 When 委派生命周期仍在运行 Then 非终止 Worker 状态保持执行中', () => {
     const busyNode = buildSessionExecutionNodes({
       sessionId: PARENT_ID,

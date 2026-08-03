@@ -45,7 +45,10 @@ import {
   agentDiffRefreshVersionAtom,
   askUserDraftsAtom,
   agentRuntimeExecutionGraphsAtom,
+  agentRuntimePlanLifecycleAtom,
+  activateAgentRuntimePlanTodoAtom,
   beginAgentFloatingPanelTurnAtom,
+  interruptAgentRuntimePlanAtom,
   mergeAgentRuntimeExecutionGraphAtom,
 } from '@/atoms/agent-atoms'
 import {
@@ -77,6 +80,11 @@ import {
 } from '@/lib/agent-completion-presence'
 import { getPlanModeChangeFromToolName, updatePlanModeSessionSet } from '@/lib/agent-plan-mode'
 import { upsertAgentLiveMessage } from '@/lib/agent-live-message'
+import {
+  getExplicitRuntimePlanActivationTodoId,
+  runtimePlanStatesFromPersistedStore,
+  runtimePlanStatesToPersistedStore,
+} from '@/lib/runtime-plan-lifecycle'
 
 /** 用于记录成功写入文件的工具集合。 */
 const WRITE_TOOLS = new Set([
@@ -414,6 +422,49 @@ export function useGlobalAgentListeners(): void {
     const pendingWriteTools = new Map<string, { path: string; sessionId: string }>()
     /** 正在执行的 Shell 工具：toolUseId → sessionId（完成后刷新改动统计和 Diff）。 */
     const pendingShellTools = new Map<string, string>()
+    let runtimePlanStoreLoaded = false
+    let runtimePlanSaveTimer: ReturnType<typeof setTimeout> | undefined
+    const persistRuntimePlanStore = (): void => {
+      runtimePlanSaveTimer = undefined
+      const persisted = runtimePlanStatesToPersistedStore(
+        store.get(agentRuntimePlanLifecycleAtom),
+        Date.now(),
+      )
+      void window.electronAPI.saveAgentRuntimePlanStore(persisted)
+        .catch((error) => {
+          console.error('[Agent计划] 保存生命周期历史失败:', error)
+        })
+    }
+
+    void window.electronAPI.getAgentRuntimePlanStore()
+      .then((persisted) => {
+        const loaded = runtimePlanStatesFromPersistedStore(
+          persisted,
+          Date.now(),
+        )
+        // 先开放保存，让本次合并顺便持久化清理后的过期状态和加载期间的新状态。
+        runtimePlanStoreLoaded = true
+        store.set(agentRuntimePlanLifecycleAtom, (current) => {
+          const merged = new Map(loaded)
+          for (const [sessionId, state] of current) {
+            merged.set(sessionId, state)
+          }
+          return merged
+        })
+      })
+      .catch((error) => {
+        runtimePlanStoreLoaded = true
+        console.error('[Agent计划] 加载生命周期历史失败:', error)
+      })
+
+    const unsubscribeRuntimePlanStore = store.sub(
+      agentRuntimePlanLifecycleAtom,
+      () => {
+        if (!runtimePlanStoreLoaded) return
+        if (runtimePlanSaveTimer) clearTimeout(runtimePlanSaveTimer)
+        runtimePlanSaveTimer = setTimeout(persistRuntimePlanStore, 250)
+      },
+    )
 
     const bumpDiffRefresh = (sessionId: string): void => {
       store.set(agentDiffRefreshVersionAtom, (prev) => {
@@ -819,6 +870,17 @@ export function useGlobalAgentListeners(): void {
             pendingShellTools.set(event.toolUseId, sessionId)
           }
 
+          if (event.type === 'tool_start' && event.toolName === 'TaskUpdate') {
+            const input = event.input as Record<string, unknown> | undefined
+            const todoId = getExplicitRuntimePlanActivationTodoId(input)
+            if (todoId) {
+              store.set(activateAgentRuntimePlanTodoAtom, {
+                sessionId,
+                todoId,
+              })
+            }
+          }
+
           // 处理后台任务事件
           if (event.type === 'task_backgrounded') {
             store.set(backgroundTasksAtomFamily(sessionId), (prev) => {
@@ -1128,6 +1190,15 @@ export function useGlobalAgentListeners(): void {
           })
         }
 
+        const runtimePlanTurnEpoch = store.get(agentRuntimePlanLifecycleAtom)
+          .get(data.sessionId)?.turnEpoch
+        const isCurrentPlanCompletion = runtimePlanTurnEpoch == null
+          ? isCurrentCompletion
+          : data.startedAt === runtimePlanTurnEpoch
+        if (!backgroundTasksPending && isCurrentPlanCompletion) {
+          store.set(interruptAgentRuntimePlanAtom, data.sessionId)
+        }
+
         // 非正常结束时显示截断提示
         if (data.resultSubtype && data.resultSubtype !== 'success' && !data.stoppedByUser) {
           const messages: Record<string, string> = {
@@ -1347,6 +1418,11 @@ export function useGlobalAgentListeners(): void {
       cleanupError()
       cleanupTitleUpdated()
       cleanupCatalogSynced()
+      unsubscribeRuntimePlanStore()
+      if (runtimePlanSaveTimer) {
+        clearTimeout(runtimePlanSaveTimer)
+        persistRuntimePlanStore()
+      }
       clearInterval(pruneTimer)
       window.removeEventListener('focus', onWindowFocus)
     }

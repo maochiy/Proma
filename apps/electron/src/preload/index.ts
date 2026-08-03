@@ -511,6 +511,13 @@ export interface ElectronAPI {
     sessionId: string,
   ) => Promise<import('@proma/shared').AgentRuntimeExecutionGraph>
 
+  getAgentRuntimePlanStore: (
+  ) => Promise<import('@proma/shared').AgentRuntimePlanPersistedStore>
+
+  saveAgentRuntimePlanStore: (
+    store: import('@proma/shared').AgentRuntimePlanPersistedStore,
+  ) => Promise<void>
+
   getAgentTurnChangeStats: (
     sessionId: string,
   ) => Promise<import('@proma/shared').AgentTurnChangeStats | null>
@@ -1651,6 +1658,17 @@ const electronAPI: ElectronAPI = {
     return ipcRenderer.invoke(
       AGENT_IPC_CHANNELS.GET_RUNTIME_EXECUTION_GRAPH,
       sessionId,
+    )
+  },
+
+  getAgentRuntimePlanStore: () => {
+    return ipcRenderer.invoke(AGENT_IPC_CHANNELS.GET_RUNTIME_PLAN_STORE)
+  },
+
+  saveAgentRuntimePlanStore: (store) => {
+    return ipcRenderer.invoke(
+      AGENT_IPC_CHANNELS.SAVE_RUNTIME_PLAN_STORE,
+      store,
     )
   },
 

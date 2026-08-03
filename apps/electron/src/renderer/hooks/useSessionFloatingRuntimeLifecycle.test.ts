@@ -50,7 +50,7 @@ describe('会话悬浮面板运行时生命周期', () => {
     })
   })
 
-  test('Given 上一轮计划仍有未完成项 When 新一轮开始 Then 继续显示原计划', () => {
+  test('Given 上一轮计划仍有未完成项 When 新一轮开始 Then 兼容签名不误判为已完成计划', () => {
     const todos: AgentRuntimeTodoItem[] = [
       { id: '1', content: '已完成', status: 'completed' },
       { id: '2', content: '继续处理', status: 'in_progress' },

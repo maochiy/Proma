@@ -185,6 +185,11 @@ export interface AgentRuntimeExecutionNode {
   model?: string
   agentType?: string
   teamName?: string
+  /**
+   * 节点是否需要阻塞父 Turn 完成。
+   * detach 表示长期监控任务可继续存活，但父模型应回到等待用户状态。
+   */
+  turnCompletionPolicy?: 'wait' | 'detach'
 }
 
 /** CCB 原生 Todo/Task 状态。 */
@@ -196,6 +201,39 @@ export interface AgentRuntimeTodoItem {
   owner?: string
   blocks?: string[]
   blockedBy?: string[]
+}
+
+export type AgentRuntimePlanLifecycleStatus =
+  | 'active'
+  | 'interrupted'
+  | 'archived'
+  | 'completed'
+
+/** Proma 对 CCB 计划的持久化生命周期投影。 */
+export interface AgentRuntimePlanRecord {
+  id: string
+  todos: AgentRuntimeTodoItem[]
+  status: AgentRuntimePlanLifecycleStatus
+  visible: boolean
+  createdAt: number
+  updatedAt: number
+  lastActivatedTurnEpoch?: number
+  interruptedAt?: number
+  archivedAt?: number
+  completedAt?: number
+  expiresAt?: number
+}
+
+export interface AgentRuntimePlanSessionState {
+  current?: AgentRuntimePlanRecord
+  archived: AgentRuntimePlanRecord[]
+  turnEpoch?: number
+}
+
+/** 保存到 ~/.proma/agent-runtime-plans.json 的可序列化结构。 */
+export interface AgentRuntimePlanPersistedStore {
+  sessions: Record<string, AgentRuntimePlanSessionState>
+  updatedAt: number
 }
 
 /** 当前 CCB Session 的实时执行图。 */
@@ -1730,6 +1768,10 @@ export const AGENT_IPC_CHANNELS = {
   UPDATE_NATIVE_MODEL_CONFIG: 'agent:update-native-model-config',
   /** 读取当前 CCB Session 的 Subagent/Teams/Workflow/Todo 执行图 */
   GET_RUNTIME_EXECUTION_GRAPH: 'agent:get-runtime-execution-graph',
+  /** 读取 Proma 计划生命周期历史 */
+  GET_RUNTIME_PLAN_STORE: 'agent:get-runtime-plan-store',
+  /** 保存 Proma 计划生命周期历史 */
+  SAVE_RUNTIME_PLAN_STORE: 'agent:save-runtime-plan-store',
   /** 读取当前 Agent 本轮相对执行前基线产生的文件改动统计 */
   GET_TURN_CHANGE_STATS: 'agent:get-turn-change-stats',
   /** 读取 CCB 子代理节点 Transcript */

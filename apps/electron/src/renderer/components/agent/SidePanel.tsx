@@ -41,6 +41,7 @@ import {
   fileBrowserAutoRevealAtom,
   agentSelectedWorktreeAtom,
   agentRuntimeExecutionGraphsAtom,
+  agentRuntimePlanLifecycleAtom,
   agentExecutionNodeTabSnapshotsAtom,
   agentSidePanelRuntimeHistoryAtom,
   agentSessionsAtom,
@@ -57,6 +58,7 @@ import { previewFileMapAtom } from '@/atoms/preview-atoms'
 import { useOpenPreview } from '@/components/diff/preview-opener'
 import { detectIsWindows } from '@/lib/platform'
 import { getAvailableAgentSidePanelTabs } from '@/lib/agent-side-panel-tabs'
+import { getVisibleRuntimePlanTodos } from '@/lib/runtime-plan-lifecycle'
 import {
   buildSessionExecutionNodes,
   isSessionExecutionNodeDetailRunning,
@@ -440,6 +442,7 @@ export function SidePanel({
   const setSideChatMap = useSetAtom(agentSideChatMapAtom)
   const sideChatConversationId = sideChatMap.get(sessionId) ?? null
   const executionGraph = useAtomValue(agentRuntimeExecutionGraphsAtom).get(sessionId)
+  const runtimePlanLifecycle = useAtomValue(agentRuntimePlanLifecycleAtom).get(sessionId)
   const runtimeHistory = useAtomValue(agentSidePanelRuntimeHistoryAtom).get(sessionId)
   const executionNodeTabSnapshots = useAtomValue(agentExecutionNodeTabSnapshotsAtom)
     .get(sessionId)
@@ -450,18 +453,22 @@ export function SidePanel({
       (runtimeHistory?.nodes ?? []).map((node) => [node.id, node]),
     )
     for (const node of executionGraph?.nodes ?? []) nodes.set(node.id, node)
+    const fallbackTodos = executionGraph?.todos.length
+      ? executionGraph.todos
+      : (runtimeHistory?.todos ?? [])
     return {
       runtimeSessionId: executionGraph?.runtimeSessionId,
       nodes: Array.from(nodes.values()),
-      todos: executionGraph?.todos.length
-        ? executionGraph.todos
-        : (runtimeHistory?.todos ?? []),
+      todos: getVisibleRuntimePlanTodos(
+        runtimePlanLifecycle,
+        fallbackTodos,
+      ),
       updatedAt: Math.max(
         executionGraph?.updatedAt ?? 0,
         runtimeHistory?.updatedAt ?? 0,
       ),
     }
-  }, [executionGraph, runtimeHistory])
+  }, [executionGraph, runtimeHistory, runtimePlanLifecycle])
   const executionNodes = React.useMemo(
     () => buildSessionExecutionNodes({
       sessionId,

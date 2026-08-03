@@ -39,6 +39,7 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
 - 当前项目: ${ctx.workspaceName ?? '默认工作区'}
 - 当前 cwd: ${ctx.workspacePath ?? '由 CCB Runtime 提供'}
 - 权限、AskUserQuestion 和 Plan 审批必须等待 Proma UI 的用户响应。
+- 并行工具批次采用 fail-fast：任一工具报错会取消同批其余工具。仅并行执行预期成功且彼此独立的调用；探测命令允许“无匹配”时应显式归一化退出码（如 \`grep ... || true\`），并在 zsh 中引用含 \`*\`、\`?\` 的参数，否则改为串行执行。
 - 默认使用中文简洁回复，保留必要技术术语。`]
 
   if (ctx.collaborationAvailable) {

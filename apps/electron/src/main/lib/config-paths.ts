@@ -236,6 +236,11 @@ export function getAgentSessionsIndexPath(): string {
   return join(getConfigDir(), 'agent-sessions.json')
 }
 
+/** Proma 计划生命周期历史（当前、待继续、归档与过期时间）。 */
+export function getAgentRuntimePlansPath(): string {
+  return join(getConfigDir(), 'agent-runtime-plans.json')
+}
+
 /**
  * 获取 Agent 会话消息目录路径
  *

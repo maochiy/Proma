@@ -12,26 +12,27 @@ import { cn } from '@/lib/utils'
 interface RuntimePlanListProps {
   todos: AgentRuntimeTodoItem[]
   running: boolean
+  planActive?: boolean
   compact?: boolean
   className?: string
 }
 
 export function runtimeTodoStatusLabel(
   todo: AgentRuntimeTodoItem,
-  running: boolean,
+  activelyRunning: boolean,
 ): string {
   if (todo.status === 'completed') return '执行完成'
   if (todo.status === 'blocked') return '已阻塞'
-  if (todo.status === 'in_progress') return running ? '执行中' : '已停止'
+  if (todo.status === 'in_progress') return activelyRunning ? '执行中' : '待继续'
   return '未执行'
 }
 
 export function RuntimeTodoStatusIcon({
   todo,
-  running,
+  activelyRunning,
 }: {
   todo: AgentRuntimeTodoItem
-  running: boolean
+  activelyRunning: boolean
 }): React.ReactElement {
   if (todo.status === 'completed') {
     return <CheckCircle2 className="size-3.5 text-emerald-500" />
@@ -39,7 +40,7 @@ export function RuntimeTodoStatusIcon({
   if (todo.status === 'blocked') {
     return <CircleAlert className="size-3.5 text-amber-500" />
   }
-  if (todo.status === 'in_progress' && running) {
+  if (todo.status === 'in_progress' && activelyRunning) {
     return <Loader2 className="size-3.5 animate-spin text-sky-500" />
   }
   if (todo.status === 'in_progress') {
@@ -52,9 +53,11 @@ export function RuntimeTodoStatusIcon({
 export function RuntimePlanList({
   todos,
   running,
+  planActive = true,
   compact = false,
   className,
 }: RuntimePlanListProps): React.ReactElement {
+  const activelyRunning = running && planActive
   return (
     <div className={cn('space-y-0.5', className)}>
       {todos.map((todo) => (
@@ -64,7 +67,10 @@ export function RuntimePlanList({
           data-todo-status={todo.status}
         >
           <span className="mt-0.5 shrink-0">
-            <RuntimeTodoStatusIcon todo={todo} running={running} />
+            <RuntimeTodoStatusIcon
+              todo={todo}
+              activelyRunning={activelyRunning}
+            />
           </span>
           <span className="min-w-0 flex-1">
             <span
@@ -93,12 +99,12 @@ export function RuntimePlanList({
           <span
             className={cn(
               'shrink-0 pt-0.5 text-[10px] text-muted-foreground',
-              todo.status === 'in_progress' && running && 'text-sky-500',
+              todo.status === 'in_progress' && activelyRunning && 'text-sky-500',
               todo.status === 'completed' && 'text-emerald-500',
               todo.status === 'blocked' && 'text-amber-500',
             )}
           >
-            {runtimeTodoStatusLabel(todo, running)}
+            {runtimeTodoStatusLabel(todo, activelyRunning)}
           </span>
         </div>
       ))}

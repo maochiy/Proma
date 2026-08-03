@@ -2,11 +2,13 @@ import * as React from 'react'
 import { useAtomValue } from 'jotai'
 import {
   agentRuntimeExecutionGraphsAtom,
+  agentRuntimePlanLifecycleAtom,
   agentSessionStreamingStateAtomFamily,
   agentSidePanelRuntimeHistoryAtom,
 } from '@/atoms/agent-atoms'
 import { sortRuntimeTodos } from './RuntimeTodoHoverProgress'
 import { RuntimePlanList } from './RuntimePlanList'
+import { getVisibleRuntimePlanTodos } from '@/lib/runtime-plan-lifecycle'
 
 export function RuntimePlanPanel({
   sessionId,
@@ -15,11 +17,16 @@ export function RuntimePlanPanel({
 }): React.ReactElement {
   const graph = useAtomValue(agentRuntimeExecutionGraphsAtom).get(sessionId)
   const history = useAtomValue(agentSidePanelRuntimeHistoryAtom).get(sessionId)
+  const planLifecycle = useAtomValue(agentRuntimePlanLifecycleAtom).get(sessionId)
   const running = useAtomValue(agentSessionStreamingStateAtomFamily(sessionId))
     ?.running === true
-  const sourceTodos = graph?.todos.length
+  const fallbackTodos = graph?.todos.length
     ? graph.todos
     : (history?.todos ?? [])
+  const sourceTodos = getVisibleRuntimePlanTodos(
+    planLifecycle,
+    fallbackTodos,
+  )
   const todos = React.useMemo(
     () => sortRuntimeTodos(sourceTodos),
     [sourceTodos],
@@ -31,7 +38,14 @@ export function RuntimePlanPanel({
       data-runtime-plan-panel
     >
       {todos.length > 0 ? (
-        <RuntimePlanList todos={todos} running={running} />
+        <RuntimePlanList
+          todos={todos}
+          running={running}
+          planActive={
+            planLifecycle == null
+            || planLifecycle.current?.status === 'active'
+          }
+        />
       ) : (
         <div className="flex h-full items-center justify-center px-6 text-center text-xs text-muted-foreground">
           当前没有计划数据。

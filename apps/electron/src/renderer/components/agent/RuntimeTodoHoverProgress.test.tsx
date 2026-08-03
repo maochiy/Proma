@@ -16,6 +16,7 @@ import {
 import {
   getRuntimePlanVisibleWindowStartIndex,
   selectRuntimePlanVisibleItems,
+  shouldAutoScrollRuntimePlanWindow,
 } from './runtime-plan-visible-window'
 
 const SESSION_ID = 'runtime-plan-card-test'
@@ -559,6 +560,31 @@ describe('RuntimeTodoHoverProgress 计划进度卡片', () => {
     expect(todos.map((todo) => todo.id)).toEqual(['1', '2', '3', '4', '5', '6'])
   })
 
+  test('Given 用户已经手动滚动计划面板 When 执行图刷新但可见窗口未变化 Then 不重新抢回滚动位置', () => {
+    const currentWindow = {
+      visible: true,
+      windowed: true,
+      startIndex: 2,
+    }
+
+    expect(shouldAutoScrollRuntimePlanWindow(null, currentWindow)).toBe(true)
+    expect(
+      shouldAutoScrollRuntimePlanWindow(currentWindow, { ...currentWindow }),
+    ).toBe(false)
+    expect(
+      shouldAutoScrollRuntimePlanWindow(currentWindow, {
+        ...currentWindow,
+        startIndex: 3,
+      }),
+    ).toBe(true)
+    expect(
+      shouldAutoScrollRuntimePlanWindow(
+        { ...currentWindow, visible: false },
+        currentWindow,
+      ),
+    ).toBe(true)
+  })
+
   test('Given 本轮有多文件改动 When 悬停改动统计 Then 显示文件名与各自增删行数', () => {
     const html = renderRuntimeTodoHoverProgress({
       startedAt: 200,
@@ -632,6 +658,9 @@ describe('RuntimeTodoHoverProgress 计划进度卡片', () => {
     expect(shouldShowRuntimeTodoProgress(todos, {
       running: false,
     })).toBe(false)
+    expect(shouldShowRuntimeTodoProgress(todos, {
+      running: false,
+    }, true)).toBe(true)
     expect(shouldShowRuntimeTodoProgress(todos, {
       running: true,
       isCompacting: true,

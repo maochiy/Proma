@@ -39,6 +39,14 @@ function segmentText(text: string): string[] {
   return Array.from(segmenter.segment(text)).map((s) => s.segment)
 }
 
+/** 仅在存在待渲染字符且当前没有待执行帧时启动渲染。 */
+export function shouldScheduleSmoothStreamFrame(
+  pendingCharacterCount: number,
+  hasScheduledFrame: boolean,
+): boolean {
+  return pendingCharacterCount > 0 && !hasScheduledFrame
+}
+
 /**
  * 流式文本平滑渲染 Hook
  *
@@ -78,53 +86,10 @@ export function useSmoothStream({
   // 同步 streamDone 状态
   streamDoneRef.current = !isStreaming
 
-  // 检测内容变化，计算 delta 并入队
-  useEffect(() => {
-    const prevContent = prevContentRef.current
-    const newContent = content
-
-    if (newContent === prevContent) return
-
-    // 检测是否为追加（正常流式）
-    const isAppend = newContent.startsWith(prevContent)
-
-    if (isAppend) {
-      // 增量部分拆分为字符后入队
-      const delta = newContent.slice(prevContent.length)
-      if (delta) {
-        const chars = segmentText(delta)
-        chunkQueueRef.current.push(...chars)
-      }
-    } else {
-      // 内容重置（用户重新发送等场景）
-      chunkQueueRef.current = []
-      displayedRef.current = newContent
-      setDisplayedContent(newContent)
-    }
-
-    prevContentRef.current = newContent
-  }, [content])
-
-  // 非流式状态时，确保最终内容一致（安全网，不立即 flush 队列）
-  useEffect(() => {
-    if (!isStreaming) {
-      // 如果 rAF 循环仍在运行，让它自然排空队列
-      if (rafRef.current) return
-
-      // rAF 已停止：同步剩余内容
-      if (chunkQueueRef.current.length > 0) {
-        displayedRef.current += chunkQueueRef.current.join('')
-        chunkQueueRef.current = []
-      }
-      if (displayedRef.current !== content) {
-        displayedRef.current = content
-      }
-      setDisplayedContent(displayedRef.current)
-    }
-  }, [isStreaming, content])
-
   // 渲染循环
   const renderLoop = useCallback((currentTime: number) => {
+    // 当前帧已经开始执行，不再视为待调度帧。
+    rafRef.current = null
     const queue = chunkQueueRef.current
 
     // 队列为空
@@ -135,11 +100,8 @@ export function useSmoothStream({
           displayedRef.current = prevContentRef.current
           setDisplayedContent(displayedRef.current)
         }
-        rafRef.current = null
-        return
       }
-      // 流未结束但队列空 → 等下一帧
-      rafRef.current = requestAnimationFrame(renderLoop)
+      // 无论流是否结束，队列为空时都停止；新内容入队后会重新唤醒。
       return
     }
 
@@ -160,32 +122,86 @@ export function useSmoothStream({
     displayedRef.current += chars.join('')
     setDisplayedContent(displayedRef.current)
 
-    // 队列未空或流未结束 → 继续
-    if (queue.length > 0 || !streamDoneRef.current) {
+    // 仅在仍有待渲染字符时继续，避免流式等待期间空转。
+    if (queue.length > 0) {
       rafRef.current = requestAnimationFrame(renderLoop)
     } else {
-      // 队列刚排空 + 流已结束 → 同步最终内容并停止
-      if (displayedRef.current !== prevContentRef.current) {
+      // 队列刚排空且流已结束 → 同步最终内容并停止
+      if (streamDoneRef.current && displayedRef.current !== prevContentRef.current) {
         displayedRef.current = prevContentRef.current
         setDisplayedContent(displayedRef.current)
       }
-      rafRef.current = null
     }
   }, [minDelay])
 
-  // 启动/重启渲染循环（流结束后也继续运行直到队列排空）
+  const scheduleRenderLoop = useCallback(() => {
+    if (!shouldScheduleSmoothStreamFrame(
+      chunkQueueRef.current.length,
+      rafRef.current !== null,
+    )) {
+      return
+    }
+    rafRef.current = requestAnimationFrame(renderLoop)
+  }, [renderLoop])
+
+  // 检测内容变化，计算 delta 并入队
   useEffect(() => {
-    if ((isStreaming || chunkQueueRef.current.length > 0) && !rafRef.current) {
-      rafRef.current = requestAnimationFrame(renderLoop)
+    const prevContent = prevContentRef.current
+    const newContent = content
+
+    if (newContent === prevContent) return
+
+    // 检测是否为追加（正常流式）
+    const isAppend = newContent.startsWith(prevContent)
+
+    if (isAppend) {
+      // 增量部分拆分为字符后入队，并在空闲时唤醒渲染循环。
+      const delta = newContent.slice(prevContent.length)
+      if (delta) {
+        const chars = segmentText(delta)
+        chunkQueueRef.current.push(...chars)
+        scheduleRenderLoop()
+      }
+    } else {
+      // 内容重置（用户重新发送等场景）
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current)
+        rafRef.current = null
+      }
+      chunkQueueRef.current = []
+      displayedRef.current = newContent
+      setDisplayedContent(newContent)
     }
 
+    prevContentRef.current = newContent
+  }, [content, scheduleRenderLoop])
+
+  // 非流式状态时，确保最终内容一致（安全网，不立即 flush 队列）
+  useEffect(() => {
+    if (isStreaming) return
+
+    // 如果还有排队内容，确保渲染循环正在排空。
+    if (chunkQueueRef.current.length > 0) {
+      scheduleRenderLoop()
+      return
+    }
+
+    if (displayedRef.current !== content) {
+      displayedRef.current = content
+      setDisplayedContent(displayedRef.current)
+    }
+  }, [isStreaming, content, scheduleRenderLoop])
+
+  // minDelay 变化时重新调度待渲染内容，并在卸载时清理。
+  useEffect(() => {
+    scheduleRenderLoop()
     return () => {
-      if (rafRef.current) {
+      if (rafRef.current !== null) {
         cancelAnimationFrame(rafRef.current)
         rafRef.current = null
       }
     }
-  }, [isStreaming, renderLoop])
+  }, [scheduleRenderLoop])
 
   return { displayedContent }
 }

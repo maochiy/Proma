@@ -23,10 +23,12 @@ interface RuntimeExecutionNodeListProps {
 export function runtimeExecutionNodeStatusLabel(
   status: AgentRuntimeExecutionNode['status'],
   activelyRunning: boolean,
+  detached: boolean = false,
 ): string {
   if (status === 'completed') return '执行完成'
   if (status === 'failed') return '执行失败'
   if (status === 'stopped') return '已停止'
+  if (status === 'running' && detached) return '后台监控'
   if (status === 'running') return activelyRunning ? '执行中' : '未执行'
   return '未执行'
 }
@@ -34,9 +36,11 @@ export function runtimeExecutionNodeStatusLabel(
 function RuntimeExecutionNodeStatusIcon({
   status,
   activelyRunning,
+  detached,
 }: {
   status: AgentRuntimeExecutionNode['status']
   activelyRunning: boolean
+  detached: boolean
 }): React.ReactElement {
   if (status === 'running' && activelyRunning) {
     return <Loader2 className="size-3.5 animate-spin text-sky-500" />
@@ -46,6 +50,9 @@ function RuntimeExecutionNodeStatusIcon({
   }
   if (status === 'failed') {
     return <XCircle className="size-3.5 text-destructive" />
+  }
+  if (status === 'running' && detached) {
+    return <Circle className="size-3.5 text-sky-500" />
   }
   if (status === 'stopped' || status === 'running') {
     return <XCircle className="size-3.5 text-muted-foreground" />
@@ -75,6 +82,7 @@ export function RuntimeExecutionNodeList({
     <div className={cn('space-y-0.5', className)}>
       {nodes.map((node) => {
         const activelyRunning = isNodeRunning(node)
+        const detached = node.turnCompletionPolicy === 'detach'
         return (
           <button
             key={node.id}
@@ -93,6 +101,7 @@ export function RuntimeExecutionNodeList({
               <RuntimeExecutionNodeStatusIcon
                 status={node.status}
                 activelyRunning={activelyRunning}
+                detached={detached}
               />
               <span
                 className={cn(
@@ -102,7 +111,11 @@ export function RuntimeExecutionNodeList({
                   node.status === 'failed' && 'text-destructive',
                 )}
               >
-                {runtimeExecutionNodeStatusLabel(node.status, activelyRunning)}
+                {runtimeExecutionNodeStatusLabel(
+                  node.status,
+                  activelyRunning,
+                  detached,
+                )}
               </span>
             </span>
           </button>
