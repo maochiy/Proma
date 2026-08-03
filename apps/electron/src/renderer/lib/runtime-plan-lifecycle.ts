@@ -233,6 +233,15 @@ export function interruptRuntimePlan(
 ): AgentRuntimePlanSessionState | undefined {
   const current = state?.current
   if (!state || !current || allTodosCompleted(current.todos)) return state
+  // 只有当前轮真正激活过的计划，结束时才进入“待继续”。
+  // 上一轮遗留且本轮未续做的隐藏计划不能在完成事件到达后重新出现。
+  if (
+    state.turnEpoch == null
+    || current.status !== 'active'
+    || current.lastActivatedTurnEpoch !== state.turnEpoch
+  ) {
+    return state
+  }
   return {
     ...state,
     current: {
@@ -256,13 +265,21 @@ export function pruneExpiredRuntimePlans(
     const archived = state.archived.filter(
       (record) => record.expiresAt == null || record.expiresAt > now,
     )
+    const normalizedCurrent = (
+      state.current?.status === 'interrupted'
+      && state.current.visible
+      && state.turnEpoch != null
+      && state.current.lastActivatedTurnEpoch !== state.turnEpoch
+    )
+      ? { ...state.current, visible: false }
+      : state.current
     const current = (
-      state.current?.expiresAt != null
-      && state.current.expiresAt <= now
-      && state.current.status !== 'active'
+      normalizedCurrent?.expiresAt != null
+      && normalizedCurrent.expiresAt <= now
+      && normalizedCurrent.status !== 'active'
     )
       ? undefined
-      : state.current
+      : normalizedCurrent
     if (current || archived.length > 0) {
       next.set(sessionId, { ...state, current, archived })
     }

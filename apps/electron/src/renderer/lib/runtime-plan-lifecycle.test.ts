@@ -35,7 +35,11 @@ describe('运行时计划生命周期', () => {
   })
 
   test('Given 上一轮计划被中断 When 新一轮开始且模型未明确续做 Then 当前计划隐藏但数据保留', () => {
-    const created = applyRuntimePlanGraph(undefined, TODOS, 100)!
+    const created = applyRuntimePlanGraph(
+      { archived: [], turnEpoch: 100 },
+      TODOS,
+      100,
+    )!
     const interrupted = interruptRuntimePlan(created, 200)!
     expect(interrupted.current?.visible).toBe(true)
     expect(interrupted.current?.status).toBe('interrupted')
@@ -50,7 +54,11 @@ describe('运行时计划生命周期', () => {
   test('Given 旧计划已在下一轮隐藏 When 模型明确 TaskUpdate 同一任务 Then 恢复显示继续执行', () => {
     const hidden = beginRuntimePlanTurn(
       interruptRuntimePlan(
-        applyRuntimePlanGraph(undefined, TODOS, 100),
+        applyRuntimePlanGraph(
+          { archived: [], turnEpoch: 100 },
+          TODOS,
+          100,
+        ),
         200,
       ),
       300,
@@ -66,7 +74,11 @@ describe('运行时计划生命周期', () => {
   test('Given 隐藏计划原任务已是 in_progress When 执行图只更新负责人 Then 不误恢复', () => {
     const hidden = beginRuntimePlanTurn(
       interruptRuntimePlan(
-        applyRuntimePlanGraph(undefined, TODOS, 100),
+        applyRuntimePlanGraph(
+          { archived: [], turnEpoch: 100 },
+          TODOS,
+          100,
+        ),
         200,
       ),
       300,
@@ -87,7 +99,11 @@ describe('运行时计划生命周期', () => {
   test('Given 旧计划处于待继续 When 本轮创建新计划 Then 旧计划归档且新计划成为当前计划', () => {
     const oldPlan = beginRuntimePlanTurn(
       interruptRuntimePlan(
-        applyRuntimePlanGraph(undefined, TODOS, 100),
+        applyRuntimePlanGraph(
+          { archived: [], turnEpoch: 100 },
+          TODOS,
+          100,
+        ),
         200,
       ),
       300,
@@ -167,6 +183,49 @@ describe('运行时计划生命周期', () => {
     expect(replayed.current).toBeUndefined()
     expect(replayed.archived).toHaveLength(1)
     expect(replayed.archived[0]?.status).toBe('completed')
+  })
+
+  test('Given 旧计划在本轮未明确续做 When 本轮结束 Then 仍保持隐藏而不显示待继续', () => {
+    const previousTurn = interruptRuntimePlan(
+      applyRuntimePlanGraph(
+        { archived: [], turnEpoch: 100 },
+        TODOS,
+        100,
+      ),
+      150,
+    )!
+    const hidden = beginRuntimePlanTurn(previousTurn, 200, 200)
+
+    const completedTurn = interruptRuntimePlan(hidden, 250)!
+
+    expect(completedTurn.current?.status).toBe('interrupted')
+    expect(completedTurn.current?.visible).toBe(false)
+    expect(completedTurn.current?.lastActivatedTurnEpoch).toBe(100)
+  })
+
+  test('Given 持久化数据误将未续做旧计划标为可见 When 加载清理 Then 自动恢复隐藏', () => {
+    const state: AgentRuntimePlanSessionState = {
+      current: {
+        id: 'old-plan',
+        todos: TODOS,
+        status: 'interrupted',
+        visible: true,
+        createdAt: 1,
+        updatedAt: 2,
+        lastActivatedTurnEpoch: 100,
+        interruptedAt: 2,
+        expiresAt: 3_000,
+      },
+      archived: [],
+      turnEpoch: 200,
+    }
+
+    const pruned = pruneExpiredRuntimePlans(
+      new Map([['session', state]]),
+      10,
+    )
+
+    expect(pruned.get('session')?.current?.visible).toBe(false)
   })
 
   test('Given 归档计划已经超过保留期限 When 清理历史 Then 删除过期记录', () => {
