@@ -1,7 +1,7 @@
 import * as React from 'react'
 import { useAtomValue } from 'jotai'
 import {
-  agentRuntimeExecutionGraphsAtom,
+  agentRuntimeExecutionGraphAtomFamily,
   agentRuntimePlanLifecycleAtom,
   agentSessionStreamingStateAtomFamily,
   agentSidePanelRuntimeHistoryAtom,
@@ -15,7 +15,7 @@ export function RuntimePlanPanel({
 }: {
   sessionId: string
 }): React.ReactElement {
-  const graph = useAtomValue(agentRuntimeExecutionGraphsAtom).get(sessionId)
+  const graph = useAtomValue(agentRuntimeExecutionGraphAtomFamily(sessionId))
   const history = useAtomValue(agentSidePanelRuntimeHistoryAtom).get(sessionId)
   const planLifecycle = useAtomValue(agentRuntimePlanLifecycleAtom).get(sessionId)
   const running = useAtomValue(agentSessionStreamingStateAtomFamily(sessionId))

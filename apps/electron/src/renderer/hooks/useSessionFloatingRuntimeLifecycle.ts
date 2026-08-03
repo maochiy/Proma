@@ -3,7 +3,7 @@ import { useAtomValue, useSetAtom } from 'jotai'
 import type { AgentRuntimeExecutionNode } from '@proma/shared'
 import {
   agentFloatingPanelExecutionNodeStatesAtom,
-  agentRuntimeExecutionGraphsAtom,
+  agentRuntimeExecutionGraphAtomFamily,
   agentSessionsAtom,
   agentSessionStreamingStateAtomFamily,
   beginAgentFloatingPanelTurnAtom,
@@ -26,8 +26,7 @@ const ACTIVE_EXECUTION_NODE_STATUSES = new Set<
  * - 执行节点：仅在节点自身明确完成/失败/停止后短暂展示终态，再从悬浮面板关闭。
  */
 export function useSessionFloatingRuntimeLifecycle(sessionId: string): void {
-  const graphs = useAtomValue(agentRuntimeExecutionGraphsAtom)
-  const graph = graphs.get(sessionId)
+  const graph = useAtomValue(agentRuntimeExecutionGraphAtomFamily(sessionId))
   const sessions = useAtomValue(agentSessionsAtom)
   const streamState = useAtomValue(agentSessionStreamingStateAtomFamily(sessionId))
   const beginTurn = useSetAtom(beginAgentFloatingPanelTurnAtom)

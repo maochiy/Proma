@@ -349,6 +349,230 @@ export const agentRuntimeExecutionGraphsAtom = atom<
   Map<string, AgentRuntimeExecutionGraph>
 >(new Map())
 
+/**
+ * 单个 session 的 runtime execution graph 派生 atomFamily — 按 sessionId 切片订阅。
+ *
+ * 超大会话中可能有数千个 ToolUseBlock；若直接订阅全局 Map，任意 session 的图更新
+ * 都会触发全部 tool 组件重渲染。本 family 让订阅者只在本 session 的 graph 引用变化时
+ * 重渲染。
+ */
+export const agentRuntimeExecutionGraphAtomFamily = atomFamily((sessionId: string) =>
+  atom((get) => get(agentRuntimeExecutionGraphsAtom).get(sessionId)),
+)
+
+/** 浅比较两个执行节点是否等价（用于 merge 短路与引用稳定）。 */
+export function areAgentRuntimeExecutionNodesEqual(
+  left: AgentRuntimeExecutionNode,
+  right: AgentRuntimeExecutionNode,
+): boolean {
+  return (
+    left.id === right.id
+    && left.parentId === right.parentId
+    && left.kind === right.kind
+    && left.name === right.name
+    && left.status === right.status
+    && left.description === right.description
+    && left.startedAt === right.startedAt
+    && left.completedAt === right.completedAt
+    && left.toolUseId === right.toolUseId
+    && left.transcriptAvailable === right.transcriptAvailable
+    && left.summary === right.summary
+    && left.model === right.model
+    && left.agentType === right.agentType
+    && left.teamName === right.teamName
+    && left.turnCompletionPolicy === right.turnCompletionPolicy
+  )
+}
+
+/** 浅比较两个 Todo 项是否等价。 */
+function areAgentRuntimeTodoItemsEqual(
+  left: AgentRuntimeTodoItem,
+  right: AgentRuntimeTodoItem,
+): boolean {
+  if (
+    left.id !== right.id
+    || left.content !== right.content
+    || left.status !== right.status
+    || left.activeForm !== right.activeForm
+    || left.owner !== right.owner
+  ) {
+    return false
+  }
+  const leftBlocks = left.blocks ?? []
+  const rightBlocks = right.blocks ?? []
+  if (leftBlocks.length !== rightBlocks.length) return false
+  for (let i = 0; i < leftBlocks.length; i += 1) {
+    if (leftBlocks[i] !== rightBlocks[i]) return false
+  }
+  const leftBlockedBy = left.blockedBy ?? []
+  const rightBlockedBy = right.blockedBy ?? []
+  if (leftBlockedBy.length !== rightBlockedBy.length) return false
+  for (let i = 0; i < leftBlockedBy.length; i += 1) {
+    if (leftBlockedBy[i] !== rightBlockedBy[i]) return false
+  }
+  return true
+}
+
+/**
+ * 判断两份执行图业务内容是否等价（忽略 updatedAt）。
+ * 供 merge 短路使用：1s 轮询常返回相同 nodes/todos，即使时间戳推进也不应写回 Map。
+ */
+export function areAgentRuntimeExecutionGraphsEqual(
+  left: AgentRuntimeExecutionGraph,
+  right: AgentRuntimeExecutionGraph,
+): boolean {
+  if (left === right) return true
+  if (left.runtimeSessionId !== right.runtimeSessionId) return false
+  if (left.nodes.length !== right.nodes.length) return false
+  if (left.todos.length !== right.todos.length) return false
+  for (let i = 0; i < left.nodes.length; i += 1) {
+    if (!areAgentRuntimeExecutionNodesEqual(left.nodes[i]!, right.nodes[i]!)) {
+      return false
+    }
+  }
+  for (let i = 0; i < left.todos.length; i += 1) {
+    if (!areAgentRuntimeTodoItemsEqual(left.todos[i]!, right.todos[i]!)) {
+      return false
+    }
+  }
+  return true
+}
+
+/**
+ * 合并写入前尽量复用旧 node/todo 引用。
+ * 这样按 toolUseId 切片的派生 atom 在节点内容未变时保持 Object.is 相等，避免误伤重渲染。
+ */
+export function stabilizeAgentRuntimeExecutionGraph(
+  existing: AgentRuntimeExecutionGraph | undefined,
+  incoming: AgentRuntimeExecutionGraph,
+): AgentRuntimeExecutionGraph {
+  if (!existing) return incoming
+  if (areAgentRuntimeExecutionGraphsEqual(existing, incoming)) return existing
+
+  const previousNodesById = new Map(existing.nodes.map((node) => [node.id, node]))
+  let nodesChanged = existing.nodes.length !== incoming.nodes.length
+  const nodes = incoming.nodes.map((node, index) => {
+    const previous = previousNodesById.get(node.id) ?? existing.nodes[index]
+    if (previous && areAgentRuntimeExecutionNodesEqual(previous, node)) {
+      return previous
+    }
+    nodesChanged = true
+    return node
+  })
+  if (!nodesChanged) {
+    for (let i = 0; i < nodes.length; i += 1) {
+      if (nodes[i] !== existing.nodes[i]) {
+        nodesChanged = true
+        break
+      }
+    }
+  }
+
+  const previousTodosById = new Map(existing.todos.map((todo) => [todo.id, todo]))
+  let todosChanged = existing.todos.length !== incoming.todos.length
+  const todos = incoming.todos.map((todo, index) => {
+    const previous = previousTodosById.get(todo.id) ?? existing.todos[index]
+    if (previous && areAgentRuntimeTodoItemsEqual(previous, todo)) {
+      return previous
+    }
+    todosChanged = true
+    return todo
+  })
+  if (!todosChanged) {
+    for (let i = 0; i < todos.length; i += 1) {
+      if (todos[i] !== existing.todos[i]) {
+        todosChanged = true
+        break
+      }
+    }
+  }
+
+  if (
+    !nodesChanged
+    && !todosChanged
+    && existing.runtimeSessionId === incoming.runtimeSessionId
+  ) {
+    return existing
+  }
+
+  return {
+    runtimeSessionId: incoming.runtimeSessionId,
+    nodes: nodesChanged ? nodes : existing.nodes,
+    todos: todosChanged ? todos : existing.todos,
+    updatedAt: incoming.updatedAt,
+  }
+}
+
+/** 构造 session + toolUseId 的 atomFamily key。 */
+export function createRuntimeExecutionNodeToolKey(
+  sessionId: string,
+  toolUseId: string,
+): string {
+  return `${sessionId}\0${toolUseId}`
+}
+
+/**
+ * 按 session + toolUseId 订阅单个 runtime 节点。
+ * 配合 stabilizeAgentRuntimeExecutionGraph，未变化节点保持引用稳定，避免全量 ToolUseBlock 重渲染。
+ */
+export const agentRuntimeExecutionNodeByToolUseIdAtomFamily = atomFamily((key: string) =>
+  atom((get) => {
+    const separator = key.indexOf('\0')
+    if (separator < 0) return undefined
+    const sessionId = key.slice(0, separator)
+    const toolUseId = key.slice(separator + 1)
+    if (!sessionId || !toolUseId) return undefined
+    const graph = get(agentRuntimeExecutionGraphsAtom).get(sessionId)
+    return graph?.nodes.find((node) => node.toolUseId === toolUseId)
+  }),
+)
+
+const EMPTY_DELEGATION_SESSIONS: AgentSessionMeta[] = []
+
+function areDelegationSessionsEquivalent(
+  left: AgentSessionMeta,
+  right: AgentSessionMeta,
+): boolean {
+  return (
+    left === right
+    || (
+      left.id === right.id
+      && left.parentSessionId === right.parentSessionId
+      && left.sourceDelegationId === right.sourceDelegationId
+      && left.title === right.title
+      && left.delegationStatus === right.delegationStatus
+      && left.delegationGoal === right.delegationGoal
+      && left.delegationRole === right.delegationRole
+      && left.modelId === right.modelId
+      && left.createdAt === right.createdAt
+      && left.updatedAt === right.updatedAt
+      && left.runtimeWorkerState === right.runtimeWorkerState
+    )
+  )
+}
+
+/**
+ * 父会话下 collaboration 子会话列表（稳定引用）。
+ * 仅委派 UI 订阅，避免普通 tool 块绑定全局 agentSessionsAtom。
+ */
+export const agentChildDelegationSessionsAtomFamily = atomFamily((parentSessionId: string) => {
+  let cached: AgentSessionMeta[] = EMPTY_DELEGATION_SESSIONS
+  return atom((get) => {
+    const next = get(agentSessionsAtom).filter((session) => (
+      session.parentSessionId === parentSessionId
+      && !!session.sourceDelegationId
+    ))
+    if (
+      cached.length === next.length
+      && cached.every((session, index) => areDelegationSessionsEquivalent(session, next[index]!))
+    ) {
+      return cached
+    }
+    cached = next
+    return next
+  })
+})
+
 /** Agent 本轮相对执行前工作树基线产生的文件改动统计，按会话隔离。 */
 export const agentTurnChangeStatsAtom = atom<
   Map<string, AgentTurnChangeStats>
@@ -608,6 +832,16 @@ export const mergeAgentRuntimeExecutionGraphAtom = atom(
     ) {
       return
     }
+    // 业务内容完全相同（忽略 updatedAt）时短路：轮询与重复事件不应写回 Map / 级联副作用。
+    if (existing && areAgentRuntimeExecutionGraphsEqual(existing, input.graph)) {
+      return
+    }
+
+    const graph = stabilizeAgentRuntimeExecutionGraph(existing, input.graph)
+    // stabilize 可能在仅时间戳变化时直接返回 existing
+    if (graph === existing) {
+      return
+    }
 
     const historyBeforeMerge = get(agentSidePanelRuntimeHistoryAtom)
       .get(input.sessionId)
@@ -617,7 +851,7 @@ export const mergeAgentRuntimeExecutionGraphAtom = atom(
     for (const node of existing?.nodes ?? []) {
       previousNodes.set(node.id, node)
     }
-    const terminalTransitions = input.graph.nodes.filter((node) => {
+    const terminalTransitions = graph.nodes.filter((node) => {
       const previous = previousNodes.get(node.id)
       return (
         previous != null
@@ -628,7 +862,7 @@ export const mergeAgentRuntimeExecutionGraphAtom = atom(
 
     set(agentRuntimeExecutionGraphsAtom, (previous) => {
       const next = new Map(previous)
-      next.set(input.sessionId, input.graph)
+      next.set(input.sessionId, graph)
       return next
     })
 
@@ -636,7 +870,7 @@ export const mergeAgentRuntimeExecutionGraphAtom = atom(
       const current = previous.get(input.sessionId)
       const updated = applyRuntimePlanGraph(
         current,
-        input.graph.todos,
+        graph.todos,
         Date.now(),
       )
       if (updated === current || updated == null) return previous
@@ -648,25 +882,25 @@ export const mergeAgentRuntimeExecutionGraphAtom = atom(
     set(agentSidePanelRuntimeHistoryAtom, (previous) => {
       const current = previous.get(input.sessionId)
       const runtimeChanged = (
-        input.graph.runtimeSessionId != null
+        graph.runtimeSessionId != null
         && current?.runtimeSessionId != null
-        && input.graph.runtimeSessionId !== current.runtimeSessionId
+        && graph.runtimeSessionId !== current.runtimeSessionId
       )
-      const hasRuntimeData = input.graph.nodes.length > 0 || input.graph.todos.length > 0
+      const hasRuntimeData = graph.nodes.length > 0 || graph.todos.length > 0
       const base = runtimeChanged && hasRuntimeData ? undefined : current
       const nodes = new Map((base?.nodes ?? []).map((node) => [node.id, node]))
-      for (const node of input.graph.nodes) {
+      for (const node of graph.nodes) {
         nodes.set(node.id, { ...node, source: 'runtime' })
       }
 
       const next = new Map(previous)
       next.set(input.sessionId, {
-        runtimeSessionId: input.graph.runtimeSessionId ?? base?.runtimeSessionId,
-        todos: input.graph.todos.length > 0
-          ? input.graph.todos
+        runtimeSessionId: graph.runtimeSessionId ?? base?.runtimeSessionId,
+        todos: graph.todos.length > 0
+          ? graph.todos
           : (base?.todos ?? []),
         nodes: Array.from(nodes.values()),
-        updatedAt: Math.max(base?.updatedAt ?? 0, input.graph.updatedAt),
+        updatedAt: Math.max(base?.updatedAt ?? 0, graph.updatedAt),
       })
       return next
     })
@@ -674,12 +908,12 @@ export const mergeAgentRuntimeExecutionGraphAtom = atom(
     set(agentFloatingPanelPlanStatesAtom, (previous) => {
       const current = previous.get(input.sessionId)
       const suppressedSignature = current?.suppressedCompletedPlanSignature
-      if (!current || !suppressedSignature || input.graph.todos.length === 0) {
+      if (!current || !suppressedSignature || graph.todos.length === 0) {
         return previous
       }
       // 新一轮开始后的空图只是 Runtime 重置过程，不能据此让上一轮已完成计划重新出现。
       // 只有观察到内容或状态确实不同的新计划后，才解除旧计划签名的屏蔽。
-      if (createFloatingPlanSignature(input.graph.todos) === suppressedSignature) {
+      if (createFloatingPlanSignature(graph.todos) === suppressedSignature) {
         return previous
       }
       const next = new Map(previous)

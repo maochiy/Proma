@@ -6,7 +6,7 @@ import type {
   AgentRuntimeExecutionNode,
 } from '@proma/shared'
 import {
-  agentRuntimeExecutionGraphsAtom,
+  agentRuntimeExecutionGraphAtomFamily,
   mergeAgentRuntimeExecutionGraphAtom,
   agentSessionsAtom,
   agentSessionStreamingStateAtomFamily,
@@ -31,9 +31,8 @@ export function RuntimeExecutionPanel({
   sessionId,
   onOpenNode,
 }: RuntimeExecutionPanelProps): React.ReactElement {
-  const graphs = useAtomValue(agentRuntimeExecutionGraphsAtom)
+  const graph = useAtomValue(agentRuntimeExecutionGraphAtomFamily(sessionId))
   const mergeGraph = useSetAtom(mergeAgentRuntimeExecutionGraphAtom)
-  const graph = graphs.get(sessionId)
   const history = useAtomValue(agentSidePanelRuntimeHistoryAtom).get(sessionId)
   const sessions = useAtomValue(agentSessionsAtom)
   const streamingStates = useAtomValue(agentStreamingStatesAtom)

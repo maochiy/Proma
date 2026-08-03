@@ -4,7 +4,7 @@ import { useAtomValue, useSetAtom } from 'jotai'
 import type { AgentRuntimeTodoItem, AgentTurnChangeStats, AgentTurnChangedFile } from '@proma/shared'
 import {
   agentDiffRefreshVersionAtom,
-  agentRuntimeExecutionGraphsAtom,
+  agentRuntimeExecutionGraphAtomFamily,
   agentRuntimePlanLifecycleAtom,
   mergeAgentRuntimeExecutionGraphAtom,
   agentSessionStreamingStateAtomFamily,
@@ -259,9 +259,8 @@ function PlanCompletionRing({
 export function RuntimeTodoHoverProgress({
   sessionId,
 }: RuntimeTodoHoverProgressProps): React.ReactElement | null {
-  const graphs = useAtomValue(agentRuntimeExecutionGraphsAtom)
+  const graph = useAtomValue(agentRuntimeExecutionGraphAtomFamily(sessionId))
   const mergeGraph = useSetAtom(mergeAgentRuntimeExecutionGraphAtom)
-  const graph = graphs.get(sessionId)
   const planLifecycle = useAtomValue(agentRuntimePlanLifecycleAtom).get(sessionId)
   const sourceTodos = getVisibleRuntimePlanTodos(
     planLifecycle,

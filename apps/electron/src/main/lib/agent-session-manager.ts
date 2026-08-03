@@ -490,13 +490,46 @@ export function getAgentSessionSDKMessages(id: string): SDKMessage[] {
   try {
     const raw = readFileSync(filePath, 'utf-8')
     const lines = raw.split('\n').filter((line) => line.trim())
-    return parseJsonlLenient<unknown>(lines, `读取 SDKMessage (${id})`)
-      .map(normalizePersistedSDKMessage)
-      .filter(message => !isUnstructuredRuntimeAssistantError(message))
+    return collapseDuplicateAssistantMessageGroups(
+      parseJsonlLenient<unknown>(lines, `读取 SDKMessage (${id})`)
+        .map(normalizePersistedSDKMessage)
+        .filter(message => !isUnstructuredRuntimeAssistantError(message)),
+    )
   } catch (error) {
     console.error(`[Agent 会话] 读取 SDKMessage 失败 (${id}):`, error)
     return []
   }
+}
+
+/**
+ * 折叠同一 assistant message.id 的非连续重复快照。
+ *
+ * 正常流式拆分（thinking / text / tool_use）会以相同 message.id 连续出现，需要保留。
+ * 但 CCB 在 compact 后可能把历史完整消息再次放进 Transcript；若再次落到 JSONL 尾部，
+ * 最新一轮会被旧回复顶到后面，表现为会话顺序错乱、新消息“消失”。
+ */
+export function collapseDuplicateAssistantMessageGroups(
+  messages: SDKMessage[],
+): SDKMessage[] {
+  const seenAssistantMessageIds = new Set<string>()
+  const collapsed: SDKMessage[] = []
+
+  for (const message of messages) {
+    const assistantMessageId = getAssistantMessageId(message)
+    if (assistantMessageId) {
+      if (seenAssistantMessageIds.has(assistantMessageId)) {
+        const previous = collapsed[collapsed.length - 1]
+        if (getAssistantMessageId(previous) !== assistantMessageId) {
+          continue
+        }
+      } else {
+        seenAssistantMessageIds.add(assistantMessageId)
+      }
+    }
+    collapsed.push(message)
+  }
+
+  return collapsed
 }
 
 function getSDKMessageIdentity(message: SDKMessage): string {
@@ -667,6 +700,7 @@ export function mergeAgentSessionSDKMessages(
   if (projectionRuntimeMessages.length === 0) return localMessages
 
   const consumedLocalIndexes = new Set<number>()
+  const seenAssistantMessageIds = new Set<string>()
   const merged: SDKMessage[] = []
   let lastMatchedLocalCreatedAt: number | undefined
 
@@ -680,23 +714,53 @@ export function mergeAgentSessionSDKMessages(
     )
     .map(({ index }) => index)
 
+  const markAssistantMessageSeen = (message: SDKMessage): void => {
+    const assistantMessageId = getAssistantMessageId(message)
+    if (assistantMessageId) seenAssistantMessageIds.add(assistantMessageId)
+  }
+
+  const consumeLocalAssistantDuplicates = (assistantMessageId: string): void => {
+    for (const index of findLocalIndexes(
+      localMessage => getAssistantMessageId(localMessage) === assistantMessageId,
+    )) {
+      consumedLocalIndexes.add(index)
+    }
+  }
+
   for (const runtimeMessage of projectionRuntimeMessages) {
     const assistantMessageId = getAssistantMessageId(runtimeMessage)
+    // Runtime Transcript 在 compact 后可能重复给出同一 message.id。
+    // 已合并过的 id 直接跳过，否则旧回复会被再次追加到最新一轮之后。
+    if (assistantMessageId && seenAssistantMessageIds.has(assistantMessageId)) {
+      consumeLocalAssistantDuplicates(assistantMessageId)
+      continue
+    }
     if (assistantMessageId) {
       const matchingIndexes = findLocalIndexes(
         localMessage =>
           getAssistantMessageId(localMessage) === assistantMessageId,
       )
       if (matchingIndexes.length > 0) {
-        const desktopIndexes = matchingIndexes.filter(index =>
+        const sortedMatchingIndexes = [...matchingIndexes].sort((a, b) => a - b)
+        // 只保留首次连续分组（流式拆分），丢弃文件尾部同 id 的重复完整消息。
+        const firstGroupIndexes: number[] = []
+        for (const index of sortedMatchingIndexes) {
+          const previous = firstGroupIndexes[firstGroupIndexes.length - 1]
+          if (previous === undefined || index === previous + 1) {
+            firstGroupIndexes.push(index)
+            continue
+          }
+          break
+        }
+        const desktopIndexes = firstGroupIndexes.filter(index =>
           hasDesktopMessageMetadata(localMessages[index]!),
         )
         const preferredIndexes =
-          desktopIndexes.length > 0 ? desktopIndexes : matchingIndexes
+          desktopIndexes.length > 0 ? desktopIndexes : firstGroupIndexes
         for (const index of matchingIndexes) consumedLocalIndexes.add(index)
-        merged.push(
-          ...preferredIndexes.map(index => localMessages[index]!),
-        )
+        const preferredMessages = preferredIndexes.map(index => localMessages[index]!)
+        merged.push(...preferredMessages)
+        for (const message of preferredMessages) markAssistantMessageSeen(message)
         const matchedCreatedAt = preferredIndexes
           .map(index => getMessageCreatedAt(localMessages[index]!))
           .filter((createdAt): createdAt is number => createdAt !== undefined)
@@ -790,18 +854,19 @@ export function mergeAgentSessionSDKMessages(
     )
     if (matchingIndex >= 0) {
       consumedLocalIndexes.add(matchingIndex)
-      merged.push(
-        mergeRuntimeMessageWithLocalMetadata(
-          runtimeMessage,
-          localMessages[matchingIndex]!,
-        ),
+      const mergedMessage = mergeRuntimeMessageWithLocalMetadata(
+        runtimeMessage,
+        localMessages[matchingIndex]!,
       )
+      merged.push(mergedMessage)
+      markAssistantMessageSeen(mergedMessage)
       const matchedCreatedAt = getMessageCreatedAt(localMessages[matchingIndex]!)
       if (matchedCreatedAt !== undefined) {
         lastMatchedLocalCreatedAt = matchedCreatedAt
       }
     } else {
       merged.push(runtimeMessage)
+      markAssistantMessageSeen(runtimeMessage)
       const runtimeCreatedAt = getMessageCreatedAt(runtimeMessage)
       if (runtimeCreatedAt !== undefined) {
         lastMatchedLocalCreatedAt = runtimeCreatedAt
@@ -816,7 +881,15 @@ export function mergeAgentSessionSDKMessages(
       pendingResults.push(localMessage)
       return
     }
+    const localAssistantMessageId = getAssistantMessageId(localMessage)
+    if (
+      localAssistantMessageId
+      && seenAssistantMessageIds.has(localAssistantMessageId)
+    ) {
+      return
+    }
     insertLocalMessageByCreatedAt(merged, localMessage)
+    markAssistantMessageSeen(localMessage)
   })
 
   // Runtime Transcript 通常不包含 Proma 的 result 完成元数据。按同一 Turn 的
@@ -848,11 +921,12 @@ export function mergeAgentSessionSDKMessages(
   }
 
   const filePath = getAgentSessionMessagesPath(id)
-  const content = `${merged
+  const projection = collapseDuplicateAssistantMessageGroups(merged)
+  const content = `${projection
     .map(message => serializeSDKMessageForStorage(message))
     .join('\n')}\n`
   writeTextFileAtomic(filePath, content)
-  return merged
+  return projection
 }
 
 /**

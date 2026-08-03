@@ -1053,6 +1053,204 @@ describe('Agent Transcript 增量合并', () => {
       ),
     ).toEqual(['desktop-thinking', 'desktop-text'])
   })
+
+  test('Given Runtime Transcript 在 compact 后重复历史 assistant When 合并 Then 不把旧回复追加到最新一轮之后', () => {
+    writeAgentSessionJsonl('merge-compact-duplicate-assistant', [
+      JSON.stringify({
+        type: 'user',
+        message: { content: [{ type: 'text', text: '旧问题' }] },
+        uuid: 'user-old',
+        _createdAt: 100,
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        uuid: 'assistant-old-thinking',
+        message: {
+          id: 'message-old',
+          content: [{ type: 'thinking', thinking: '旧思考' }],
+        },
+        _createdAt: 200,
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        uuid: 'assistant-old-text',
+        message: {
+          id: 'message-old',
+          content: [{ type: 'text', text: '旧回复' }],
+        },
+        _createdAt: 200,
+      }),
+      JSON.stringify({
+        type: 'user',
+        message: { content: [{ type: 'text', text: '新问题' }] },
+        uuid: 'user-new',
+        _createdAt: 300,
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        uuid: 'assistant-new',
+        message: {
+          id: 'message-new',
+          content: [{ type: 'text', text: '新回复' }],
+        },
+        _createdAt: 400,
+      }),
+    ])
+
+    const merged = manager.mergeAgentSessionSDKMessages(
+      'merge-compact-duplicate-assistant',
+      [
+        {
+          type: 'user',
+          uuid: 'runtime-user-old',
+          message: { role: 'user', content: '旧问题' },
+        } as never,
+        {
+          type: 'assistant',
+          uuid: 'runtime-assistant-old',
+          message: {
+            id: 'message-old',
+            content: [
+              { type: 'thinking', thinking: '旧思考' },
+              { type: 'text', text: '旧回复' },
+            ],
+          },
+        } as never,
+        {
+          type: 'user',
+          uuid: 'runtime-user-new',
+          message: { role: 'user', content: '新问题' },
+        } as never,
+        {
+          type: 'assistant',
+          uuid: 'runtime-assistant-new',
+          message: {
+            id: 'message-new',
+            content: [{ type: 'text', text: '新回复' }],
+          },
+        } as never,
+        {
+          type: 'system',
+          subtype: 'compact_boundary',
+          uuid: 'compact-1',
+        } as never,
+        // compact 后 Transcript 再次给出历史完整消息
+        {
+          type: 'assistant',
+          uuid: 'runtime-assistant-old-replay',
+          message: {
+            id: 'message-old',
+            content: [
+              { type: 'thinking', thinking: '旧思考' },
+              { type: 'text', text: '旧回复' },
+            ],
+          },
+        } as never,
+      ],
+    )
+
+    expect(
+      merged.map(message =>
+        (message as unknown as { uuid?: string }).uuid,
+      ),
+    ).toEqual([
+      'user-old',
+      'assistant-old-thinking',
+      'assistant-old-text',
+      'user-new',
+      'assistant-new',
+      'compact-1',
+    ])
+    expect(merged.at(-1)).toMatchObject({ subtype: 'compact_boundary' })
+    expect(
+      manager.getAgentSessionSDKMessages('merge-compact-duplicate-assistant')
+        .map(message => (message as unknown as { uuid?: string }).uuid),
+    ).toEqual([
+      'user-old',
+      'assistant-old-thinking',
+      'assistant-old-text',
+      'user-new',
+      'assistant-new',
+      'compact-1',
+    ])
+  })
+
+  test('Given JSONL 尾部已存在历史 assistant 重复快照 When 读取 Then 丢弃非连续重复并保留最新一轮', () => {
+    writeAgentSessionJsonl('read-collapse-duplicate-assistant', [
+      JSON.stringify({
+        type: 'user',
+        message: { content: [{ type: 'text', text: '旧问题' }] },
+        uuid: 'user-history',
+        _createdAt: 100,
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        uuid: 'assistant-history-thinking',
+        message: {
+          id: 'message-history',
+          content: [{ type: 'thinking', thinking: '旧思考' }],
+        },
+        _createdAt: 200,
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        uuid: 'assistant-history-text',
+        message: {
+          id: 'message-history',
+          content: [{ type: 'text', text: '旧的 NOTICE 讨论' }],
+        },
+        _createdAt: 200,
+      }),
+      JSON.stringify({
+        type: 'user',
+        message: { content: [{ type: 'text', text: '设备重新插拔了' }] },
+        uuid: 'user-latest',
+        _createdAt: 500,
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        uuid: 'assistant-latest',
+        message: {
+          id: 'message-latest',
+          content: [{ type: 'text', text: '仍未识别到设备' }],
+        },
+        _createdAt: 600,
+      }),
+      JSON.stringify({
+        type: 'system',
+        subtype: 'compact_boundary',
+        uuid: 'compact-tail',
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        uuid: 'assistant-history-replay',
+        message: {
+          id: 'message-history',
+          content: [
+            { type: 'thinking', thinking: '旧思考' },
+            { type: 'text', text: '旧的 NOTICE 讨论' },
+          ],
+        },
+      }),
+    ])
+
+    const messages = manager.getAgentSessionSDKMessages(
+      'read-collapse-duplicate-assistant',
+    )
+
+    expect(
+      messages.map(message =>
+        (message as unknown as { uuid?: string }).uuid,
+      ),
+    ).toEqual([
+      'user-history',
+      'assistant-history-thinking',
+      'assistant-history-text',
+      'user-latest',
+      'assistant-latest',
+      'compact-tail',
+    ])
+  })
 })
 
 describe('Agent 会话引用搜索', () => {

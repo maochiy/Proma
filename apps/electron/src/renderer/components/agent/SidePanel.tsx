@@ -40,7 +40,7 @@ import {
   agentDiffRefreshVersionAtom,
   fileBrowserAutoRevealAtom,
   agentSelectedWorktreeAtom,
-  agentRuntimeExecutionGraphsAtom,
+  agentRuntimeExecutionGraphAtomFamily,
   agentRuntimePlanLifecycleAtom,
   agentExecutionNodeTabSnapshotsAtom,
   agentSidePanelRuntimeHistoryAtom,
@@ -441,7 +441,7 @@ export function SidePanel({
   const sideChatMap = useAtomValue(agentSideChatMapAtom)
   const setSideChatMap = useSetAtom(agentSideChatMapAtom)
   const sideChatConversationId = sideChatMap.get(sessionId) ?? null
-  const executionGraph = useAtomValue(agentRuntimeExecutionGraphsAtom).get(sessionId)
+  const executionGraph = useAtomValue(agentRuntimeExecutionGraphAtomFamily(sessionId))
   const runtimePlanLifecycle = useAtomValue(agentRuntimePlanLifecycleAtom).get(sessionId)
   const runtimeHistory = useAtomValue(agentSidePanelRuntimeHistoryAtom).get(sessionId)
   const executionNodeTabSnapshots = useAtomValue(agentExecutionNodeTabSnapshotsAtom)

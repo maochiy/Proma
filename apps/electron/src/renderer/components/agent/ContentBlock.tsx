@@ -23,9 +23,10 @@ import {
 import { useAtomValue, useSetAtom } from 'jotai'
 import { thinkingExpandedAtom } from '@/atoms/chat-atoms'
 import {
-  agentRuntimeExecutionGraphsAtom,
-  agentSessionsAtom,
+  agentChildDelegationSessionsAtomFamily,
+  agentRuntimeExecutionNodeByToolUseIdAtomFamily,
   createAgentExecutionNodeTab,
+  createRuntimeExecutionNodeToolKey,
   openAgentSidePanelTabAtom,
 } from '@/atoms/agent-atoms'
 import { cn } from '@/lib/utils'
@@ -377,10 +378,27 @@ interface ToolUseBlockProps {
   sessionId?: string
 }
 
-function ToolUseBlock({ block, allMessages, animate = false, index = 0, dimmed = false, childBlocks, basePath, isStreaming, sessionId }: ToolUseBlockProps): React.ReactElement {
+function ToolUseBlock(props: ToolUseBlockProps): React.ReactElement {
+  // collaboration 委派工具需要 sessions 列表；拆分子组件避免上千个普通 tool 块订阅全局 sessions。
+  if (COLLABORATION_DELEGATION_TOOLS.has(props.block.name)) {
+    return <CollaborationToolUseBlock {...props} />
+  }
+  return <RegularToolUseBlock {...props} />
+}
+
+/** Proma collaboration 委派工具块：仅订阅父会话下的 child delegation sessions。 */
+function CollaborationToolUseBlock({
+  block,
+  allMessages,
+  animate = false,
+  index = 0,
+  basePath,
+  isStreaming,
+  sessionId,
+}: ToolUseBlockProps): React.ReactElement {
   const [expanded, setExpanded] = React.useState(false)
-  const executionGraphs = useAtomValue(agentRuntimeExecutionGraphsAtom)
-  const sessions = useAtomValue(agentSessionsAtom)
+  // 委派节点只依赖子会话元数据；不订阅整图/全局 sessions，避免大会话重渲染。
+  const childSessions = useAtomValue(agentChildDelegationSessionsAtomFamily(sessionId ?? ''))
   const openSidePanelTab = useSetAtom(openAgentSidePanelTabAtom)
   const toolResult = useToolResult(block.id, allMessages)
   const resultText = toolResult?.result
@@ -388,32 +406,16 @@ function ToolUseBlock({ block, allMessages, animate = false, index = 0, dimmed =
   const isCancelled = isParallelToolCallCancellation(resultText, isError)
   const isActualError = isError && !isCancelled
   const shouldShowResult = !!resultText
-  const taskGetSummary = React.useMemo(() => {
-    if (block.name !== 'TaskGet' || !resultText || isError) return null
-    return parseTaskGetResult(resultText)
-  }, [block.name, resultText, isError])
-  const taskListSummary = React.useMemo(() => {
-    if (block.name !== 'TaskList' || !resultText || isError) return null
-    return parseTaskListResult(resultText)
-  }, [block.name, resultText, isError])
-  const isAgentTool = block.name === 'Agent' || block.name === 'Task'
-  const isCollaborationDelegationTool = COLLABORATION_DELEGATION_TOOLS.has(block.name)
   const collaborationResultSummary = React.useMemo(() => {
     if (isError || !COLLABORATION_COMPACT_RESULT_TOOLS.has(block.name)) return undefined
     return summarizeCollaborationDelegations(resultText)
   }, [block.name, isError, resultText])
   const canExpandResult = shouldShowResult && !collaborationResultSummary
-  const hasChildren = isAgentTool && childBlocks && childBlocks.length > 0
-  const subAgentMeta = useSubAgentMeta(block.id, allMessages)
-  const runtimeNode = sessionId
-    ? executionGraphs.get(sessionId)?.nodes.find(node => node.toolUseId === block.id)
-    : undefined
   const collaborationNodes = React.useMemo(() => {
-    if (!sessionId || !isCollaborationDelegationTool) return []
+    if (!sessionId) return []
     const allDelegationNodes = buildSessionExecutionNodes({
       sessionId,
-      runtimeGraph: executionGraphs.get(sessionId),
-      sessions,
+      sessions: childSessions,
     }).filter((node) => node.source === 'delegation')
     const references = extractDelegationReferences(resultText)
     if (references.delegationIds.size > 0 || references.childSessionIds.size > 0) {
@@ -431,12 +433,143 @@ function ToolUseBlock({ block, allMessages, animate = false, index = 0, dimmed =
     return allDelegationNodes
   }, [
     block.input,
-    executionGraphs,
-    isCollaborationDelegationTool,
+    childSessions,
     resultText,
     sessionId,
-    sessions,
   ])
+
+  const phrase = getToolPhrase(block.name, block.input)
+  const isCompleted = toolResult !== null
+  const displayLabel = (isCompleted || !isStreaming) ? phrase.label : phrase.loadingLabel
+  const resolvedDisplayLabel = isCancelled
+    ? `${displayLabel} · 已取消`
+    : displayLabel
+  const delay = animate && index < 10 ? `${index * 30}ms` : '0ms'
+
+  return (
+    <div
+      className={cn(animate && 'animate-in fade-in duration-150 fill-mode-both')}
+      style={animate ? { animationDelay: delay } : undefined}
+    >
+      <button
+        type="button"
+        className="flex w-full items-center gap-2 py-0.5 text-left transition-opacity hover:opacity-70"
+        onClick={() => {
+          if (canExpandResult) setExpanded((previous) => !previous)
+        }}
+      >
+        {!isCompleted && isStreaming ? (
+          <Loader2 className="size-3.5 shrink-0 animate-spin text-primary/50" />
+        ) : isActualError ? (
+          <XCircle className="size-3.5 shrink-0 text-destructive/70" />
+        ) : isCancelled ? (
+          <XCircle className="size-3.5 shrink-0 text-muted-foreground/45" />
+        ) : (
+          <Bot className="size-3.5 shrink-0 text-muted-foreground" />
+        )}
+        <span className="min-w-0 flex-1 truncate text-[14px] text-muted-foreground">
+          {resolvedDisplayLabel}
+        </span>
+        {collaborationNodes.length > 0 && (
+          <span className="shrink-0 text-[11px] text-muted-foreground/65">
+            执行节点 · {collaborationNodes.length}
+          </span>
+        )}
+        {canExpandResult && (
+          <ChevronRight
+            className={cn(
+              'size-3 shrink-0 text-muted-foreground/45 transition-transform duration-150',
+              expanded && 'rotate-90',
+            )}
+          />
+        )}
+      </button>
+
+      {collaborationResultSummary && (
+        <p className="ml-5.5 mt-1 text-[11px] text-muted-foreground/65">
+          {collaborationResultSummary}
+        </p>
+      )}
+
+      {collaborationNodes.length > 0 && (
+        <div className="ml-5.5 mt-1.5 space-y-1 border-l-2 border-primary/15 pl-3">
+          {collaborationNodes.map((node) => (
+            <button
+              key={node.id}
+              type="button"
+              className="flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-accent/55"
+              onClick={() => {
+                if (!sessionId) return
+                openSidePanelTab({
+                  sessionId,
+                  tab: createAgentExecutionNodeTab(node.id),
+                })
+              }}
+            >
+              <span className="mt-0.5">{collaborationNodeStatusIcon(node.status)}</span>
+              <span className="min-w-0 flex-1">
+                <span className="block truncate text-xs font-medium">
+                  {node.name || node.description}
+                </span>
+                {node.name && node.description !== node.name && (
+                  <span className="mt-0.5 block line-clamp-2 text-[10px] leading-4 text-muted-foreground">
+                    {node.description}
+                  </span>
+                )}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {expanded && canExpandResult && resultText && (
+        <div className="ml-5.5 mt-1 border-l-2 border-border/30 pl-3">
+          <ToolResultRenderer
+            toolName={block.name}
+            input={block.input}
+            result={resultText}
+            isError={isActualError}
+            basePath={basePath}
+          />
+        </div>
+      )}
+    </div>
+  )
+}
+
+/** 普通 / Agent / Task 工具块：按 toolUseId 订阅单个 runtime 节点，不订阅整图/全局 sessions。 */
+function RegularToolUseBlock({ block, allMessages, animate = false, index = 0, dimmed = false, childBlocks, basePath, isStreaming, sessionId }: ToolUseBlockProps): React.ReactElement {
+  const [expanded, setExpanded] = React.useState(false)
+  // 仅订阅本 tool 对应 runtime 节点；无匹配节点时保持 undefined，图更新也不会误伤重渲染。
+  const runtimeNode = useAtomValue(
+    agentRuntimeExecutionNodeByToolUseIdAtomFamily(
+      sessionId
+        ? createRuntimeExecutionNodeToolKey(sessionId, block.id)
+        : createRuntimeExecutionNodeToolKey('', ''),
+    ),
+  )
+  const toolResult = useToolResult(block.id, allMessages)
+  const resultText = toolResult?.result
+  const isError = toolResult?.isError === true
+  const isCancelled = isParallelToolCallCancellation(resultText, isError)
+  const isActualError = isError && !isCancelled
+  const shouldShowResult = !!resultText
+  const taskGetSummary = React.useMemo(() => {
+    if (block.name !== 'TaskGet' || !resultText || isError) return null
+    return parseTaskGetResult(resultText)
+  }, [block.name, resultText, isError])
+  const taskListSummary = React.useMemo(() => {
+    if (block.name !== 'TaskList' || !resultText || isError) return null
+    return parseTaskListResult(resultText)
+  }, [block.name, resultText, isError])
+  const isAgentTool = block.name === 'Agent' || block.name === 'Task'
+  const collaborationResultSummary = React.useMemo(() => {
+    if (isError || !COLLABORATION_COMPACT_RESULT_TOOLS.has(block.name)) return undefined
+    return summarizeCollaborationDelegations(resultText)
+  }, [block.name, isError, resultText])
+  const canExpandResult = shouldShowResult && !collaborationResultSummary
+  const hasChildren = isAgentTool && childBlocks && childBlocks.length > 0
+  const subAgentMeta = useSubAgentMeta(block.id, allMessages)
 
   // Agent/Task 子代理内容默认折叠
   const [childrenExpanded, setChildrenExpanded] = React.useState(false)
@@ -467,99 +600,6 @@ function ToolUseBlock({ block, allMessages, animate = false, index = 0, dimmed =
 
   // 子代理工具调用统计
   const childToolCount = childBlocks?.filter((b) => b.type === 'tool_use').length ?? 0
-
-  // ===== Proma collaboration 委派：直接展示本次创建的子会话节点 =====
-  if (isCollaborationDelegationTool) {
-    return (
-      <div
-        className={cn(animate && 'animate-in fade-in duration-150 fill-mode-both')}
-        style={animate ? { animationDelay: delay } : undefined}
-      >
-        <button
-          type="button"
-          className="flex w-full items-center gap-2 py-0.5 text-left transition-opacity hover:opacity-70"
-          onClick={() => {
-            if (canExpandResult) setExpanded((previous) => !previous)
-          }}
-        >
-          {!isCompleted && isStreaming ? (
-            <Loader2 className="size-3.5 shrink-0 animate-spin text-primary/50" />
-          ) : isActualError ? (
-            <XCircle className="size-3.5 shrink-0 text-destructive/70" />
-          ) : isCancelled ? (
-            <XCircle className="size-3.5 shrink-0 text-muted-foreground/45" />
-          ) : (
-            <Bot className="size-3.5 shrink-0 text-muted-foreground" />
-          )}
-          <span className="min-w-0 flex-1 truncate text-[14px] text-muted-foreground">
-            {resolvedDisplayLabel}
-          </span>
-          {collaborationNodes.length > 0 && (
-            <span className="shrink-0 text-[11px] text-muted-foreground/65">
-              执行节点 · {collaborationNodes.length}
-            </span>
-          )}
-          {canExpandResult && (
-            <ChevronRight
-              className={cn(
-                'size-3 shrink-0 text-muted-foreground/45 transition-transform duration-150',
-                expanded && 'rotate-90',
-              )}
-            />
-          )}
-        </button>
-
-        {collaborationResultSummary && (
-          <p className="ml-5.5 mt-1 text-[11px] text-muted-foreground/65">
-            {collaborationResultSummary}
-          </p>
-        )}
-
-        {collaborationNodes.length > 0 && (
-          <div className="ml-5.5 mt-1.5 space-y-1 border-l-2 border-primary/15 pl-3">
-            {collaborationNodes.map((node) => (
-              <button
-                key={node.id}
-                type="button"
-                className="flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-accent/55"
-                onClick={() => {
-                  if (!sessionId) return
-                  openSidePanelTab({
-                    sessionId,
-                    tab: createAgentExecutionNodeTab(node.id),
-                  })
-                }}
-              >
-                <span className="mt-0.5">{collaborationNodeStatusIcon(node.status)}</span>
-                <span className="min-w-0 flex-1">
-                  <span className="block truncate text-xs font-medium">
-                    {node.name || node.description}
-                  </span>
-                  {node.name && node.description !== node.name && (
-                    <span className="mt-0.5 block line-clamp-2 text-[10px] leading-4 text-muted-foreground">
-                      {node.description}
-                    </span>
-                  )}
-                </span>
-              </button>
-            ))}
-          </div>
-        )}
-
-        {expanded && canExpandResult && resultText && (
-          <div className="ml-5.5 mt-1 border-l-2 border-border/30 pl-3">
-            <ToolResultRenderer
-              toolName={block.name}
-              input={block.input}
-              result={resultText}
-              isError={isActualError}
-              basePath={basePath}
-            />
-          </div>
-        )}
-      </div>
-    )
-  }
 
   // ===== Agent/Task 工具：特殊渲染 =====
   if (isAgentTool) {

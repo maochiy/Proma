@@ -1,14 +1,25 @@
 import { describe, expect, test } from 'bun:test'
 import { createStore } from 'jotai'
+import type { AgentRuntimeExecutionGraph } from '@proma/shared'
 import {
   agentDiffPanelTabAtom,
+  agentChildDelegationSessionsAtomFamily,
+  agentRuntimeExecutionGraphAtomFamily,
+  agentRuntimeExecutionGraphsAtom,
+  agentRuntimeExecutionNodeByToolUseIdAtomFamily,
+  agentSessionsAtom,
   agentSidePanelTabsAtom,
   applyAgentEvent,
+  areAgentRuntimeExecutionGraphsEqual,
+  createRuntimeExecutionNodeToolKey,
   fileBrowserAutoRevealAtom,
   markAgentFileModifiedAtom,
+  mergeAgentRuntimeExecutionGraphAtom,
   recentlyModifiedPathsAtom,
+  stabilizeAgentRuntimeExecutionGraph,
   type AgentStreamState,
 } from './agent-atoms'
+import type { AgentSessionMeta } from '@proma/shared'
 
 function createStreamState(overrides: Partial<AgentStreamState> = {}): AgentStreamState {
   return {
@@ -173,5 +184,273 @@ describe('Agent 文件修改展示状态', () => {
     expect(store.get(agentSidePanelTabsAtom).get(sessionId)).toEqual(['workspace'])
     expect(store.get(agentDiffPanelTabAtom).get(sessionId)).toBe('workspace')
     expect(store.get(fileBrowserAutoRevealAtom)).toEqual(manualReveal)
+  })
+})
+
+
+describe('Agent Runtime 执行图合并短路', () => {
+  const sessionId = 'runtime-graph-merge-session'
+
+  function createGraph(
+    overrides: Partial<AgentRuntimeExecutionGraph> = {},
+  ): AgentRuntimeExecutionGraph {
+    return {
+      runtimeSessionId: 'runtime-1',
+      nodes: [{
+        id: 'node-1',
+        kind: 'subagent',
+        status: 'running',
+        description: '执行任务',
+        transcriptAvailable: false,
+        toolUseId: 'tool-1',
+      }],
+      todos: [{
+        id: 'todo-1',
+        content: '完成实现',
+        status: 'in_progress',
+      }],
+      updatedAt: 100,
+      ...overrides,
+    }
+  }
+
+  test('Given 相同内容的执行图 When 再次 merge Then 保持 Map 引用不变且不触发无意义写回', () => {
+    const store = createStore()
+    const first = createGraph({ updatedAt: 100 })
+    store.set(mergeAgentRuntimeExecutionGraphAtom, { sessionId, graph: first })
+    const mapAfterFirst = store.get(agentRuntimeExecutionGraphsAtom)
+    const graphAfterFirst = mapAfterFirst.get(sessionId)
+
+    store.set(mergeAgentRuntimeExecutionGraphAtom, {
+      sessionId,
+      graph: createGraph({ updatedAt: 100 }),
+    })
+    const mapAfterSecond = store.get(agentRuntimeExecutionGraphsAtom)
+
+    expect(mapAfterSecond).toBe(mapAfterFirst)
+    expect(mapAfterSecond.get(sessionId)).toBe(graphAfterFirst)
+  })
+
+  test('Given 仅 updatedAt 推进但 nodes/todos 相同 When merge Then 仍然短路不写回', () => {
+    const store = createStore()
+    store.set(mergeAgentRuntimeExecutionGraphAtom, {
+      sessionId,
+      graph: createGraph({ updatedAt: 100 }),
+    })
+    const mapAfterFirst = store.get(agentRuntimeExecutionGraphsAtom)
+
+    store.set(mergeAgentRuntimeExecutionGraphAtom, {
+      sessionId,
+      graph: createGraph({ updatedAt: 999 }),
+    })
+
+    expect(store.get(agentRuntimeExecutionGraphsAtom)).toBe(mapAfterFirst)
+    expect(store.get(agentRuntimeExecutionGraphsAtom).get(sessionId)?.updatedAt).toBe(100)
+  })
+
+  test('Given 更旧的 updatedAt When merge Then 仍丢弃旧图', () => {
+    const store = createStore()
+    store.set(mergeAgentRuntimeExecutionGraphAtom, {
+      sessionId,
+      graph: createGraph({
+        updatedAt: 200,
+        nodes: [{
+          id: 'node-1',
+          kind: 'subagent',
+          status: 'completed',
+          description: '新状态',
+          transcriptAvailable: true,
+          toolUseId: 'tool-1',
+        }],
+      }),
+    })
+
+    store.set(mergeAgentRuntimeExecutionGraphAtom, {
+      sessionId,
+      graph: createGraph({
+        updatedAt: 100,
+        nodes: [{
+          id: 'node-1',
+          kind: 'subagent',
+          status: 'running',
+          description: '旧状态',
+          transcriptAvailable: false,
+          toolUseId: 'tool-1',
+        }],
+      }),
+    })
+
+    expect(store.get(agentRuntimeExecutionGraphsAtom).get(sessionId)?.nodes[0]?.status).toBe('completed')
+    expect(store.get(agentRuntimeExecutionGraphsAtom).get(sessionId)?.updatedAt).toBe(200)
+  })
+
+  test('Given 节点状态真实变化 When merge Then 正常写入新图', () => {
+    const store = createStore()
+    store.set(mergeAgentRuntimeExecutionGraphAtom, {
+      sessionId,
+      graph: createGraph({ updatedAt: 100 }),
+    })
+    const mapAfterFirst = store.get(agentRuntimeExecutionGraphsAtom)
+
+    const next = createGraph({
+      updatedAt: 150,
+      nodes: [{
+        id: 'node-1',
+        kind: 'subagent',
+        status: 'completed',
+        description: '执行任务',
+        transcriptAvailable: true,
+        toolUseId: 'tool-1',
+        completedAt: 150,
+      }],
+    })
+    store.set(mergeAgentRuntimeExecutionGraphAtom, { sessionId, graph: next })
+    const mapAfterSecond = store.get(agentRuntimeExecutionGraphsAtom)
+
+    expect(mapAfterSecond).not.toBe(mapAfterFirst)
+    expect(mapAfterSecond.get(sessionId)?.nodes[0]?.status).toBe('completed')
+    expect(store.get(agentRuntimeExecutionGraphAtomFamily(sessionId))?.nodes[0]?.status).toBe('completed')
+  })
+
+  test('Given 两份等价执行图 When 比较 Then areAgentRuntimeExecutionGraphsEqual 为 true', () => {
+    expect(
+      areAgentRuntimeExecutionGraphsEqual(
+        createGraph({ updatedAt: 1 }),
+        createGraph({ updatedAt: 99 }),
+      ),
+    ).toBe(true)
+  })
+})
+
+
+describe('Agent Runtime 执行图引用稳定与节点切片', () => {
+  test('Given 仅某个节点状态变化 When stabilize Then 其他节点保持同一引用', () => {
+    const existing = {
+      runtimeSessionId: 'runtime-1',
+      updatedAt: 100,
+      todos: [{ id: 't1', content: 'todo', status: 'pending' as const }],
+      nodes: [
+        {
+          id: 'n1',
+          kind: 'subagent' as const,
+          status: 'running' as const,
+          description: 'A',
+          transcriptAvailable: false,
+          toolUseId: 'tool-a',
+        },
+        {
+          id: 'n2',
+          kind: 'subagent' as const,
+          status: 'running' as const,
+          description: 'B',
+          transcriptAvailable: false,
+          toolUseId: 'tool-b',
+        },
+      ],
+    }
+    const incoming = {
+      ...existing,
+      updatedAt: 200,
+      nodes: [
+        { ...existing.nodes[0]! },
+        {
+          ...existing.nodes[1]!,
+          status: 'completed' as const,
+          completedAt: 200,
+          transcriptAvailable: true,
+        },
+      ],
+    }
+
+    const stabilized = stabilizeAgentRuntimeExecutionGraph(existing, incoming)
+    expect(stabilized.nodes[0]).toBe(existing.nodes[0])
+    expect(stabilized.nodes[1]).not.toBe(existing.nodes[1])
+    expect(stabilized.nodes[1]?.status).toBe('completed')
+    expect(stabilized.todos[0]).toBe(existing.todos[0])
+  })
+
+  test('Given 合并后仅部分节点变化 When 按 toolUseId 读取 Then 未变化节点 atom 保持原引用', () => {
+    const store = createStore()
+    const sessionId = 'node-slice-session'
+    const first = {
+      runtimeSessionId: 'runtime-1',
+      updatedAt: 100,
+      todos: [] as AgentRuntimeExecutionGraph['todos'],
+      nodes: [
+        {
+          id: 'n1',
+          kind: 'subagent' as const,
+          status: 'running' as const,
+          description: 'A',
+          transcriptAvailable: false,
+          toolUseId: 'tool-a',
+        },
+        {
+          id: 'n2',
+          kind: 'subagent' as const,
+          status: 'running' as const,
+          description: 'B',
+          transcriptAvailable: false,
+          toolUseId: 'tool-b',
+        },
+      ],
+    }
+    store.set(mergeAgentRuntimeExecutionGraphAtom, { sessionId, graph: first })
+    const nodeAKey = createRuntimeExecutionNodeToolKey(sessionId, 'tool-a')
+    const nodeBKey = createRuntimeExecutionNodeToolKey(sessionId, 'tool-b')
+    const nodeA1 = store.get(agentRuntimeExecutionNodeByToolUseIdAtomFamily(nodeAKey))
+    const nodeB1 = store.get(agentRuntimeExecutionNodeByToolUseIdAtomFamily(nodeBKey))
+
+    store.set(mergeAgentRuntimeExecutionGraphAtom, {
+      sessionId,
+      graph: {
+        ...first,
+        updatedAt: 150,
+        nodes: [
+          { ...first.nodes[0]! },
+          {
+            ...first.nodes[1]!,
+            status: 'completed',
+            completedAt: 150,
+            transcriptAvailable: true,
+          },
+        ],
+      },
+    })
+
+    const nodeA2 = store.get(agentRuntimeExecutionNodeByToolUseIdAtomFamily(nodeAKey))
+    const nodeB2 = store.get(agentRuntimeExecutionNodeByToolUseIdAtomFamily(nodeBKey))
+    expect(nodeA2).toBe(nodeA1)
+    expect(nodeB2).not.toBe(nodeB1)
+    expect(nodeB2?.status).toBe('completed')
+  })
+
+  test('Given 子会话列表字段未变 When 全局 sessions 换新数组 Then child family 保持缓存引用', () => {
+    const store = createStore()
+    const parentId = 'parent-session'
+    const child: AgentSessionMeta = {
+      id: 'child-1',
+      title: '子任务',
+      createdAt: 1,
+      updatedAt: 2,
+      parentSessionId: parentId,
+      sourceDelegationId: 'd1',
+      delegationStatus: 'running',
+    } as AgentSessionMeta
+
+    store.set(agentSessionsAtom, [child])
+    const first = store.get(agentChildDelegationSessionsAtomFamily(parentId))
+    store.set(agentSessionsAtom, [{ ...child }])
+    const second = store.get(agentChildDelegationSessionsAtomFamily(parentId))
+    expect(second).toBe(first)
+
+    store.set(agentSessionsAtom, [{
+      ...child,
+      delegationStatus: 'completed',
+      updatedAt: 3,
+    } as AgentSessionMeta])
+    const third = store.get(agentChildDelegationSessionsAtomFamily(parentId))
+    expect(third).not.toBe(first)
+    expect(third[0]?.delegationStatus).toBe('completed')
   })
 })

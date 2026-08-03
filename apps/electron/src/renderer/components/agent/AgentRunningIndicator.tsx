@@ -8,10 +8,12 @@ interface AgentRunningIndicatorProps {
 }
 
 function formatRunningTime(seconds: number): string {
-  if (seconds < 60) return `${seconds.toFixed(1)}s`
-  const minutes = Math.floor(seconds / 60)
-  const remainingSeconds = seconds % 60
-  return `${minutes}m ${remainingSeconds.toFixed(1)}s`
+  // 秒级精度足够，避免 100ms 级 setState 在长会话中持续占用主线程。
+  const wholeSeconds = Math.max(0, Math.floor(seconds))
+  if (wholeSeconds < 60) return `${wholeSeconds}s`
+  const minutes = Math.floor(wholeSeconds / 60)
+  const remainingSeconds = wholeSeconds % 60
+  return `${minutes}m ${remainingSeconds}s`
 }
 
 /** 主会话与子智能体详情共用的 Agent 运行指示器。 */
@@ -25,7 +27,7 @@ export function AgentRunningIndicator({
     const start = startedAt ?? Date.now()
     const update = (): void => setElapsed((Date.now() - start) / 1_000)
     update()
-    const timer = window.setInterval(update, 100)
+    const timer = window.setInterval(update, 1_000)
     return () => window.clearInterval(timer)
   }, [startedAt])
 

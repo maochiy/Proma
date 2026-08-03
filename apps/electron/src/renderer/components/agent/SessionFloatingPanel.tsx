@@ -1,5 +1,6 @@
 import * as React from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
+import { useAgentRuntimeExecutionGraphRefresh } from '@/hooks/useAgentRuntimeExecutionGraphRefresh'
 import {
   FileDiff,
   GitBranch,
@@ -13,7 +14,7 @@ import {
   agentDiffRefreshVersionAtom,
   agentFloatingPanelExecutionNodeStatesAtom,
   agentFloatingPanelPlanStatesAtom,
-  agentRuntimeExecutionGraphsAtom,
+  agentRuntimeExecutionGraphAtomFamily,
   agentRuntimePlanLifecycleAtom,
   agentSidePanelRuntimeHistoryAtom,
   agentSessionsAtom,
@@ -23,7 +24,6 @@ import {
   currentAgentWorkspaceIdAtom,
   agentWorkspacesAtom,
   createAgentExecutionNodeTab,
-  mergeAgentRuntimeExecutionGraphAtom,
   openAgentSidePanelTabAtom,
   workspaceAttachedDirectoriesMapAtom,
   workspaceAttachedFilesMapAtom,
@@ -84,9 +84,7 @@ export function SessionFloatingPanel({
   sessionPath,
 }: SessionFloatingPanelProps): React.ReactElement {
   const openSidePanelTab = useSetAtom(openAgentSidePanelTabAtom)
-  const graphs = useAtomValue(agentRuntimeExecutionGraphsAtom)
-  const mergeGraph = useSetAtom(mergeAgentRuntimeExecutionGraphAtom)
-  const graph = graphs.get(sessionId)
+  const graph = useAtomValue(agentRuntimeExecutionGraphAtomFamily(sessionId))
   const graphTodos = graph?.todos ?? EMPTY_TODOS
   const planLifecycle = useAtomValue(agentRuntimePlanLifecycleAtom).get(sessionId)
   const planState = useAtomValue(agentFloatingPanelPlanStatesAtom).get(sessionId)
@@ -207,51 +205,23 @@ export function SessionFloatingPanel({
   const setGitSummaryMap = useSetAtom(agentSessionGitSummaryAtom)
   const gitSummary = gitSummaryMap.get(sessionId)
 
-  React.useEffect(() => {
-    let cancelled = false
-    const activeRuntimeNodeExists = (
-      (graph?.nodes ?? []).some((node) => (
+  const activeRuntimeNodeExists = React.useMemo(() => (
+    (graph?.nodes ?? []).some((node) => (
+      node.status === 'queued' || node.status === 'running'
+    ))
+    || (
+      canRetainRuntimeHistory
+      && (runtimeHistory?.nodes ?? []).some((node) => (
         node.status === 'queued' || node.status === 'running'
       ))
-      || (
-        canRetainRuntimeHistory
-        && (runtimeHistory?.nodes ?? []).some((node) => (
-          node.status === 'queued' || node.status === 'running'
-        ))
-      )
     )
-    const refresh = (): void => {
-      const baseRuntimeSessionId = graph?.runtimeSessionId ?? null
-      void window.electronAPI.getAgentRuntimeExecutionGraph(sessionId)
-        .then((next) => {
-          if (cancelled) return
-          mergeGraph({
-            sessionId,
-            graph: next,
-            baseRuntimeSessionId,
-          })
-        })
-        .catch(() => {
-          // 会话尚未初始化或 Worker 暂时不可用时保留现有执行图与活跃历史。
-        })
-    }
+  ), [canRetainRuntimeHistory, graph?.nodes, runtimeHistory?.nodes])
 
-    refresh()
-    const timer = activeRuntimeNodeExists
-      ? window.setInterval(refresh, 1_000)
-      : undefined
-    return () => {
-      cancelled = true
-      if (timer != null) window.clearInterval(timer)
-    }
-  }, [
-    canRetainRuntimeHistory,
-    graph?.nodes,
-    graph?.runtimeSessionId,
-    mergeGraph,
-    runtimeHistory?.nodes,
-    sessionId,
-  ])
+  // 有活跃节点时才轮询；页面隐藏自动暂停。merge 短路保证内容不变不重渲染。
+  useAgentRuntimeExecutionGraphRefresh(sessionId, {
+    enabled: activeRuntimeNodeExists,
+    baseRuntimeSessionId: graph?.runtimeSessionId ?? null,
+  })
 
   React.useEffect(() => {
     let cancelled = false
