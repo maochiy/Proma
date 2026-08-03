@@ -1251,6 +1251,188 @@ describe('Agent Transcript 增量合并', () => {
       'compact-tail',
     ])
   })
+
+  test('Given compact 用新 message.id 重放历史 tool_use When 读取 Then 丢弃尾部重放并保留最新一轮', () => {
+    writeAgentSessionJsonl('read-collapse-tool-replay', [
+      JSON.stringify({
+        type: 'user',
+        message: { content: [{ type: 'text', text: '请修 event_id' }] },
+        uuid: 'user-old',
+        _createdAt: 100,
+      }),
+      JSON.stringify({
+        type: 'user',
+        uuid: 'tool-result-old',
+        message: {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'call-old-1',
+            content: 'patched',
+          }],
+        },
+        _createdAt: 200,
+      }),
+      JSON.stringify({
+        type: 'user',
+        message: { content: [{ type: 'text', text: '现在问题在哪' }] },
+        uuid: 'user-new',
+        _createdAt: 300,
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        uuid: 'assistant-new',
+        message: {
+          id: 'message-new',
+          content: [{ type: 'text', text: '问题在离线投递路径' }],
+        },
+        _createdAt: 400,
+      }),
+      JSON.stringify({
+        type: 'system',
+        subtype: 'compact_boundary',
+        uuid: 'compact-1',
+      }),
+      // compact 后用新 message.id 重放历史工具调用
+      JSON.stringify({
+        type: 'assistant',
+        uuid: 'assistant-old-replay',
+        message: {
+          id: 'message-old-replay',
+          content: [
+            { type: 'text', text: '我先修 event_id 去重' },
+            {
+              type: 'tool_use',
+              id: 'call-old-1',
+              name: 'Edit',
+              input: { path: 'a.ts' },
+            },
+          ],
+        },
+      }),
+    ])
+
+    const messages = manager.getAgentSessionSDKMessages('read-collapse-tool-replay')
+    expect(
+      messages.map(message =>
+        (message as unknown as { uuid?: string }).uuid,
+      ),
+    ).toEqual([
+      'user-old',
+      'tool-result-old',
+      'user-new',
+      'assistant-new',
+      'compact-1',
+    ])
+  })
+
+  test('Given compact 用新 message.id 重放历史 tool_use When 合并 Then 不把旧工具调用追加到最新一轮之后', () => {
+    writeAgentSessionJsonl('merge-compact-tool-replay', [
+      JSON.stringify({
+        type: 'user',
+        message: { content: [{ type: 'text', text: '请修 event_id' }] },
+        uuid: 'user-old',
+        _createdAt: 100,
+      }),
+      JSON.stringify({
+        type: 'user',
+        uuid: 'tool-result-old',
+        message: {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'call-old-1',
+            content: 'patched',
+          }],
+        },
+        _createdAt: 200,
+      }),
+      JSON.stringify({
+        type: 'user',
+        message: { content: [{ type: 'text', text: '现在问题在哪' }] },
+        uuid: 'user-new',
+        _createdAt: 300,
+      }),
+      JSON.stringify({
+        type: 'assistant',
+        uuid: 'assistant-new',
+        message: {
+          id: 'message-new',
+          content: [{ type: 'text', text: '问题在离线投递路径' }],
+        },
+        _createdAt: 400,
+      }),
+    ])
+
+    const merged = manager.mergeAgentSessionSDKMessages(
+      'merge-compact-tool-replay',
+      [
+        {
+          type: 'user',
+          uuid: 'runtime-user-old',
+          message: { role: 'user', content: '请修 event_id' },
+        } as never,
+        {
+          type: 'user',
+          uuid: 'runtime-tool-result-old',
+          message: {
+            role: 'user',
+            content: [{
+              type: 'tool_result',
+              tool_use_id: 'call-old-1',
+              content: 'patched',
+            }],
+          },
+        } as never,
+        {
+          type: 'user',
+          uuid: 'runtime-user-new',
+          message: { role: 'user', content: '现在问题在哪' },
+        } as never,
+        {
+          type: 'assistant',
+          uuid: 'runtime-assistant-new',
+          message: {
+            id: 'message-new',
+            content: [{ type: 'text', text: '问题在离线投递路径' }],
+          },
+        } as never,
+        {
+          type: 'system',
+          subtype: 'compact_boundary',
+          uuid: 'compact-1',
+        } as never,
+        {
+          type: 'assistant',
+          uuid: 'runtime-assistant-old-replay',
+          message: {
+            id: 'message-old-replay',
+            content: [
+              { type: 'text', text: '我先修 event_id 去重' },
+              {
+                type: 'tool_use',
+                id: 'call-old-1',
+                name: 'Edit',
+                input: { path: 'a.ts' },
+              },
+            ],
+          },
+        } as never,
+      ],
+    )
+
+    expect(
+      merged.map(message =>
+        (message as unknown as { uuid?: string }).uuid,
+      ),
+    ).toEqual([
+      'user-old',
+      'tool-result-old',
+      'user-new',
+      'assistant-new',
+      'compact-1',
+    ])
+  })
 })
 
 describe('Agent 会话引用搜索', () => {

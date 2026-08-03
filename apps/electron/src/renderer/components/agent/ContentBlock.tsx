@@ -502,7 +502,11 @@ function CollaborationToolUseBlock({
                 if (!sessionId) return
                 openSidePanelTab({
                   sessionId,
-                  tab: createAgentExecutionNodeTab(node.id),
+                  tab: createAgentExecutionNodeTab(node.id, node.transcriptSessionId),
+                  executionNodeSnapshot: {
+                    node,
+                    runtimeSessionId: node.transcriptSessionId,
+                  },
                 })
               }}
             >

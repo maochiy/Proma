@@ -18,7 +18,9 @@
  */
 
 import { spawnSync } from 'child_process'
+import { existsSync } from 'fs'
 import { join } from 'path'
+import { ensurePackagedPromaCli } from './packaged-cli-guard'
 
 // ============================================
 // 类型定义
@@ -167,7 +169,7 @@ function main(): void {
   console.log(`  ${color.bold}详细日志${color.reset}: ${opts.verbose ? '开启' : '关闭'}`)
   printSeparator()
 
-  const totalSteps = 7
+  const totalSteps = 8
   let step = 0
 
   // ── 步骤 1: 构建主进程 ──
@@ -261,8 +263,72 @@ function main(): void {
     })
   )
   printStepResult(results[results.length - 1])
+  if (!results[results.length - 1].success) return printSummary(results)
+
+  // ── 步骤 8: 校验打包后的 proma CLI（签名 + smoke）──
+  step++
+  printStepStart(step, totalSteps, '校验打包后的 proma CLI')
+  const guardStart = Date.now()
+  let guardSuccess = false
+  try {
+    const appOutDir = resolveAppOutDir(opts)
+    const electronPlatformName =
+      opts.platform === 'mac' ? 'darwin' : opts.platform === 'win' ? 'win32' : 'linux'
+    ensurePackagedPromaCli(appOutDir, electronPlatformName)
+    guardSuccess = true
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err))
+  }
+  results.push({
+    name: '校验 proma CLI',
+    duration: Date.now() - guardStart,
+    success: guardSuccess,
+    skipped: false,
+  })
+  printStepResult(results[results.length - 1])
 
   printSummary(results)
+}
+
+/** 解析 electron-builder 输出目录（与 electron-builder 默认命名对齐） */
+function resolveAppOutDir(opts: DistOptions): string {
+  const electronDir = join(import.meta.dir, '..')
+  const arch = process.arch
+  if (opts.platform === 'mac') {
+    // --current-arch 时目录为 out/mac-arm64 或 out/mac-x64；双架构时优先当前 arch
+    const candidates = opts.currentArch
+      ? [join(electronDir, 'out', `mac-${arch}`)]
+      : [join(electronDir, 'out', `mac-${arch}`), join(electronDir, 'out', 'mac')]
+    for (const dir of candidates) {
+      if (existsSync(join(dir, 'Proma.app'))) return dir
+    }
+    throw new Error(`未找到 mac 打包产物目录（尝试: ${candidates.join(', ')}）`)
+  }
+  if (opts.platform === 'win') {
+    const candidates = [
+      join(electronDir, 'out', `win-${arch === 'x64' ? 'x64' : arch}`),
+      join(electronDir, 'out', 'win-unpacked'),
+      join(electronDir, 'out', 'win'),
+    ]
+    for (const dir of candidates) {
+      if (
+        existsSync(join(dir, 'resources', 'bin', 'proma.exe'))
+        || existsSync(join(dir, 'resources', 'bin', 'proma'))
+      ) {
+        return dir
+      }
+    }
+    throw new Error(`未找到 win 打包产物目录（尝试: ${candidates.join(', ')}）`)
+  }
+  const candidates = [
+    join(electronDir, 'out', `linux-${arch}`),
+    join(electronDir, 'out', 'linux-unpacked'),
+    join(electronDir, 'out', 'linux'),
+  ]
+  for (const dir of candidates) {
+    if (existsSync(join(dir, 'resources', 'bin', 'proma'))) return dir
+  }
+  throw new Error(`未找到 linux 打包产物目录（尝试: ${candidates.join(', ')}）`)
 }
 
 /** 打印汇总报告 */

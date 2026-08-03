@@ -18,7 +18,7 @@ import { cn } from '@/lib/utils'
 import { ImageLightbox, type LightboxImage } from '@/components/ui/image-lightbox'
 import { ContentBlock } from './ContentBlock'
 import { TurnFileChangesSummary, buildTurnFileNameMap } from './TurnFileChangesSummary'
-import { ProcessBlockGroup, buildAssistantTurnRenderItems, buildCompletedToolResultIds } from './ProcessBlockGroup'
+import { ProcessBlockGroup, buildAssistantTurnRenderItems, buildCompletedToolResultIds, projectOrphanThinkingAsText } from './ProcessBlockGroup'
 import { extractToolResultText, TASK_TOOL_NAMES } from './task-progress'
 import { normalizeThinkTagsInContentBlocks } from './thinking-tag-parser'
 // 会话转录的纯逻辑(Turn 分组 / 快照去重 / 预览)已下沉到 @proma/session-core 作为唯一真源。
@@ -446,8 +446,13 @@ export function AssistantTurnRenderer({ turn, allMessages, basePath, onFork, onR
     }
   }
 
+  // 无 text 时把末尾 orphan thinking 提升为 text，避免 Grok 等模型「只写思考」导致回复看起来消失
+  const displayBlocks = React.useMemo(() => {
+    return projectOrphanThinkingAsText(topLevelBlocks, { isStreaming })
+  }, [topLevelBlocks, isStreaming])
+
   // 检测是否有主要内容（text 块），用于决定 tool/thinking 是否 dimmed
-  const hasTextContent = topLevelBlocks.some(
+  const hasTextContent = displayBlocks.some(
     (b) => b.type === 'text' && 'text' in b && !!(b as { text: string }).text
   )
 
@@ -455,11 +460,11 @@ export function AssistantTurnRenderer({ turn, allMessages, basePath, onFork, onR
     return buildCompletedToolResultIds(turn.turnMessages)
   }, [turn.turnMessages])
   const renderItems = React.useMemo(() => {
-    return buildAssistantTurnRenderItems(topLevelBlocks, {
+    return buildAssistantTurnRenderItems(displayBlocks, {
       isStreaming,
       completedToolResultIds,
     })
-  }, [topLevelBlocks, isStreaming, completedToolResultIds])
+  }, [displayBlocks, isStreaming, completedToolResultIds])
 
   // 本轮「文件名 → 绝对路径」映射：与 footer chips 同源，供正文内联文件引用补全裸文件名
   const turnFileMap = React.useMemo(
@@ -560,7 +565,7 @@ export function AssistantTurnRenderer({ turn, allMessages, basePath, onFork, onR
       )}
       {/* 操作栏：流式输出完成后显示操作按钮 */}
       {!isStreaming && (() => {
-        const textContent = topLevelBlocks
+        const textContent = displayBlocks
           .filter((b) => b.type === 'text' && 'text' in b)
           .map((b) => (b as { text: string }).text)
           .join('\n\n')

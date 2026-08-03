@@ -95,11 +95,23 @@ export function RuntimeExecutionNodePanel({
       setError(undefined)
     } catch (reason) {
       if (requestSequence !== requestSequenceRef.current) return
-      setError(
-        reason instanceof Error
-          ? reason.message
-          : '读取执行节点会话失败',
-      )
+      const message = reason instanceof Error
+        ? reason.message
+        : '读取执行节点会话失败'
+      // Runtime 任务结束后会被清理；历史节点点开时优先展示摘要，而不是空白失败。
+      if (
+        node.source !== 'delegation'
+        && !running
+        && (node.status === 'completed' || node.status === 'failed' || node.status === 'stopped')
+      ) {
+        setError(
+          node.summary
+            ? undefined
+            : `${message}。节点已结束，Runtime 可能已清理 Transcript。`,
+        )
+      } else {
+        setError(message)
+      }
     } finally {
       if (requestSequence === requestSequenceRef.current) setLoading(false)
     }
@@ -190,7 +202,11 @@ export function RuntimeExecutionNodePanel({
               : node.summary
                 ? node.summary
                 : canQueryTranscript
-                  ? '该执行节点暂时没有可显示的会话内容。'
+                  ? (
+                    node.source === 'delegation'
+                      ? '该协作子会话暂时没有可显示的消息，请稍后重试或从左侧打开子会话查看。'
+                      : '该执行节点暂时没有可显示的会话内容。'
+                  )
                   : '该执行节点不产生独立会话内容。'}
           </p>
           {running && <AgentRunningIndicator startedAt={node.startedAt} />}

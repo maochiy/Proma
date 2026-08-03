@@ -502,16 +502,20 @@ export function getAgentSessionSDKMessages(id: string): SDKMessage[] {
 }
 
 /**
- * 折叠同一 assistant message.id 的非连续重复快照。
+ * 折叠 Transcript 中 compact / 同步产生的重复快照。
  *
- * 正常流式拆分（thinking / text / tool_use）会以相同 message.id 连续出现，需要保留。
- * 但 CCB 在 compact 后可能把历史完整消息再次放进 Transcript；若再次落到 JSONL 尾部，
- * 最新一轮会被旧回复顶到后面，表现为会话顺序错乱、新消息“消失”。
+ * 1) 同一 assistant message.id 的非连续重复：正常流式拆分会以相同 message.id
+ *    连续出现，需要保留；compact 后再落一次完整消息时丢弃。
+ * 2) 新 message.id 但 tool_use call id 已出现过：compact 可能改写 message.id
+ *    却保留原 call id，把历史工具调用重新甩到最新一轮之后，需要按 call id 折叠。
+ * 3) 纯 tool_result 用户消息按 tool_use_id 去重，避免 compact 后结果重放。
  */
 export function collapseDuplicateAssistantMessageGroups(
   messages: SDKMessage[],
 ): SDKMessage[] {
   const seenAssistantMessageIds = new Set<string>()
+  const seenToolResultIds = new Set<string>()
+  const knownExecutedToolIds = new Set<string>()
   const collapsed: SDKMessage[] = []
 
   for (const message of messages) {
@@ -526,10 +530,101 @@ export function collapseDuplicateAssistantMessageGroups(
         seenAssistantMessageIds.add(assistantMessageId)
       }
     }
+
+    const assistantToolUseIds = uniqueStrings(extractAssistantToolUseIds(message))
+    if (
+      assistantToolUseIds.length > 0
+      && assistantToolUseIds.every((id) => knownExecutedToolIds.has(id))
+    ) {
+      // 同 message.id 的连续流式拆分可能重复携带已出现的 tool_use，仍保留。
+      const previous = collapsed[collapsed.length - 1]
+      const isContiguousSameAssistantId =
+        Boolean(assistantMessageId)
+        && getAssistantMessageId(previous) === assistantMessageId
+      if (!isContiguousSameAssistantId) {
+        continue
+      }
+    }
+
+    if (isToolResultOnlyUserMessage(message)) {
+      const toolResultIds = uniqueStrings(extractUserToolResultIds(message))
+      if (
+        toolResultIds.length > 0
+        && toolResultIds.every((id) => seenToolResultIds.has(id))
+      ) {
+        continue
+      }
+    }
+
     collapsed.push(message)
+
+    for (const id of assistantToolUseIds) {
+      knownExecutedToolIds.add(id)
+    }
+    for (const id of extractUserToolResultIds(message)) {
+      seenToolResultIds.add(id)
+      knownExecutedToolIds.add(id)
+    }
   }
 
   return collapsed
+}
+
+function getMessageContentBlocks(message: SDKMessage): unknown[] {
+  const content = (
+    message as unknown as {
+      message?: { content?: unknown }
+    }
+  ).message?.content
+  return Array.isArray(content) ? content : []
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values)]
+}
+
+function extractAssistantToolUseIds(message: SDKMessage): string[] {
+  if (message.type !== 'assistant') return []
+  const ids: string[] = []
+  for (const block of getMessageContentBlocks(message)) {
+    if (!block || typeof block !== 'object') continue
+    const record = block as { type?: unknown; id?: unknown }
+    if (
+      record.type === 'tool_use'
+      && typeof record.id === 'string'
+      && record.id.length > 0
+    ) {
+      ids.push(record.id)
+    }
+  }
+  return ids
+}
+
+function extractUserToolResultIds(message: SDKMessage): string[] {
+  if (message.type !== 'user') return []
+  const ids: string[] = []
+  for (const block of getMessageContentBlocks(message)) {
+    if (!block || typeof block !== 'object') continue
+    const record = block as { type?: unknown; tool_use_id?: unknown }
+    if (
+      record.type === 'tool_result'
+      && typeof record.tool_use_id === 'string'
+      && record.tool_use_id.length > 0
+    ) {
+      ids.push(record.tool_use_id)
+    }
+  }
+  return ids
+}
+
+function isToolResultOnlyUserMessage(message: SDKMessage): boolean {
+  if (message.type !== 'user') return false
+  const blocks = getMessageContentBlocks(message)
+  if (blocks.length === 0) return false
+  return blocks.every((block) => {
+    if (!block || typeof block !== 'object') return false
+    return (block as { type?: unknown }).type === 'tool_result'
+  })
 }
 
 function getSDKMessageIdentity(message: SDKMessage): string {
@@ -701,6 +796,8 @@ export function mergeAgentSessionSDKMessages(
 
   const consumedLocalIndexes = new Set<number>()
   const seenAssistantMessageIds = new Set<string>()
+  const seenToolResultIds = new Set<string>()
+  const knownExecutedToolIds = new Set<string>()
   const merged: SDKMessage[] = []
   let lastMatchedLocalCreatedAt: number | undefined
 
@@ -714,9 +811,26 @@ export function mergeAgentSessionSDKMessages(
     )
     .map(({ index }) => index)
 
+  const registerMessageToolIds = (message: SDKMessage): void => {
+    for (const id of extractAssistantToolUseIds(message)) {
+      knownExecutedToolIds.add(id)
+    }
+    for (const id of extractUserToolResultIds(message)) {
+      seenToolResultIds.add(id)
+      knownExecutedToolIds.add(id)
+    }
+  }
+
+  // 先登记本地已有 tool id，这样 Runtime 在 compact 后把历史工具重放到末尾时
+  // 可以立刻识别并跳过，而不是等最终 collapse。
+  for (const localMessage of localMessages) {
+    registerMessageToolIds(localMessage)
+  }
+
   const markAssistantMessageSeen = (message: SDKMessage): void => {
     const assistantMessageId = getAssistantMessageId(message)
     if (assistantMessageId) seenAssistantMessageIds.add(assistantMessageId)
+    registerMessageToolIds(message)
   }
 
   const consumeLocalAssistantDuplicates = (assistantMessageId: string): void => {
@@ -727,12 +841,36 @@ export function mergeAgentSessionSDKMessages(
     }
   }
 
+  const isCompactToolReplay = (message: SDKMessage): boolean => {
+    const assistantToolUseIds = uniqueStrings(extractAssistantToolUseIds(message))
+    if (
+      assistantToolUseIds.length > 0
+      && assistantToolUseIds.every((id) => knownExecutedToolIds.has(id))
+    ) {
+      return true
+    }
+    if (isToolResultOnlyUserMessage(message)) {
+      const toolResultIds = uniqueStrings(extractUserToolResultIds(message))
+      if (
+        toolResultIds.length > 0
+        && toolResultIds.every((id) => seenToolResultIds.has(id))
+      ) {
+        return true
+      }
+    }
+    return false
+  }
+
   for (const runtimeMessage of projectionRuntimeMessages) {
     const assistantMessageId = getAssistantMessageId(runtimeMessage)
     // Runtime Transcript 在 compact 后可能重复给出同一 message.id。
     // 已合并过的 id 直接跳过，否则旧回复会被再次追加到最新一轮之后。
     if (assistantMessageId && seenAssistantMessageIds.has(assistantMessageId)) {
       consumeLocalAssistantDuplicates(assistantMessageId)
+      continue
+    }
+    // compact 也可能用新 message.id 重放历史 tool_use / tool_result。
+    if (isCompactToolReplay(runtimeMessage)) {
       continue
     }
     if (assistantMessageId) {
@@ -837,8 +975,10 @@ export function mergeAgentSessionSDKMessages(
         if (enhancedPromptIndex !== undefined) {
           consumedLocalIndexes.add(enhancedPromptIndex)
         }
-        merged.push(localMessages[preferredIndex]!)
-        const matchedCreatedAt = getMessageCreatedAt(localMessages[preferredIndex]!)
+        const preferredLocal = localMessages[preferredIndex]!
+        merged.push(preferredLocal)
+        registerMessageToolIds(preferredLocal)
+        const matchedCreatedAt = getMessageCreatedAt(preferredLocal)
         if (matchedCreatedAt !== undefined) {
           lastMatchedLocalCreatedAt = matchedCreatedAt
         }

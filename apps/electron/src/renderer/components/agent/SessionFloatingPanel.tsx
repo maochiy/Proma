@@ -16,7 +16,6 @@ import {
   agentFloatingPanelPlanStatesAtom,
   agentRuntimeExecutionGraphAtomFamily,
   agentRuntimePlanLifecycleAtom,
-  agentSidePanelRuntimeHistoryAtom,
   agentSessionsAtom,
   agentSessionGitSummaryAtom,
   agentSessionStreamingStateAtomFamily,
@@ -108,13 +107,11 @@ export function SessionFloatingPanel({
     [planSuppressed, visibleLifecycleTodos],
   )
   const sessions = useAtomValue(agentSessionsAtom)
-  const runtimeHistory = useAtomValue(agentSidePanelRuntimeHistoryAtom)
-    .get(sessionId)
-  const parentRuntimeWorkerState = sessions.find(
-    (session) => session.id === sessionId,
-  )?.runtimeWorkerState
   const streamingStates = useAtomValue(agentStreamingStatesAtom)
-  const currentNodes = React.useMemo(
+  // 活跃节点只信任实时执行图 + Collaboration 投影。
+  // 历史上仍 running、却已从 Runtime tasks 消失的节点，会由 merge 收敛为 stopped；
+  // 不再把历史孤儿节点标成 liveRuntimeNode，避免永久“执行中”且点开无 Transcript。
+  const allNodes = React.useMemo(
     () => buildSessionExecutionNodes({
       sessionId,
       runtimeGraph: graph,
@@ -124,50 +121,6 @@ export function SessionFloatingPanel({
   )
   const streamState = useAtomValue(agentSessionStreamingStateAtomFamily(sessionId))
   const running = streamState?.running === true
-  const canRetainRuntimeHistory = (
-    runtimeHistory != null
-    && (
-      graph?.runtimeSessionId == null
-      || runtimeHistory.runtimeSessionId == null
-      || graph.runtimeSessionId === runtimeHistory.runtimeSessionId
-    )
-    && (
-      running
-      || parentRuntimeWorkerState === 'busy'
-      || parentRuntimeWorkerState === 'starting'
-    )
-  )
-  const allNodes = React.useMemo(() => {
-    const merged = new Map(
-      currentNodes.map((node) => [node.id, node]),
-    )
-    if (canRetainRuntimeHistory) {
-      const currentRuntimeNodeIds = new Set(
-        (graph?.nodes ?? []).map((node) => node.id),
-      )
-      for (const node of runtimeHistory?.nodes ?? []) {
-        if (
-          currentRuntimeNodeIds.has(node.id)
-          || isFloatingExecutionNodeTerminal(node)
-        ) {
-          continue
-        }
-        merged.set(node.id, {
-          ...node,
-          source: 'runtime',
-          liveRuntimeNode: true,
-          runtimeWorkerState: parentRuntimeWorkerState,
-        })
-      }
-    }
-    return Array.from(merged.values())
-  }, [
-    canRetainRuntimeHistory,
-    currentNodes,
-    graph?.nodes,
-    parentRuntimeWorkerState,
-    runtimeHistory?.nodes,
-  ])
   const executionNodeStates = useAtomValue(agentFloatingPanelExecutionNodeStatesAtom)
     .get(sessionId)
   const now = Date.now()
@@ -209,13 +162,7 @@ export function SessionFloatingPanel({
     (graph?.nodes ?? []).some((node) => (
       node.status === 'queued' || node.status === 'running'
     ))
-    || (
-      canRetainRuntimeHistory
-      && (runtimeHistory?.nodes ?? []).some((node) => (
-        node.status === 'queued' || node.status === 'running'
-      ))
-    )
-  ), [canRetainRuntimeHistory, graph?.nodes, runtimeHistory?.nodes])
+  ), [graph?.nodes])
 
   // 有活跃节点时才轮询；页面隐藏自动暂停。merge 短路保证内容不变不重渲染。
   useAgentRuntimeExecutionGraphRefresh(sessionId, {

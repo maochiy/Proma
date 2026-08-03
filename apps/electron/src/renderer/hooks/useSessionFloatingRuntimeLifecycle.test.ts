@@ -13,6 +13,7 @@ import {
   advanceFloatingPanelPlanState,
   areFloatingPlanTodosCompleted,
   createFloatingPlanSignature,
+  finalizeOrphanedRuntimeExecutionNodes,
   isFloatingExecutionNodeTerminal,
 } from '@/lib/session-floating-runtime-lifecycle'
 
@@ -514,5 +515,127 @@ describe('会话悬浮面板运行时生命周期', () => {
     expect(firstExpiry).toBeNumber()
     expect(secondExpiry).toBeNumber()
     expect(secondExpiry!).toBeGreaterThan(firstExpiry!)
+  })
+})
+
+
+describe('finalizeOrphanedRuntimeExecutionNodes 历史孤儿节点收敛', () => {
+  test('Given 历史节点仍 running 且权威实时图已不再包含它 When 收敛 Then 标记为 stopped', () => {
+    const previous = [{
+      id: 'ghost-subagent',
+      kind: 'subagent' as const,
+      name: '已消失的子智能体',
+      description: '任务已被 Runtime 清理',
+      status: 'running' as const,
+      transcriptAvailable: true,
+    }]
+    const next = finalizeOrphanedRuntimeExecutionNodes(
+      previous,
+      [{
+        id: 'other-running',
+        kind: 'subagent',
+        description: '其它仍在执行的节点',
+        status: 'running',
+        transcriptAvailable: true,
+      }],
+      {
+        graphUpdatedAt: Date.now(),
+        completedAt: 1234,
+      },
+    )
+    expect(next).toEqual([{
+      ...previous[0],
+      status: 'stopped',
+      completedAt: 1234,
+      summary: '执行节点已从 Runtime 消失（可能已结束或异常退出）',
+    }])
+  })
+
+  test('Given 权威空图 When 收敛 Then 暂不处理，避免短暂清空误杀', () => {
+    const previous = [{
+      id: 'ghost-subagent',
+      kind: 'subagent' as const,
+      name: '可能稍后补终态的节点',
+      description: '短暂清空',
+      status: 'running' as const,
+      transcriptAvailable: true,
+    }]
+    const next = finalizeOrphanedRuntimeExecutionNodes(previous, [], {
+      graphUpdatedAt: Date.now(),
+    })
+    expect(next).toBe(previous)
+  })
+
+  test('Given Session 未打开返回非权威空图 When 收敛 Then 保留历史 running 节点', () => {
+    const previous = [{
+      id: 'ghost-subagent',
+      kind: 'subagent' as const,
+      name: '等待恢复的节点',
+      description: 'Session 尚未打开',
+      status: 'running' as const,
+      transcriptAvailable: true,
+    }]
+    const next = finalizeOrphanedRuntimeExecutionNodes(previous, [], {
+      graphUpdatedAt: 0,
+    })
+    expect(next).toBe(previous)
+  })
+
+  test('Given 权威实时图仍有其它节点且幽灵节点消失 When 更新 atom Then 幽灵 running 节点收敛且进入短暂终态', () => {
+    const store = createStore()
+    const sessionId = 'orphan-runtime-node'
+    store.set(mergeAgentRuntimeExecutionGraphAtom, {
+      sessionId,
+      graph: {
+        runtimeSessionId: 'runtime',
+        nodes: [{
+          id: 'ghost-subagent',
+          kind: 'subagent',
+          name: '已消失的子智能体',
+          description: '历史 running',
+          status: 'running',
+          transcriptAvailable: true,
+        }, {
+          id: 'still-running',
+          kind: 'subagent',
+          name: '仍在执行',
+          description: 'peer',
+          status: 'running',
+          transcriptAvailable: true,
+        }],
+        todos: [],
+        updatedAt: 100,
+      },
+    })
+    store.set(mergeAgentRuntimeExecutionGraphAtom, {
+      sessionId,
+      graph: {
+        runtimeSessionId: 'runtime',
+        nodes: [{
+          id: 'still-running',
+          kind: 'subagent',
+          name: '仍在执行',
+          description: 'peer',
+          status: 'running',
+          transcriptAvailable: true,
+        }],
+        todos: [],
+        updatedAt: 200,
+      },
+    })
+
+    const history = store.get(agentSidePanelRuntimeHistoryAtom).get(sessionId)
+    expect(history?.nodes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: 'ghost-subagent',
+        status: 'stopped',
+      }),
+      expect.objectContaining({
+        id: 'still-running',
+        status: 'running',
+      }),
+    ]))
+    const terminal = store.get(agentFloatingPanelExecutionNodeStatesAtom).get(sessionId)
+    expect(terminal?.get('ghost-subagent')?.node.status).toBe('stopped')
   })
 })

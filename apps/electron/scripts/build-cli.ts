@@ -11,6 +11,7 @@
  * - 本机架构编译：CI 每个 runner 即目标平台（mac arm64/x64、win x64、linux），
  *   各自产出宿主架构二进制，与 @anthropic-ai SDK native binary 的分发策略一致，
  *   无需交叉编译。
+ * - 编译后立即做 macOS 签名校验 + smoke test，尽早发现坏二进制。
  *
  * 在 electron app 的 build 链中调用（见 package.json build:cli）。
  */
@@ -18,12 +19,14 @@ import { spawnSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, statSync, unlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { ensureMacCliCodeSignature, smokeTestPromaCli } from './packaged-cli-guard'
 
 const color = {
   reset: '\x1b[0m',
   bold: '\x1b[1m',
   dim: '\x1b[2m',
   green: '\x1b[32m',
+  yellow: '\x1b[33m',
   red: '\x1b[31m',
   cyan: '\x1b[36m',
 }
@@ -97,6 +100,17 @@ try {
       console.warn(`${color.yellow}[build:cli] 无法删除临时 bun 副本: ${tempBunPath}${color.reset}`)
     }
   }
+}
+
+try {
+  const { repaired } = ensureMacCliCodeSignature(outFile)
+  if (repaired) {
+    console.log(`${color.cyan}[build:cli]${color.reset} 已补齐 macOS adhoc 签名`)
+  }
+  smokeTestPromaCli(outFile)
+  console.log(`${color.cyan}[build:cli]${color.reset} smoke test 通过 (session list)`)
+} catch (err) {
+  fail(err instanceof Error ? err.message : String(err))
 }
 
 const sizeMb = (statSync(outFile).size / 1024 / 1024).toFixed(0)

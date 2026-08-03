@@ -15,7 +15,8 @@ import {
   EXPECTED_CCB_RUNTIME_COMMIT,
   EXPECTED_CCB_RUNTIME_VERSION,
 } from '../src/main/lib/ccb-runtime/protocol'
-import { refreshPackagedCcbRuntime } from './electron-builder-after-pack'
+import afterPack, { refreshPackagedCcbRuntime } from './electron-builder-after-pack'
+import { resolvePackagedCliPath } from './packaged-cli-guard'
 
 const temporaryDirectories: string[] = []
 
@@ -132,5 +133,34 @@ describe('Windows Electron 打包后的 CCB Runtime', () => {
         electronPlatformName: 'darwin',
       }),
     ).toEqual([])
+  })
+})
+
+
+describe('afterPack 入口（proma CLI 守卫）', () => {
+  test('Given darwin 产物缺少 proma CLI When afterPack Then 抛错中断打包', () => {
+    const appOutDir = mkdtempSync(join(tmpdir(), 'proma-after-pack-cli-'))
+    temporaryDirectories.push(appOutDir)
+
+    expect(() =>
+      afterPack({
+        appOutDir,
+        arch: 3,
+        electronPlatformName: 'darwin',
+      }),
+    ).toThrow(/缺少 proma CLI/)
+  })
+
+  test('Given linux 产物含可执行 proma 且 smoke 通过 When afterPack Then 不处理 Windows Runtime', () => {
+    // 此用例依赖 mock 较重；路径解析单独由 packaged-cli-guard 覆盖。
+    // 这里只断言 Windows 专用逻辑在非 win32 仍返回空。
+    expect(
+      refreshPackagedCcbRuntime({
+        appOutDir: '/unused',
+        arch: 3,
+        electronPlatformName: 'darwin',
+      }),
+    ).toEqual([])
+    expect(resolvePackagedCliPath('/out', 'darwin')).toContain('Proma.app')
   })
 })

@@ -15,6 +15,7 @@ import type { SessionExecutionNode } from '@/lib/session-execution-nodes'
 import {
   advanceFloatingPanelPlanState,
   createFloatingPlanSignature,
+  finalizeOrphanedRuntimeExecutionNodes,
   FLOATING_EXECUTION_NODE_COMPLETION_DELAY_MS,
   FLOATING_EXECUTION_NODE_COMPLETION_STAGGER_MS,
   isFloatingExecutionNodeTerminal,
@@ -851,14 +852,35 @@ export const mergeAgentRuntimeExecutionGraphAtom = atom(
     for (const node of existing?.nodes ?? []) {
       previousNodes.set(node.id, node)
     }
-    const terminalTransitions = graph.nodes.filter((node) => {
-      const previous = previousNodes.get(node.id)
-      return (
-        previous != null
-        && (previous.status === 'queued' || previous.status === 'running')
-        && isFloatingExecutionNodeTerminal(node)
-      )
-    })
+    const completionBaseTime = Date.now()
+    // 权威快照（updatedAt > 0）下，把已从实时图消失但仍 running 的历史节点收敛为 stopped。
+    const finalizedHistoryNodes = finalizeOrphanedRuntimeExecutionNodes(
+      Array.from(previousNodes.values()),
+      graph.nodes,
+      {
+        graphUpdatedAt: graph.updatedAt,
+        completedAt: completionBaseTime,
+      },
+    )
+    const terminalTransitions = [
+      ...graph.nodes.filter((node) => {
+        const previous = previousNodes.get(node.id)
+        return (
+          previous != null
+          && (previous.status === 'queued' || previous.status === 'running')
+          && isFloatingExecutionNodeTerminal(node)
+        )
+      }),
+      ...finalizedHistoryNodes.filter((node) => {
+        const previous = previousNodes.get(node.id)
+        return (
+          previous != null
+          && (previous.status === 'queued' || previous.status === 'running')
+          && isFloatingExecutionNodeTerminal(node)
+          && !graph.nodes.some((live) => live.id === node.id)
+        )
+      }),
+    ]
 
     set(agentRuntimeExecutionGraphsAtom, (previous) => {
       const next = new Map(previous)
@@ -888,7 +910,16 @@ export const mergeAgentRuntimeExecutionGraphAtom = atom(
       )
       const hasRuntimeData = graph.nodes.length > 0 || graph.todos.length > 0
       const base = runtimeChanged && hasRuntimeData ? undefined : current
-      const nodes = new Map((base?.nodes ?? []).map((node) => [node.id, node]))
+      const nodes = new Map(
+        finalizeOrphanedRuntimeExecutionNodes(
+          base?.nodes ?? [],
+          graph.nodes,
+          {
+            graphUpdatedAt: graph.updatedAt,
+            completedAt: completionBaseTime,
+          },
+        ).map((node) => [node.id, node]),
+      )
       for (const node of graph.nodes) {
         nodes.set(node.id, { ...node, source: 'runtime' })
       }
@@ -925,7 +956,6 @@ export const mergeAgentRuntimeExecutionGraphAtom = atom(
     })
 
     if (terminalTransitions.length > 0) {
-      const completionBaseTime = Date.now()
       set(agentFloatingPanelExecutionNodeStatesAtom, (previous) => {
         const next = new Map(previous)
         const sessionStates = new Map(previous.get(input.sessionId) ?? [])

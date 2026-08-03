@@ -6,6 +6,7 @@ import type {
   SDKContentBlock,
   SDKMessage,
   SDKTextBlock,
+  SDKThinkingBlock,
   SDKToolResultBlock,
   SDKToolUseBlock,
   SDKUserMessage,
@@ -92,6 +93,47 @@ function areToolsBeforeIndexCompleted(
   // 没有 tool_use 时不认为"工具已完成"——避免流式中只有 thinking + 尾部 text
   // 时把还可能变成中间过程的 text 提前外置。
   return hasToolUse
+}
+
+
+/**
+ * 无 text 正文时，把最后一段非空 thinking 提升为 text 展示。
+ *
+ * 部分模型（如 Grok）会把最终答复只写进 thinking，完成后 UI 只剩「执行过程」折叠块，
+ * 用户会感觉「消息莫名消失」。此投影仅影响渲染，不改持久化数据。
+ * 流式中不做提升，避免后续 tool/text 还可能继续到达时提前外置。
+ */
+export function projectOrphanThinkingAsText(
+  blocks: SDKContentBlock[],
+  options: { isStreaming?: boolean } = {},
+): SDKContentBlock[] {
+  if (options.isStreaming || blocks.length === 0) return blocks
+
+  const hasVisibleText = blocks.some((block) =>
+    block.type === 'text'
+    && (block as SDKTextBlock).text.trim().length > 0,
+  )
+  if (hasVisibleText) return blocks
+
+  let lastThinkingIndex = -1
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    const block = blocks[index]
+    if (block?.type !== 'thinking') continue
+    const thinking = (block as SDKThinkingBlock).thinking
+    if (typeof thinking === 'string' && thinking.trim().length > 0) {
+      lastThinkingIndex = index
+      break
+    }
+  }
+  if (lastThinkingIndex < 0) return blocks
+
+  return blocks.map((block, index) => {
+    if (index !== lastThinkingIndex || block.type !== 'thinking') return block
+    return {
+      type: 'text',
+      text: (block as SDKThinkingBlock).thinking,
+    }
+  })
 }
 
 export function buildAssistantTurnRenderItems(

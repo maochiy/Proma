@@ -19,6 +19,7 @@ import {
   ensureLocalCodeSigningIdentity,
   type LocalCodeSigningIdentity,
 } from './local-code-signing-identity'
+import { smokeTestPromaCli } from './packaged-cli-guard'
 
 const appDir = resolve(import.meta.dir, '..')
 const defaultAppPath = join(appDir, 'out', `mac-${process.arch}`, 'Proma.app')
@@ -173,6 +174,11 @@ function main(): void {
     '--verbose=4',
     appPath,
   ])
+
+  const packagedCliPath = join(appPath, 'Contents', 'Resources', 'bin', 'proma')
+  console.log(`[本地签名] smoke test proma CLI: ${packagedCliPath}`)
+  smokeTestPromaCli(packagedCliPath)
+  console.log('[本地签名] proma CLI smoke test 通过')
 
   console.log(`[本地签名] 创建 DMG: ${outputDmgPath}`)
   rmSync(outputDmgPath, { force: true })

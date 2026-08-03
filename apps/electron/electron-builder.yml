@@ -16,9 +16,13 @@ directories:
 # 压缩配置
 compression: normal
 
-# Windows extraResources 中的 .exe 会在复制期间被 electron-builder 签名并改变字节，
-# afterPack Hook 负责刷新 CCB Runtime Manifest 中对应的 SHA-256。
+# afterPack Hook：
+# 1) 修复 macOS extraResources 中 proma CLI 被复制后损坏的代码签名，并 smoke test
+#    （无效签名在 arm64 上会 SIGKILL / exit 137，导致 Agent 内 proma session 全挂）
+# 2) Windows extraResources 中的 .exe 会在复制期间被 electron-builder 签名并改变字节，
+#    负责刷新 CCB Runtime Manifest 中对应的 SHA-256。
 afterPack: dist/electron-builder-after-pack.cjs
+afterSign: dist/electron-builder-after-sign.cjs
 
 # ASAR 打包配置
 # CCB Runtime 通过 extraResources 独立分发，不进入 ASAR。
@@ -35,6 +39,7 @@ npmRebuild: false
 files:
   - dist/**/*
   - "!dist/electron-builder-after-pack.cjs"
+  - "!dist/electron-builder-after-sign.cjs"
   # 排除 build:resources 脚本拷到 dist/resources 的副本（electron-builder 已通过
   # buildResources 从 resources/ 直接使用 icon/plist，避免产物里重复打包一份）
   - "!dist/resources/**"

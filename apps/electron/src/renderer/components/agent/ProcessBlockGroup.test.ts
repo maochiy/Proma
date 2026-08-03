@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test'
 import * as React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { buildAssistantTurnRenderItems, buildProcessGroupToolNames } from './ProcessBlockGroup'
+import { buildAssistantTurnRenderItems, buildProcessGroupToolNames, projectOrphanThinkingAsText } from './ProcessBlockGroup'
 import { ProcessBlockGroup } from './ProcessBlockGroup'
 import type { SDKContentBlock } from '@proma/shared'
 
@@ -185,5 +185,56 @@ describe('Agent 过程块折叠分组', () => {
     ])
 
     expect(toolNames).toEqual(['Grep', 'Read', 'Bash'])
+  })
+
+  test('given completed turn with only thinking when projecting then promotes last thinking to visible text', () => {
+    const blocks = projectOrphanThinkingAsText([
+      thinking('中间推理'),
+      tool('tool-1'),
+      thinking('最终答复：根因是 duplicate event_id'),
+    ])
+
+    expect(blocks.map((block) => block.type)).toEqual(['thinking', 'tool_use', 'text'])
+    expect(blocks[2]).toEqual({
+      type: 'text',
+      text: '最终答复：根因是 duplicate event_id',
+    })
+
+    const items = buildAssistantTurnRenderItems(blocks)
+    expect(items.map((item) => item.type)).toEqual(['process-group', 'block'])
+    if (items[1]?.type === 'block') {
+      expect(items[1].item.block).toEqual({
+        type: 'text',
+        text: '最终答复：根因是 duplicate event_id',
+      })
+    }
+  })
+
+  test('given streaming thinking-only turn when projecting then keeps thinking untouched', () => {
+    const blocks = projectOrphanThinkingAsText([
+      thinking('还在推理中的最终答复草稿'),
+    ], { isStreaming: true })
+
+    expect(blocks).toHaveLength(1)
+    expect(blocks[0]?.type).toBe('thinking')
+  })
+
+  test('given turn already has text when projecting then does not promote thinking', () => {
+    const blocks = projectOrphanThinkingAsText([
+      thinking('过程'),
+      text('正常最终输出'),
+    ])
+
+    expect(blocks.map((block) => block.type)).toEqual(['thinking', 'text'])
+  })
+
+  test('given pure thinking turn when projecting then promotes only the last thinking', () => {
+    const blocks = projectOrphanThinkingAsText([
+      thinking('第一步'),
+      thinking('第二步最终答案'),
+    ])
+
+    expect(blocks.map((block) => block.type)).toEqual(['thinking', 'text'])
+    expect(blocks[1]).toEqual({ type: 'text', text: '第二步最终答案' })
   })
 })
