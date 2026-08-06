@@ -262,3 +262,64 @@ describe('容错与渐进式读取原语', () => {
     expect(md).toContain('答案含关键词 needle')
   })
 })
+
+describe('用户中断 result 分组', () => {
+  test('Given 模型返回前用户停止且仅有 interrupted result When 分组 Then 保留停止 turn', () => {
+    const raw = jsonl([
+      { type: 'user', message: { content: [{ type: 'text', text: '你好' }] }, parent_tool_use_id: null, _createdAt: 1_000 },
+      {
+        type: 'result',
+        subtype: 'interrupted',
+        _durationMs: 1_200,
+        _stoppedByUser: true,
+        _createdAt: 2_200,
+      },
+    ])
+    const groups = groupIntoTurns(readSessionMessagesFromString(raw))
+    expect(groups.map((group) => group.type)).toEqual(['user', 'assistant-turn'])
+    expect(groups[1]).toMatchObject({
+      type: 'assistant-turn',
+      assistantMessages: [],
+      turnMessages: [{ type: 'result', subtype: 'interrupted' }],
+    })
+  })
+})
+
+describe('CCB 中断合成 user', () => {
+  test('Given 中断 result 后跟 Request interrupted by user When 分组 Then 不生成用户气泡', () => {
+    const raw = jsonl([
+      { type: 'user', message: { content: [{ type: 'text', text: '分析登录' }] }, parent_tool_use_id: null, _createdAt: 1_000 },
+      {
+        type: 'assistant',
+        message: {
+          id: 'msg-1',
+          content: [{ type: 'text', text: '先看结构' }],
+          model: 'deepseek-v4-flash',
+        },
+        parent_tool_use_id: null,
+        _createdAt: 1_100,
+      },
+      {
+        type: 'result',
+        subtype: 'interrupted',
+        _durationMs: 5_000,
+        _stoppedByUser: true,
+        _createdAt: 1_100,
+      },
+      {
+        type: 'user',
+        message: { content: [{ type: 'text', text: '[Request interrupted by user]' }] },
+        parent_tool_use_id: null,
+        uuid: 'interrupt-user',
+      },
+    ])
+    const groups = groupIntoTurns(readSessionMessagesFromString(raw))
+    expect(groups.map((group) => group.type)).toEqual(['user', 'assistant-turn'])
+    expect(
+      groups.some((group) =>
+        group.type === 'user'
+        && JSON.stringify(group).includes('[Request interrupted by user]'),
+      ),
+    ).toBe(false)
+  })
+})

@@ -149,3 +149,133 @@ export function upsertAgentLiveMessage(
 
   return [...base, incoming]
 }
+
+
+/**
+ * 合并持久化消息与 liveMessages。
+ * 关键约束：暂停后残留的上一轮 live 内容，不能被拼到新用户消息之后。
+ */
+export function mergePersistedAndLiveMessages(
+  persisted: SDKMessage[],
+  live: SDKMessage[],
+  options?: {
+    identityOf?: (message: SDKMessage) => string
+  },
+): SDKMessage[] {
+  if (live.length === 0) return persisted
+  if (persisted.length === 0) return live
+
+  const identityOf = options?.identityOf ?? ((message: SDKMessage) => {
+    const record = message as Record<string, unknown>
+    if (typeof record.uuid === 'string' && record.uuid.length > 0) {
+      return `${message.type}:uuid:${record.uuid}`
+    }
+    if (message.type === 'assistant') {
+      const inner = record.message as { id?: unknown } | undefined
+      if (inner && typeof inner.id === 'string' && inner.id.length > 0) {
+        return `assistant:model:${inner.id}`
+      }
+    }
+    const createdAt = typeof record._createdAt === 'number' ? record._createdAt : 'na'
+    return `${message.type}:${createdAt}:${JSON.stringify(record.message ?? record.subtype ?? '')}`
+  })
+  const createdAtOf = (message: SDKMessage): number | undefined => {
+    const value = (message as Record<string, unknown>)._createdAt
+    return typeof value === 'number' ? value : undefined
+  }
+
+  const seen = new Set<string>()
+  const uniquePersisted: SDKMessage[] = []
+  for (const message of persisted) {
+    const identity = identityOf(message)
+    if (seen.has(identity)) continue
+    seen.add(identity)
+    uniquePersisted.push(message)
+  }
+
+  const liveOnly: SDKMessage[] = []
+  for (const message of live) {
+    const identity = identityOf(message)
+    if (seen.has(identity)) continue
+    if (
+      message.type === 'result'
+      && (message as { subtype?: string }).subtype === 'interrupted'
+      && uniquePersisted.some((item) =>
+        item.type === 'result'
+        && (item as { subtype?: string }).subtype === 'interrupted',
+      )
+    ) {
+      continue
+    }
+    seen.add(identity)
+    liveOnly.push(message)
+  }
+
+  if (liveOnly.length === 0) return uniquePersisted
+
+  const merged: SDKMessage[] = []
+  let persistedIndex = 0
+  let liveIndex = 0
+  while (persistedIndex < uniquePersisted.length && liveIndex < liveOnly.length) {
+    const persistedMessage = uniquePersisted[persistedIndex]!
+    const liveMessage = liveOnly[liveIndex]!
+    const persistedAt = createdAtOf(persistedMessage)
+    const liveAt = createdAtOf(liveMessage)
+    if (liveAt != null && (persistedAt == null || liveAt < persistedAt)) {
+      merged.push(liveMessage)
+      liveIndex += 1
+    } else {
+      merged.push(persistedMessage)
+      persistedIndex += 1
+    }
+  }
+  if (persistedIndex < uniquePersisted.length) {
+    merged.push(...uniquePersisted.slice(persistedIndex))
+  }
+  if (liveIndex < liveOnly.length) {
+    merged.push(...liveOnly.slice(liveIndex))
+  }
+  return merged
+}
+
+
+function extractAssistantNarrativeFingerprints(message: SDKMessage): string[] {
+  if (message.type !== 'assistant') return []
+  const messageId = getAssistantModelMessageId(message) ?? ''
+  const fingerprints: string[] = []
+  for (const block of getAssistantBlocks(message)) {
+    if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
+      fingerprints.push(`${messageId}::text:${block.text}`)
+    }
+    if (
+      block.type === 'thinking'
+      && typeof (block as { thinking?: unknown }).thinking === 'string'
+      && (block as { thinking: string }).thinking.trim()
+    ) {
+      fingerprints.push(`${messageId}::thinking:${(block as { thinking: string }).thinking}`)
+    }
+  }
+  return fingerprints
+}
+
+/**
+ * 用户暂停后：live 是否仍有 JSONL 未覆盖的过程正文/思考。
+ * 有则应保留 live，避免「有任意 assistant 就清 live」导致正文蒸发。
+ */
+export function hasUnpersistedLiveAssistantNarrative(
+  liveMessages: SDKMessage[],
+  persistedMessages: SDKMessage[],
+): boolean {
+  const persisted = new Set<string>()
+  for (const message of persistedMessages) {
+    for (const fp of extractAssistantNarrativeFingerprints(message)) {
+      persisted.add(fp)
+    }
+  }
+  for (const message of liveMessages) {
+    for (const fp of extractAssistantNarrativeFingerprints(message)) {
+      if (!persisted.has(fp)) return true
+    }
+  }
+  return false
+}

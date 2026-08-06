@@ -4,24 +4,16 @@
  * 支持三种内容块类型：
  * - text: 通过 MessageResponse 渲染 Markdown
  * - tool_use: 语义化短语行（如 "读取 foo.ts 第 10-60 行"），展开显示结构化结果
- * - thinking: 默认展开，左上角 "Thinking" 标签 + 虚线边框内容区
+ * - thinking: 运行中原位增长，完成后拥有独立的第二级折叠
  */
 
 import * as React from 'react'
 import {
   ChevronRight,
-  ChevronDown,
-  ChevronUp,
   XCircle,
-  Loader2,
-  Brain,
-  MessageSquareText,
   Bot,
-  CheckCircle2,
-  Circle,
 } from 'lucide-react'
 import { useAtomValue, useSetAtom } from 'jotai'
-import { thinkingExpandedAtom } from '@/atoms/chat-atoms'
 import {
   agentChildDelegationSessionsAtomFamily,
   agentRuntimeExecutionNodeByToolUseIdAtomFamily,
@@ -34,9 +26,10 @@ import {
   buildSessionExecutionNodes,
   extractDelegationReferences,
   extractDelegationTitles,
+  isSessionExecutionNodeActivelyRunning,
   summarizeCollaborationDelegations,
+  type SessionExecutionNode,
 } from '@/lib/session-execution-nodes'
-import type { SessionExecutionNode } from '@/lib/session-execution-nodes'
 import { MessageResponse } from '@/components/ai-elements/message'
 import { getToolIcon, extractFilePath } from './tool-utils'
 import { getToolPhrase } from './tool-phrase'
@@ -44,9 +37,18 @@ import { ToolResultRenderer } from './tool-result-renderers'
 import { PreviewOpenButton } from './tool-result-renderers/preview-open-button'
 import { getTaskGetStatusLabel, parseTaskGetResult, type ParsedTaskGetResult } from './tool-result-renderers/task-get-result'
 import { parseTaskListResult, type ParsedTaskListItem } from './tool-result-renderers/task-list-result'
-import { formatDuration } from './AgentMessages'
-import { RuntimeSubagentDetails } from './RuntimeSubagentDetails'
+import { SubagentAvatar } from './SubagentAvatar'
+import {
+  buildSubagentPresentation,
+  normalizeSubagentName,
+} from '@/lib/subagent-presentation'
 import { isParallelToolCallCancellation } from './tool-result-status'
+import { AgentModelLogo } from './AgentTurnStatusLine'
+import {
+  formatTurnDuration,
+  getAgentTurnStatusLabel,
+  resolveRunningTurnStatus,
+} from '@/lib/agent-turn-status'
 import type {
   SDKContentBlock,
   SDKMessage,
@@ -55,7 +57,6 @@ import type {
   SDKThinkingBlock,
   SDKUserMessage,
   SDKToolResultBlock,
-  SDKSystemMessage,
 } from '@proma/shared'
 
 // ===== useToolResult Hook =====
@@ -96,119 +97,6 @@ function useToolResult(toolUseId: string, allMessages: SDKMessage[]): ToolResult
   }, [toolUseId, allMessages])
 }
 
-// ===== useSubAgentMeta Hook =====
-
-interface SubAgentMeta {
-  durationMs: number
-  totalTokens: number
-  toolUses: number
-}
-
-/** 从 allMessages 中查找匹配 toolUseId 的 task_notification 系统消息，提取用量数据 */
-function useSubAgentMeta(toolUseId: string, allMessages: SDKMessage[]): SubAgentMeta | null {
-  return React.useMemo(() => {
-    for (const msg of allMessages) {
-      if (msg.type !== 'system') continue
-      const sysMsg = msg as SDKSystemMessage
-      if (sysMsg.subtype !== 'task_notification') continue
-      if (sysMsg.tool_use_id !== toolUseId) continue
-      const usage = sysMsg.usage
-      if (!usage) return null
-      return {
-        durationMs: usage.duration_ms ?? 0,
-        totalTokens: usage.total_tokens ?? 0,
-        toolUses: usage.tool_uses ?? 0,
-      }
-    }
-    return null
-  }, [toolUseId, allMessages])
-}
-
-// ===== SubAgent 结果文本解析 =====
-
-interface ParsedAgentResult {
-  /** 清理后的输出文本（去除元数据） */
-  text: string
-  /** 从 <usage> 标签解析的用量数据（作为 task_notification 的备用） */
-  usage?: SubAgentMeta
-}
-
-/** 从 Agent tool_result 文本中分离内容与元数据（agentId 行 + <usage> 标签） */
-function parseAgentResultText(raw: string): ParsedAgentResult {
-  let text = raw
-
-  // 提取 <usage> 标签中的用量数据
-  let usage: SubAgentMeta | undefined
-  const usageMatch = text.match(/<usage>([\s\S]*?)<\/usage>/)
-  if (usageMatch) {
-    const body = usageMatch[1]!
-    const totalTokens = Number(body.match(/total_tokens:\s*(\d+)/)?.[1]) || 0
-    const toolUses = Number(body.match(/tool_uses:\s*(\d+)/)?.[1]) || 0
-    const durationMs = Number(body.match(/duration_ms:\s*(\d+)/)?.[1]) || 0
-    if (totalTokens > 0 || toolUses > 0 || durationMs > 0) {
-      usage = { durationMs, totalTokens, toolUses }
-    }
-    text = text.replace(/<usage>[\s\S]*?<\/usage>/, '')
-  }
-
-  // 移除 agentId 行
-  text = text.replace(/agentId:.*\n?/g, '')
-
-  // 移除 <output> 标签包裹
-  text = text.replace(/<\/?output>/g, '')
-
-  return { text: text.trim(), usage }
-}
-
-// ===== SubAgent 完成信息尾部 =====
-
-function SubAgentFooter({
-  meta,
-  resultText,
-}: {
-  meta: SubAgentMeta | null
-  resultText?: string
-}): React.ReactElement | null {
-  // 解析结果文本，分离内容与元数据
-  const parsed = React.useMemo(
-    () => resultText ? parseAgentResultText(resultText) : null,
-    [resultText],
-  )
-
-  // 优先使用 task_notification 的用量数据，备用从 result 文本中解析
-  const effectiveMeta = meta ?? parsed?.usage ?? null
-  const cleanText = parsed?.text || ''
-
-  // 没有任何信息时不渲染
-  if (!effectiveMeta && !cleanText) return null
-
-  return (
-    <div className="mt-2 pt-2 border-t border-border/20 space-y-1.5">
-      {/* 最终输出文本（Markdown 渲染） */}
-      {cleanText && (
-        <div className="text-muted-foreground/70">
-          <MessageResponse>{cleanText}</MessageResponse>
-        </div>
-      )}
-
-      {/* 用量统计行（最底部） */}
-      {effectiveMeta && (
-        <div className="flex items-center gap-3 text-[12px] text-muted-foreground/60 tabular-nums">
-          {effectiveMeta.durationMs > 0 && (
-            <span>{formatDuration(effectiveMeta.durationMs)}</span>
-          )}
-          {effectiveMeta.totalTokens > 0 && (
-            <span>{effectiveMeta.totalTokens.toLocaleString()} tokens</span>
-          )}
-          {effectiveMeta.toolUses > 0 && (
-            <span>{effectiveMeta.toolUses} 次工具调用</span>
-          )}
-        </div>
-      )}
-    </div>
-  )
-}
-
 // ===== ContentBlock Props =====
 
 export interface ContentBlockProps {
@@ -232,52 +120,18 @@ export interface ContentBlockProps {
   isStreaming?: boolean
   /** Proma 会话 ID，用于读取 CCB 执行图和子 Agent Transcript。 */
   sessionId?: string
-}
-
-// ===== 提示词折叠行 =====
-
-function PromptRow({ prompt, dimmed = false }: { prompt: string; dimmed?: boolean }): React.ReactElement {
-  const [expanded, setExpanded] = React.useState(false)
-  const preview = prompt.length > 60 ? prompt.slice(0, 60) + '…' : prompt
-
-  return (
-    <div>
-      <button
-        type="button"
-        className="flex items-center gap-2 py-0.5 text-left hover:opacity-70 transition-opacity group"
-        onClick={() => setExpanded(!expanded)}
-      >
-        <MessageSquareText className={cn('size-3.5 shrink-0', dimmed ? 'text-muted-foreground/70' : 'text-muted-foreground')} />
-
-        <span className={cn(
-          'shrink-0 text-[14px]',
-          dimmed ? 'text-muted-foreground/70' : 'text-muted-foreground',
-        )}>提示词</span>
-
-        <span className={cn(
-          'truncate text-[14px]',
-          dimmed ? 'text-muted-foreground/50' : 'text-muted-foreground/60',
-        )}>
-          {preview}
-        </span>
-
-        <ChevronRight
-          className={cn(
-            'shrink-0 size-3 text-muted-foreground/40 opacity-0 group-hover:opacity-100 transition-all duration-150',
-            expanded && 'rotate-90 opacity-100',
-          )}
-        />
-      </button>
-
-      {expanded && (
-        <div className="ml-5.5 mt-1 mb-2 pl-3 border-l-2 border-border/30 animate-in fade-in slide-in-from-top-1 duration-150">
-          <p className="text-[13px] text-foreground/70 leading-relaxed whitespace-pre-wrap break-words">
-            {prompt}
-          </p>
-        </div>
-      )}
-    </div>
-  )
+  /** 当前顶层活动直接使用模型 Logo，不再额外增加独立状态行。 */
+  leadingModel?: string
+  /** 当前 item 是否仍处于 item/completed 之前。 */
+  activityRunning?: boolean
+  /** 顶层 text 是否属于工作活动而不是最终回答。 */
+  activityItem?: boolean
+  /** 思考块的耗时（秒），用于显示"已思考 N 秒" */
+  thinkingDurationMs?: number
+  /** 思考块展开时附带的历史活动节点 */
+  priorActivityNodes?: React.ReactNode
+  /** 是否存在可展开的历史活动 */
+  hasPriorActivities?: boolean
 }
 
 // ===== 工具短语 diff 着色 =====
@@ -353,16 +207,6 @@ const COLLABORATION_COMPACT_RESULT_TOOLS = new Set([
   'mcp__collaboration__get_delegation_results',
 ])
 
-function collaborationNodeStatusIcon(
-  status: SessionExecutionNode['status'],
-): React.ReactNode {
-  if (status === 'running') return <Loader2 className="size-3.5 animate-spin text-sky-500" />
-  if (status === 'completed') return <CheckCircle2 className="size-3.5 text-emerald-500" />
-  if (status === 'failed') return <XCircle className="size-3.5 text-destructive" />
-  if (status === 'stopped') return <XCircle className="size-3.5 text-muted-foreground" />
-  return <Circle className="size-3.5 text-muted-foreground/60" />
-}
-
 // ===== 工具调用块 =====
 
 interface ToolUseBlockProps {
@@ -376,6 +220,14 @@ interface ToolUseBlockProps {
   /** 是否正在流式输出中 */
   isStreaming?: boolean
   sessionId?: string
+  /** 当前顶层活动直接以模型 Logo 起头，避免额外再渲染一行 Turn 状态。 */
+  leadingModel?: string
+  /** item/completed 之前的当前活动。 */
+  activityRunning?: boolean
+  /** 展开时附带的更早工具调用（多工具波次历史） */
+  priorActivityNodes?: React.ReactNode
+  /** 是否存在可展开的历史工具 */
+  hasPriorActivities?: boolean
 }
 
 function ToolUseBlock(props: ToolUseBlockProps): React.ReactElement {
@@ -395,6 +247,10 @@ function CollaborationToolUseBlock({
   basePath,
   isStreaming,
   sessionId,
+  leadingModel,
+  activityRunning,
+  priorActivityNodes,
+  hasPriorActivities = false,
 }: ToolUseBlockProps): React.ReactElement {
   const [expanded, setExpanded] = React.useState(false)
   // 委派节点只依赖子会话元数据；不订阅整图/全局 sessions，避免大会话重渲染。
@@ -411,6 +267,8 @@ function CollaborationToolUseBlock({
     return summarizeCollaborationDelegations(resultText)
   }, [block.name, isError, resultText])
   const canExpandResult = shouldShowResult && !collaborationResultSummary
+  const canToggleHistory = hasPriorActivities === true
+  const canToggle = canExpandResult || canToggleHistory
   const collaborationNodes = React.useMemo(() => {
     if (!sessionId) return []
     const allDelegationNodes = buildSessionExecutionNodes({
@@ -440,26 +298,34 @@ function CollaborationToolUseBlock({
 
   const phrase = getToolPhrase(block.name, block.input)
   const isCompleted = toolResult !== null
-  const displayLabel = (isCompleted || !isStreaming) ? phrase.label : phrase.loadingLabel
+  const running = activityRunning ?? (!isCompleted && isStreaming === true)
+  const displayLabel = running
+    ? leadingModel
+      ? getAgentTurnStatusLabel(resolveRunningTurnStatus([block]))
+      : phrase.loadingLabel
+    : phrase.label
   const resolvedDisplayLabel = isCancelled
-    ? `${displayLabel} · 已取消`
+    ? getCancelledLabel(block.name)
     : displayLabel
   const delay = animate && index < 10 ? `${index * 30}ms` : '0ms'
 
   return (
     <div
-      className={cn(animate && 'animate-in fade-in duration-150 fill-mode-both')}
+      className={cn(animate && 'animate-in fade-in duration-500 fill-mode-both')}
       style={animate ? { animationDelay: delay } : undefined}
     >
       <button
         type="button"
-        className="flex w-full items-center gap-2 py-0.5 text-left transition-opacity hover:opacity-70"
+        className="inline-flex max-w-full items-center gap-1 py-0.5 text-left transition-opacity hover:opacity-70"
+        disabled={!canToggle}
+        aria-expanded={canToggle ? expanded : undefined}
         onClick={() => {
-          if (canExpandResult) setExpanded((previous) => !previous)
+          if (!canToggle) return
+          setExpanded((previous) => !previous)
         }}
       >
-        {!isCompleted && isStreaming ? (
-          <Loader2 className="size-3.5 shrink-0 animate-spin text-primary/50" />
+        {leadingModel ? (
+          <AgentModelLogo model={leadingModel} />
         ) : isActualError ? (
           <XCircle className="size-3.5 shrink-0 text-destructive/70" />
         ) : isCancelled ? (
@@ -467,7 +333,10 @@ function CollaborationToolUseBlock({
         ) : (
           <Bot className="size-3.5 shrink-0 text-muted-foreground" />
         )}
-        <span className="min-w-0 flex-1 truncate text-[14px] text-muted-foreground">
+        <span className={cn(
+          'min-w-0 max-w-[min(100%,36rem)] truncate text-[14px] text-muted-foreground',
+          running && 'agent-status-shimmer',
+        )}>
           {resolvedDisplayLabel}
         </span>
         {collaborationNodes.length > 0 && (
@@ -475,15 +344,22 @@ function CollaborationToolUseBlock({
             执行节点 · {collaborationNodes.length}
           </span>
         )}
-        {canExpandResult && (
+        {canToggle && (
           <ChevronRight
             className={cn(
               'size-3 shrink-0 text-muted-foreground/45 transition-transform duration-150',
               expanded && 'rotate-90',
             )}
+            data-collapse-chevron="right"
           />
         )}
       </button>
+
+      {expanded && canToggleHistory && priorActivityNodes ? (
+        <div className="ml-5.5 mt-1 space-y-1 border-l border-border/35 pl-3">
+          {priorActivityNodes}
+        </div>
+      ) : null}
 
       {collaborationResultSummary && (
         <p className="ml-5.5 mt-1 text-[11px] text-muted-foreground/65">
@@ -492,37 +368,49 @@ function CollaborationToolUseBlock({
       )}
 
       {collaborationNodes.length > 0 && (
-        <div className="ml-5.5 mt-1.5 space-y-1 border-l-2 border-primary/15 pl-3">
-          {collaborationNodes.map((node) => (
-            <button
-              key={node.id}
-              type="button"
-              className="flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-accent/55"
-              onClick={() => {
-                if (!sessionId) return
-                openSidePanelTab({
-                  sessionId,
-                  tab: createAgentExecutionNodeTab(node.id, node.transcriptSessionId),
-                  executionNodeSnapshot: {
-                    node,
-                    runtimeSessionId: node.transcriptSessionId,
-                  },
-                })
-              }}
-            >
-              <span className="mt-0.5">{collaborationNodeStatusIcon(node.status)}</span>
-              <span className="min-w-0 flex-1">
-                <span className="block truncate text-xs font-medium">
-                  {node.name || node.description}
+        <div className="ml-5.5 mt-1.5 flex flex-wrap gap-1.5 border-l-2 border-primary/15 pl-3">
+          {collaborationNodes.slice(0, 3).map((node) => {
+            const presentation = buildSubagentPresentation(
+              node,
+              isSessionExecutionNodeActivelyRunning(node, !!isStreaming),
+            )
+            return (
+              <button
+                key={node.id}
+                type="button"
+                className="flex max-w-[220px] items-center gap-1.5 rounded-full bg-muted/55 px-1.5 py-1 text-left transition-colors hover:bg-accent"
+                title={presentation.modelTooltip}
+                onClick={() => {
+                  if (!sessionId) return
+                  openSidePanelTab({
+                    sessionId,
+                    tab: createAgentExecutionNodeTab(node.id, node.transcriptSessionId),
+                    executionNodeSnapshot: {
+                      node,
+                      runtimeSessionId: node.transcriptSessionId,
+                    },
+                  })
+                }}
+              >
+                <SubagentAvatar
+                  seed={presentation.avatarSeed}
+                  name={presentation.name}
+                  className="size-5 text-[9px]"
+                />
+                <span className="min-w-0 truncate text-[11px] font-medium">
+                  {presentation.name}
                 </span>
-                {node.name && node.description !== node.name && (
-                  <span className="mt-0.5 block line-clamp-2 text-[10px] leading-4 text-muted-foreground">
-                    {node.description}
-                  </span>
-                )}
-              </span>
-            </button>
-          ))}
+                <span className="shrink-0 text-[10px] text-muted-foreground">
+                  {presentation.statusLabel}
+                </span>
+              </button>
+            )
+          })}
+          {collaborationNodes.length > 3 && (
+            <span className="flex items-center rounded-full bg-muted/40 px-2 text-[11px] text-muted-foreground">
+              及其他 {collaborationNodes.length - 3} 个子智能体
+            </span>
+          )}
         </div>
       )}
 
@@ -542,8 +430,22 @@ function CollaborationToolUseBlock({
 }
 
 /** 普通 / Agent / Task 工具块：按 toolUseId 订阅单个 runtime 节点，不订阅整图/全局 sessions。 */
-function RegularToolUseBlock({ block, allMessages, animate = false, index = 0, dimmed = false, childBlocks, basePath, isStreaming, sessionId }: ToolUseBlockProps): React.ReactElement {
+function RegularToolUseBlock({
+  block,
+  allMessages,
+  animate = false,
+  index = 0,
+  dimmed = false,
+  basePath,
+  isStreaming,
+  sessionId,
+  leadingModel,
+  activityRunning,
+  priorActivityNodes,
+  hasPriorActivities = false,
+}: ToolUseBlockProps): React.ReactElement {
   const [expanded, setExpanded] = React.useState(false)
+  const openSidePanelTab = useSetAtom(openAgentSidePanelTabAtom)
   // 仅订阅本 tool 对应 runtime 节点；无匹配节点时保持 undefined，图更新也不会误伤重渲染。
   const runtimeNode = useAtomValue(
     agentRuntimeExecutionNodeByToolUseIdAtomFamily(
@@ -567,24 +469,33 @@ function RegularToolUseBlock({ block, allMessages, animate = false, index = 0, d
     return parseTaskListResult(resultText)
   }, [block.name, resultText, isError])
   const isAgentTool = block.name === 'Agent' || block.name === 'Task'
+  const executionNode: SessionExecutionNode | undefined = runtimeNode
+    ? {
+        ...runtimeNode,
+        source: 'runtime' as const,
+        liveRuntimeNode: true,
+      }
+    : undefined
   const collaborationResultSummary = React.useMemo(() => {
     if (isError || !COLLABORATION_COMPACT_RESULT_TOOLS.has(block.name)) return undefined
     return summarizeCollaborationDelegations(resultText)
   }, [block.name, isError, resultText])
   const canExpandResult = shouldShowResult && !collaborationResultSummary
-  const hasChildren = isAgentTool && childBlocks && childBlocks.length > 0
-  const subAgentMeta = useSubAgentMeta(block.id, allMessages)
-
-  // Agent/Task 子代理内容默认折叠
-  const [childrenExpanded, setChildrenExpanded] = React.useState(false)
+  const canToggleHistory = hasPriorActivities === true
+  const canToggle = canExpandResult || canToggleHistory
 
   const phrase = getToolPhrase(block.name, block.input)
   const ToolIcon = getToolIcon(block.name)
 
   const isCompleted = toolResult !== null
+  const running = activityRunning ?? (!isCompleted && isStreaming === true)
 
   // 运行中显示进行时短语，完成或非流式（已终止）显示完成态短语
-  const displayLabel = (isCompleted || !isStreaming) ? phrase.label : phrase.loadingLabel
+  const displayLabel = running
+    ? leadingModel
+      ? getAgentTurnStatusLabel(resolveRunningTurnStatus([block]))
+      : phrase.loadingLabel
+    : phrase.label
   const filePath = extractFilePath(block.input)
   const isPreviewable = !isCancelled && (
     (block.name === 'Read' || block.name === 'Edit' || block.name === 'Write') &&
@@ -592,116 +503,99 @@ function RegularToolUseBlock({ block, allMessages, animate = false, index = 0, d
     filePath
   )
   const resolvedDisplayLabel = isCancelled
-    ? `${displayLabel} · 已取消`
+    ? getCancelledLabel(block.name)
     : displayLabel
 
   const delay = animate && index < 10 ? `${index * 30}ms` : '0ms'
 
-  // Agent/Task: 提取 prompt 用于气泡展示
-  const agentPrompt = isAgentTool
-    ? (typeof block.input.prompt === 'string' ? block.input.prompt : undefined)
-    : undefined
-
-  // 子代理工具调用统计
-  const childToolCount = childBlocks?.filter((b) => b.type === 'tool_use').length ?? 0
-
   // ===== Agent/Task 工具：特殊渲染 =====
   if (isAgentTool) {
+    const presentation = executionNode
+      ? buildSubagentPresentation(executionNode, running)
+      : undefined
+    const subagentName = presentation?.name
+      ?? normalizeSubagentName(
+        typeof block.input.name === 'string'
+          ? block.input.name
+          : typeof block.input.agent === 'string'
+            ? block.input.agent
+            : undefined,
+      )
+    const creationRunning = running && !executionNode
+    const creationLabel = isActualError
+      ? '创建子智能体失败'
+      : isCancelled
+        ? '已取消'
+        : executionNode
+          ? '已创建子智能体'
+          : creationRunning
+            ? '正在创建子智能体'
+            : '已创建子智能体'
+
     return (
       <div
         className={cn(
-          animate && 'animate-in fade-in duration-150 fill-mode-both',
+          animate && 'animate-in fade-in duration-500 fill-mode-both',
         )}
         style={animate ? { animationDelay: delay } : undefined}
       >
-        {/* 头部行：折叠箭头 + 状态 + 语义短语 */}
-        <button
-          type="button"
-          className="w-full flex items-center gap-2 py-0.5 text-left hover:opacity-70 transition-opacity group"
-          onClick={() => setChildrenExpanded(!childrenExpanded)}
-        >
-          <ChevronRight
-            className={cn(
-              'size-3 text-muted-foreground/50 transition-transform duration-150 shrink-0',
-              childrenExpanded && 'rotate-90',
-            )}
-          />
-
-          {/* 状态指示：仅流式中的未完成工具才显示 spinner */}
-          {!isCompleted && isStreaming ? (
-            <Loader2 className="size-3.5 animate-spin text-primary/50 shrink-0" />
+        <div className="flex w-full items-center gap-2 py-0.5 text-left">
+          {creationRunning && leadingModel ? (
+            <AgentModelLogo model={leadingModel} />
           ) : isActualError ? (
-            <XCircle className="size-3.5 text-destructive/70 shrink-0" />
+            <XCircle className="size-3.5 shrink-0 text-destructive/70" />
           ) : isCancelled ? (
-            <XCircle className="size-3.5 text-muted-foreground/45 shrink-0" />
-          ) : null}
-
-          <ToolIcon className={cn('size-3.5 shrink-0', dimmed ? 'text-muted-foreground/70' : 'text-muted-foreground')} />
-
+            <XCircle className="size-3.5 shrink-0 text-muted-foreground/45" />
+          ) : (
+            <Bot className="size-3.5 shrink-0 text-muted-foreground" />
+          )}
           <span className={cn(
-            'truncate text-[14px]',
+            'min-w-0 flex-1 truncate text-[14px]',
             dimmed ? 'text-muted-foreground/70' : 'text-muted-foreground',
-          )}>{resolvedDisplayLabel}</span>
-
-          {/* 子工具计数（折叠时显示） */}
-          {childToolCount > 0 && !childrenExpanded && (
-            <span className="shrink-0 text-[11px] text-muted-foreground/50 tabular-nums">
-              {childToolCount} 项工具调用
+            creationRunning && 'agent-status-shimmer',
+          )}>
+            {creationLabel}
+          </span>
+          {!executionNode && subagentName !== '智能体' && (
+            <span className="max-w-[180px] truncate text-[11px] text-muted-foreground/65">
+              {subagentName}
             </span>
           )}
-        </button>
+        </div>
 
-        {/* 展开内容 */}
-        {childrenExpanded && (
-          <div className={cn(
-            'pl-5 mt-1.5 space-y-2 border-l-2 border-primary/20 ml-[5px]',
-            animate && 'animate-in fade-in slide-in-from-top-1 duration-150',
-          )}>
-            {/* 提示词：可折叠行 */}
-            {agentPrompt && <PromptRow prompt={agentPrompt} dimmed={dimmed} />}
-
-            {/* 子代理工具调用 */}
-            {hasChildren && childBlocks.map((childBlock, ci) => (
-              <ContentBlock
-                key={ci}
-                block={childBlock}
-                allMessages={allMessages}
-                basePath={basePath}
-                animate={animate}
-                index={ci}
-                dimmed
-                isStreaming={isStreaming}
-                sessionId={sessionId}
-              />
-            ))}
-
-            {sessionId && runtimeNode && (
-              <RuntimeSubagentDetails
-                sessionId={sessionId}
-                node={runtimeNode}
-                running={runtimeNode.status === 'running' && isStreaming === true}
-                className="rounded-lg bg-muted/30 p-2.5"
-              />
-            )}
-
-            {/* SubAgent 完成信息 */}
-            {isCompleted && (
-              <SubAgentFooter
-                meta={subAgentMeta}
-                resultText={toolResult?.result}
-              />
-            )}
-
-            {/* 底部收起按钮 */}
-            <button
-              type="button"
-              onClick={() => setChildrenExpanded(false)}
-              className="flex items-center gap-1 text-xs text-foreground/40 hover:text-foreground/70 transition-colors"
-            >
-              <ChevronUp className="size-3" />
-              <span>收起</span>
-            </button>
-          </div>
+        {executionNode && presentation && (
+          <button
+            type="button"
+            className="ml-5.5 mt-1 flex max-w-[320px] items-center gap-2 rounded-lg px-1.5 py-1 text-left transition-colors hover:bg-accent/55"
+            title={presentation.modelTooltip}
+            onClick={() => {
+              if (!sessionId) return
+              openSidePanelTab({
+                sessionId,
+                tab: createAgentExecutionNodeTab(executionNode.id),
+                executionNodeSnapshot: {
+                  node: executionNode,
+                  runtimeSessionId: undefined,
+                },
+              })
+            }}
+          >
+            <SubagentAvatar
+              seed={presentation.avatarSeed}
+              name={presentation.name}
+              className="size-5 text-[9px]"
+            />
+            <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-foreground/75">
+              {presentation.name}
+            </span>
+            <span className={cn(
+              'shrink-0 text-[11px] text-muted-foreground',
+              presentation.status === 'running' && 'agent-status-shimmer',
+            )}>
+              {presentation.statusLabel}
+            </span>
+            <ChevronRight className="size-3 shrink-0 text-muted-foreground/45" />
+          </button>
         )}
       </div>
     )
@@ -711,34 +605,42 @@ function RegularToolUseBlock({ block, allMessages, animate = false, index = 0, d
   return (
     <div
       className={cn(
-        animate && 'animate-in fade-in duration-150 fill-mode-both',
+        animate && 'animate-in fade-in duration-500 fill-mode-both',
       )}
       style={animate ? { animationDelay: delay } : undefined}
+      data-agent-activity="tool"
     >
       <button
         type="button"
         className={cn(
-          'inline-flex max-w-full items-center gap-2 py-0.5 text-left transition-opacity group',
+          // 纯淡入入场，不做 max-height 动画，避免阶段行挂载时“跳一下”
+          'agent-activity-fade-in inline-flex max-w-full items-center gap-1 py-0.5 text-left transition-opacity group',
           'hover:opacity-70',
         )}
+        disabled={!canToggle}
+        aria-expanded={canToggle ? expanded : undefined}
         onClick={() => {
-          if (canExpandResult) setExpanded(!expanded)
+          if (!canToggle) return
+          setExpanded(!expanded)
         }}
       >
-        {!isCompleted && isStreaming ? (
-          <Loader2 className="size-3.5 animate-spin text-primary/50 shrink-0" />
+        {leadingModel ? (
+          <AgentModelLogo model={leadingModel} />
         ) : isActualError ? (
           <XCircle className="size-3.5 text-destructive/70 shrink-0" />
         ) : isCancelled ? (
           <XCircle className="size-3.5 text-muted-foreground/45 shrink-0" />
         ) : null}
 
-        <ToolIcon className={cn('size-3.5 shrink-0', dimmed ? 'text-muted-foreground/70' : 'text-muted-foreground')} />
+        {!leadingModel && (
+          <ToolIcon className={cn('size-3.5 shrink-0', dimmed ? 'text-muted-foreground/70' : 'text-muted-foreground')} />
+        )}
 
         <span className={cn(
-          'min-w-0 truncate text-[14px]',
+          'min-w-0 max-w-[min(100%,36rem)] truncate text-[14px]',
           taskGetSummary || taskListSummary ? 'shrink-0' : '',
           dimmed ? 'text-muted-foreground/70' : 'text-muted-foreground',
+          running && 'agent-status-shimmer',
         )}>{resolvedDisplayLabel}</span>
 
         {phrase.diffStats && (isCompleted || !isStreaming) && (
@@ -774,12 +676,13 @@ function RegularToolUseBlock({ block, allMessages, animate = false, index = 0, d
           </>
         )}
 
-        {canExpandResult && (
+        {canToggle && (
           <ChevronRight
             className={cn(
               'shrink-0 size-3 text-muted-foreground/45 transition-transform duration-150',
               expanded && 'rotate-90',
             )}
+            data-collapse-chevron="right"
           />
         )}
 
@@ -788,10 +691,16 @@ function RegularToolUseBlock({ block, allMessages, animate = false, index = 0, d
         )}
       </button>
 
+      {expanded && canToggleHistory && priorActivityNodes ? (
+        <div className="ml-5.5 mt-1 space-y-1 border-l border-border/35 pl-3">
+          {priorActivityNodes}
+        </div>
+      ) : null}
+
       {canExpandResult && resultText && expanded && (
         <div className={cn(
           'ml-5.5 mt-1 mb-2 pl-3 border-l-2 border-border/30',
-          animate && 'animate-in fade-in slide-in-from-top-1 duration-150',
+          animate && 'animate-in fade-in slide-in-from-top-1 duration-500',
         )}>
           <ToolResultRenderer
             toolName={block.name}
@@ -806,92 +715,180 @@ function RegularToolUseBlock({ block, allMessages, animate = false, index = 0, d
   )
 }
 
-// ===== 思考块（默认展开，Thinking 标签 + 虚线边框） =====
+/**
+ * 根据工具名生成取消态文案。
+ * 规则文档要求命令被停止时显示"已停止命令"，
+ * 其他工具使用"已取消"后缀。
+ */
+function getCancelledLabel(toolName: string): string {
+  const COMMAND_TOOLS = /^(Bash|Shell|Execute|Terminal|run_command)$/i
+  if (COMMAND_TOOLS.test(toolName)) return '已停止命令'
+  return '已取消'
+}
+
+// ===== 思考块（整轮折叠之外仍保留自己的第二级折叠） =====
 
 interface ThinkingBlockProps {
   block: SDKThinkingBlock
   dimmed?: boolean
+  running?: boolean
+  leadingModel?: string
+  durationMs?: number
+  /** 展开时附带的历史活动（此前的思考正文 + 工具调用），由上层渲染 */
+  priorActivityNodes?: React.ReactNode
+  /** 是否存在可展开的历史活动（即使当前思考正文仍为空） */
+  hasPriorActivities?: boolean
 }
 
-/** 思考块折叠行数阈值 */
-const THINKING_COLLAPSE_LINE_THRESHOLD = 4
+export function stripLeadingThinkingHeading(content: string): string {
+  const normalized = content.replace(/\r\n/g, '\n')
+  if (/^\s*\*\*\s*$/.test(normalized)) return ''
+  return normalized
+    .replace(/^\s*\*\*([^\n*]+)\*\*\s*(?:\n+|$)/, '')
+    .replace(/^\s*#{1,3}\s+[^\n]+\s*(?:\n+|$)/, '')
+    .trimStart()
+}
 
-function ThinkingBlock({ block, dimmed = false }: ThinkingBlockProps): React.ReactElement {
-  const thinkingExpanded = useAtomValue(thinkingExpandedAtom)
-  const [isExpanded, setIsExpanded] = React.useState(thinkingExpanded)
-  const [shouldCollapse, setShouldCollapse] = React.useState(false)
-  const contentRef = React.useRef<HTMLDivElement>(null)
+function ThinkingBlock({
+  block,
+  dimmed = false,
+  running = false,
+  leadingModel,
+  durationMs,
+  priorActivityNodes,
+  hasPriorActivities = false,
+}: ThinkingBlockProps): React.ReactElement {
+  const summary = React.useMemo(
+    () => stripLeadingThinkingHeading(block.thinking ?? ''),
+    [block.thinking],
+  )
+  // 有思考正文或历史活动才可折叠；过程正文不进此折叠
+  const canToggle = summary.length > 0 || hasPriorActivities
+  // 默认始终收起：有内容只出右侧箭头，点开才看；不自动展开（避免布局“跳”）
+  // 展开/收起仅用高度 + 透明度过渡；思考正文增量是同项更新，不整行 remount。
+  // 用户手动打开后永不因 running/暂停自动关闭。
+  const [expanded, setExpanded] = React.useState(false)
+  const summaryRef = React.useRef<HTMLDivElement>(null)
 
-  // 检测内容是否超过阈值行数（useLayoutEffect：在 paint 前同步执行，避免「展开→收起」闪屏）
   React.useLayoutEffect(() => {
-    if (!contentRef.current) return
-    const el = contentRef.current
-    const lineHeight = parseFloat(getComputedStyle(el).lineHeight) || 22
-    const maxHeight = lineHeight * THINKING_COLLAPSE_LINE_THRESHOLD
-    setShouldCollapse(el.scrollHeight > maxHeight + 10)
-  }, [block.thinking])
+    if (!running || !expanded) return
+    const element = summaryRef.current
+    if (element) element.scrollTop = element.scrollHeight
+  }, [expanded, running, summary, priorActivityNodes])
 
-  // 当全局偏好变更时同步（仅在"应折叠"时生效）
-  React.useEffect(() => {
-    setIsExpanded(thinkingExpanded)
-  }, [thinkingExpanded])
+  const title = running
+    ? '正在思考'
+    : durationMs != null && durationMs > 0
+      ? `已思考 ${formatTurnDuration(durationMs)}`
+      : '已完成思考'
+  const showExpandedBody = expanded && canToggle
 
-  const toggleExpand = React.useCallback(() => {
-    setIsExpanded((prev) => !prev)
-  }, [])
+  // 全程不显示思考 Brain 图标
+  const bodyIndentClass = leadingModel ? 'ml-7' : 'ml-0'
 
   return (
-    <div className="relative mb-3">
-      <div className="flex items-center gap-1.5 mb-1.5">
-        <Brain className={cn('size-3.5', dimmed ? 'text-muted-foreground/70' : 'text-muted-foreground')} />
-        <span className={cn('text-[14px] uppercase tracking-wider', dimmed ? 'text-muted-foreground/70' : 'text-muted-foreground')}>
-          Thinking
-        </span>
-      </div>
-      <div
-        className={cn(
-          'relative rounded-lg px-3.5 py-2.5',
-          dimmed ? 'bg-muted/30' : 'bg-muted/50',
-        )}
-        style={{
-          border: 'none',
-          backgroundImage: `url("data:image/svg+xml,%3csvg width='100%25' height='100%25' xmlns='http://www.w3.org/2000/svg'%3e%3crect width='100%25' height='100%25' fill='none' rx='8' ry='8' stroke='${dimmed ? 'rgba(128,128,128,0.3)' : 'rgba(128,128,128,0.5)'}' stroke-width='1.5' stroke-dasharray='8%2c 6' stroke-dashoffset='0' stroke-linecap='round'/%3e%3c/svg%3e")`,
+    <div
+      className={cn(
+        // 纯淡入入场；思考正文增量是同项更新（稳定 key），不会因内容变化整行 remount
+        'agent-activity-fade-in py-0.5',
+        dimmed ? 'text-muted-foreground/65' : 'text-muted-foreground',
+      )}
+      data-agent-activity="thinking"
+    >
+      <button
+        type="button"
+        className="inline-flex min-h-7 max-w-full items-center gap-1 rounded-md text-left outline-none enabled:hover:opacity-75 focus-visible:ring-2 focus-visible:ring-ring/45"
+        disabled={!canToggle}
+        aria-expanded={canToggle ? expanded : undefined}
+        onClick={() => {
+          if (!canToggle) return
+          setExpanded((previous) => !previous)
         }}
       >
-        <div
-          ref={contentRef}
-          className={cn(
-            'prose prose-sm dark:prose-invert max-w-none prose-p:my-1 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 text-[14px] leading-relaxed overflow-hidden transition-[max-height] duration-200',
-            dimmed ? 'text-muted-foreground' : 'text-foreground/90',
-            shouldCollapse && !isExpanded && 'max-h-[5.6em]',
-          )}
-        >
-          <MessageResponse className="font-normal prose-strong:font-normal [&_strong]:font-normal [&_b]:font-normal">
-            {block.thinking}
-          </MessageResponse>
-        </div>
-        {shouldCollapse && (
-          <button
-            type="button"
-            onClick={toggleExpand}
+        {leadingModel ? (
+          <AgentModelLogo model={leadingModel} />
+        ) : null}
+        <span className={cn(
+          // 「正在思考 / 已思考 N 秒」固定短文案完整显示；箭头紧跟文案
+          'min-w-0 text-[14px] whitespace-nowrap',
+          title.length > 24 && 'truncate',
+          running && 'agent-status-shimmer',
+        )}>
+          {title}
+        </span>
+        {canToggle && (
+          <ChevronRight
             className={cn(
-              'mt-2 flex items-center gap-1 text-xs text-foreground/35 transition-colors',
-              'hover:text-foreground/55'
+              'size-3 shrink-0 text-muted-foreground/45 transition-transform duration-300 motion-reduce:transition-none',
+              expanded && 'rotate-90',
             )}
-          >
-            {isExpanded ? (
-              <>
-                <ChevronUp className="size-3" />
-                <span>收起</span>
-              </>
-            ) : (
-              <>
-                <ChevronDown className="size-3" />
-                <span>展开思考</span>
-              </>
-            )}
-          </button>
+            data-collapse-chevron="right"
+          />
         )}
+      </button>
+      <div
+        ref={summaryRef}
+        className={cn(
+          bodyIndentClass,
+          // 文档：摘要容器高度 + 透明度展开；可见区约 8.75rem，长文内部滚动
+          'min-w-0 overflow-y-auto text-[13px] leading-5 transition-[max-height,opacity] duration-[420ms] ease-out motion-reduce:transition-none',
+          '[&_.prose]:text-inherit [&_.prose]:leading-5',
+          showExpandedBody
+            ? 'pointer-events-auto max-h-[8.75rem] opacity-100'
+            : 'pointer-events-none max-h-0 opacity-0',
+        )}
+      >
+        {/* 正文始终挂在 DOM，收起时靠 max-h/opacity 隐藏，增量在末尾增长 */}
+        <div className="space-y-2 py-0.5">
+          {hasPriorActivities && priorActivityNodes ? (
+            <div className="space-y-1 border-l border-border/35 pl-3">
+              {priorActivityNodes}
+            </div>
+          ) : null}
+          {summary ? (
+            <MessageResponse className="font-normal prose-p:my-1 prose-strong:font-normal [&_strong]:font-normal [&_b]:font-normal [&>*:first-child]:mt-0 [&>*:last-child]:mb-0">
+              {summary}
+            </MessageResponse>
+          ) : null}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ProcessTextActivity({
+  block,
+  basePath,
+  basePaths,
+  leadingModel,
+}: {
+  block: SDKTextBlock
+  basePath?: string
+  basePaths?: string[]
+  running: boolean
+  leadingModel?: string
+}): React.ReactElement {
+  // 过程正文：固定外露、换行追加，不进「正在思考」折叠；
+  // 新正文单独占一行（agent-activity-fade-in 纯淡入入场，不做高度动画，避免“跳一下”），
+  // 绝不 latest-only 顶替旧正文。
+  // text 无思考图标。
+  return (
+    <div
+      className="agent-activity-fade-in py-0.5 text-muted-foreground"
+      data-agent-activity="process-text"
+    >
+      <div className={cn(
+        'min-w-0',
+        leadingModel && 'grid grid-cols-[20px_minmax(0,1fr)] gap-x-2',
+      )}>
+        {leadingModel ? <AgentModelLogo model={leadingModel} className="mt-0.5" /> : null}
+        <MessageResponse
+          basePath={basePath}
+          basePaths={basePaths}
+          className="text-[14px] leading-6 text-muted-foreground prose-p:my-1 [&>*:first-child]:mt-0 [&>*:last-child]:mb-0"
+        >
+          {block.text}
+        </MessageResponse>
       </div>
     </div>
   )
@@ -899,11 +896,49 @@ function ThinkingBlock({ block, dimmed = false }: ThinkingBlockProps): React.Rea
 
 // ===== ContentBlock 主组件 =====
 
-export function ContentBlock({ block, allMessages, basePath, basePaths, animate = false, index = 0, dimmed = false, childBlocks, isStreaming, sessionId }: ContentBlockProps): React.ReactElement | null {
+export function ContentBlock({
+  block,
+  allMessages,
+  basePath,
+  basePaths,
+  animate = false,
+  index = 0,
+  dimmed = false,
+  childBlocks,
+  isStreaming,
+  sessionId,
+  leadingModel,
+  activityRunning,
+  activityItem = false,
+  thinkingDurationMs,
+  priorActivityNodes,
+  hasPriorActivities,
+}: ContentBlockProps): React.ReactElement | null {
   // text 块 — 主要内容，不受 dimmed 影响
   if (block.type === 'text') {
     const textBlock = block as SDKTextBlock
     if (!textBlock.text) return null
+    if (activityItem) {
+      return (
+        <ProcessTextActivity
+          block={textBlock}
+          basePath={basePath}
+          basePaths={basePaths}
+          running={activityRunning === true}
+          leadingModel={leadingModel}
+        />
+      )
+    }
+    if (leadingModel) {
+      return (
+        <div className="grid grid-cols-[20px_minmax(0,1fr)] gap-x-2">
+          <AgentModelLogo model={leadingModel} className="mt-0.5" />
+          <MessageResponse basePath={basePath} basePaths={basePaths}>
+            {textBlock.text}
+          </MessageResponse>
+        </div>
+      )
+    }
     return (
       <MessageResponse basePath={basePath} basePaths={basePaths}>{textBlock.text}</MessageResponse>
     )
@@ -923,15 +958,31 @@ export function ContentBlock({ block, allMessages, basePath, basePaths, animate 
         basePath={basePath}
         isStreaming={isStreaming}
         sessionId={sessionId}
+        leadingModel={leadingModel}
+        activityRunning={activityRunning}
+        priorActivityNodes={priorActivityNodes}
+        hasPriorActivities={hasPriorActivities}
       />
     )
   }
 
-  // thinking 块
+  // thinking 块（允许空正文：流式开局占位「正在思考」，无折叠箭头）
   if (block.type === 'thinking') {
     const thinkingBlock = block as SDKThinkingBlock
-    if (!thinkingBlock.thinking) return null
-    return <ThinkingBlock block={thinkingBlock} dimmed={dimmed} />
+    const hasText = Boolean(thinkingBlock.thinking?.trim())
+    // 非活动占位且无正文时不渲染；活动行即使空也要显示「正在思考」
+    if (!hasText && !activityItem && activityRunning !== true) return null
+    return (
+      <ThinkingBlock
+        block={thinkingBlock}
+        dimmed={dimmed}
+        running={activityRunning === true}
+        leadingModel={leadingModel}
+        durationMs={thinkingDurationMs}
+        priorActivityNodes={priorActivityNodes}
+        hasPriorActivities={hasPriorActivities}
+      />
+    )
   }
 
   return null

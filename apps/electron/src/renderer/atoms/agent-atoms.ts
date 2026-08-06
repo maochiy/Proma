@@ -7,7 +7,7 @@
 
 import { atom } from 'jotai'
 import { atomFamily, atomWithStorage } from 'jotai/utils'
-import type { AgentSessionMeta, AgentEvent, AgentWorkspace, AgentPendingFile, AgentRuntimeModelCatalog, AgentRuntimeExecutionGraph, AgentRuntimeExecutionNode, AgentRuntimePlanSessionState, AgentRuntimeSubagentTranscript, AgentRuntimeTodoItem, AgentTurnChangeStats, RetryAttempt, PromaPermissionMode, PermissionRequest, AskUserRequest, ExitPlanModeRequest, ThinkingConfig, ThinkingEffortLevel, SDKMessage, UnstagedChangesResult, GitRepoStatus } from '@proma/shared'
+import type { AgentSessionMeta, AgentEvent, AgentWorkspace, AgentPendingFile, AgentRuntimeModelCatalog, AgentRuntimeExecutionGraph, AgentRuntimeExecutionNode, AgentRuntimePlanSessionState, AgentRuntimeSubagentTranscript, AgentRuntimeTodoItem, AgentTurnChangeStats, RetryAttempt, PromaPermissionMode, PermissionRequest, AskUserRequest, ExitPlanModeRequest, ThinkingConfig, ThinkingEffortLevel, SDKMessage, UnstagedChangesResult, GitRepoStatus, IntegratedTerminalSessionSnapshot } from '@proma/shared'
 import { PROMA_DEFAULT_PERMISSION_MODE } from '@proma/shared'
 import { calculateDockBadgeCount, countPendingRequests } from '@/lib/dock-badge-count'
 import type { AgentQueuedMessage } from '@/lib/agent-message-queue'
@@ -131,6 +131,15 @@ export interface AgentStreamState {
     failed: boolean
   }
 }
+
+/** Assistant Turn 整轮活动的用户手动折叠状态，仅保存在当前应用内存。 */
+export type AgentTurnCollapseState = 'expanded' | 'collapsed'
+export const agentTurnCollapseStatesAtom = atom<
+  Map<string, Map<string, AgentTurnCollapseState>>
+>(new Map())
+
+/** 会话悬浮面板中的后台智能体区域展开状态，与正文 Turn 折叠相互独立。 */
+export const agentFloatingSubagentsExpandedAtom = atom<Map<string, boolean>>(new Map())
 
 /** 从 ToolActivity 派生状态 */
 export function getActivityStatus(activity: ToolActivity): ActivityStatus {
@@ -605,12 +614,15 @@ export type AgentSidePanelStaticTab =
   | 'chat'
 
 export type AgentExecutionNodeTab = `execution-node:${string}`
+export type AgentTerminalTab = `terminal:${string}`
 
 export type AgentSidePanelTab =
   | AgentSidePanelStaticTab
   | AgentExecutionNodeTab
+  | AgentTerminalTab
 
 const EXECUTION_NODE_TAB_PREFIX = 'execution-node:'
+const TERMINAL_TAB_PREFIX = 'terminal:'
 
 /** 为执行节点创建独立的右侧动态 Tab ID。 */
 export function createAgentExecutionNodeTab(
@@ -636,6 +648,20 @@ export function getAgentExecutionNodeId(tab: AgentSidePanelTab): string | null {
     : decodeURIComponent(value.slice(separatorIndex + 2))
 }
 
+export function createAgentTerminalTab(sessionId: string): AgentTerminalTab {
+  return `${TERMINAL_TAB_PREFIX}${sessionId}`
+}
+
+export function isAgentTerminalTab(tab: AgentSidePanelTab): tab is AgentTerminalTab {
+  return tab.startsWith(TERMINAL_TAB_PREFIX)
+}
+
+export function getAgentTerminalSessionId(tab: AgentSidePanelTab): string | null {
+  return isAgentTerminalTab(tab)
+    ? tab.slice(TERMINAL_TAB_PREFIX.length)
+    : null
+}
+
 /** 侧面板当前 Tab：会话文件 / 工作区文件 / 文件改动 / Chat（per-session Map） */
 export const agentDiffPanelTabAtom = atom<Map<string, AgentSidePanelTab>>(new Map())
 
@@ -656,6 +682,15 @@ export interface AgentExecutionNodeTabSnapshot {
 /** 已打开节点 Tab 的身份与展示快照，避免 Runtime 切换后串到同 ID 的新节点。 */
 export const agentExecutionNodeTabSnapshotsAtom = atom<
   Map<string, Map<AgentExecutionNodeTab, AgentExecutionNodeTabSnapshot>>
+>(new Map())
+
+export interface AgentTerminalTabSnapshot extends IntegratedTerminalSessionSnapshot {
+  title?: string
+}
+
+/** 已打开集成终端的会话快照和动态标题，按 Agent 会话隔离。 */
+export const agentTerminalTabSnapshotsAtom = atom<
+  Map<string, Map<AgentTerminalTab, AgentTerminalTabSnapshot>>
 >(new Map())
 
 /** 节点正文缓存；终态节点切换 Tab 后仍可查看已经加载过的完整内容。 */
@@ -992,6 +1027,7 @@ export interface OpenAgentSidePanelTabInput {
   tab: AgentSidePanelTab
   focusedExecutionNodeId?: string | null
   executionNodeSnapshot?: AgentExecutionNodeTabSnapshot
+  terminalSnapshot?: AgentTerminalTabSnapshot
 }
 
 export interface ReorderAgentSidePanelTabsInput {
@@ -1067,6 +1103,19 @@ export const closeAgentSidePanelTabAtom = atom(
         const next = new Map(previous)
         const nextSessionSnapshots = new Map(sessionSnapshots)
         nextSessionSnapshots.delete(executionNodeTab)
+        if (nextSessionSnapshots.size > 0) next.set(input.sessionId, nextSessionSnapshots)
+        else next.delete(input.sessionId)
+        return next
+      })
+    }
+    if (isAgentTerminalTab(input.tab)) {
+      const terminalTab = input.tab
+      set(agentTerminalTabSnapshotsAtom, (previous) => {
+        const sessionSnapshots = previous.get(input.sessionId)
+        if (!sessionSnapshots?.has(terminalTab)) return previous
+        const next = new Map(previous)
+        const nextSessionSnapshots = new Map(sessionSnapshots)
+        nextSessionSnapshots.delete(terminalTab)
         if (nextSessionSnapshots.size > 0) next.set(input.sessionId, nextSessionSnapshots)
         else next.delete(input.sessionId)
         return next
@@ -1164,6 +1213,16 @@ export const openAgentSidePanelTabAtom = atom(
         const next = new Map(previous)
         const sessionSnapshots = new Map(previous.get(input.sessionId) ?? [])
         sessionSnapshots.set(executionNodeTab, input.executionNodeSnapshot!)
+        next.set(input.sessionId, sessionSnapshots)
+        return next
+      })
+    }
+    if (isAgentTerminalTab(input.tab) && input.terminalSnapshot) {
+      const terminalTab = input.tab
+      set(agentTerminalTabSnapshotsAtom, (previous) => {
+        const next = new Map(previous)
+        const sessionSnapshots = new Map(previous.get(input.sessionId) ?? [])
+        sessionSnapshots.set(terminalTab, input.terminalSnapshot!)
         next.set(input.sessionId, sessionSnapshots)
         return next
       })

@@ -1,17 +1,10 @@
 import * as React from 'react'
-import {
-  Bot,
-  CheckCircle2,
-  Circle,
-  GitBranch,
-  Loader2,
-  Users,
-  Workflow,
-  XCircle,
-} from 'lucide-react'
+import { CheckCircle2, Circle, Loader2, XCircle } from 'lucide-react'
 import type { AgentRuntimeExecutionNode } from '@proma/shared'
 import type { SessionExecutionNode } from '@/lib/session-execution-nodes'
 import { cn } from '@/lib/utils'
+import { buildSubagentPresentation } from '@/lib/subagent-presentation'
+import { SubagentAvatar } from './SubagentAvatar'
 
 interface RuntimeExecutionNodeListProps {
   nodes: SessionExecutionNode[]
@@ -25,12 +18,12 @@ export function runtimeExecutionNodeStatusLabel(
   activelyRunning: boolean,
   detached: boolean = false,
 ): string {
-  if (status === 'completed') return '执行完成'
-  if (status === 'failed') return '执行失败'
-  if (status === 'stopped') return '已停止'
-  if (status === 'running' && detached) return '后台监控'
-  if (status === 'running') return activelyRunning ? '执行中' : '未执行'
-  return '未执行'
+  if (status === 'completed') return '已完成'
+  if (status === 'failed') return '失败'
+  if (status === 'stopped') return '已中断'
+  if (status === 'running' && detached) return '正在等待指示'
+  if (status === 'running') return activelyRunning ? '正在运行' : '正在等待指示'
+  return '正在等待指示'
 }
 
 function RuntimeExecutionNodeStatusIcon({
@@ -54,21 +47,10 @@ function RuntimeExecutionNodeStatusIcon({
   if (status === 'running' && detached) {
     return <Circle className="size-3.5 text-sky-500" />
   }
-  if (status === 'stopped' || status === 'running') {
+  if (status === 'stopped') {
     return <XCircle className="size-3.5 text-muted-foreground" />
   }
   return <Circle className="size-3.5 text-muted-foreground/60" />
-}
-
-function RuntimeExecutionNodeKindIcon({
-  kind,
-}: {
-  kind: AgentRuntimeExecutionNode['kind']
-}): React.ReactElement {
-  if (kind === 'teammate') return <Users className="size-3.5" />
-  if (kind === 'workflow-agent') return <Workflow className="size-3.5" />
-  if (kind === 'subagent') return <Bot className="size-3.5" />
-  return <GitBranch className="size-3.5" />
 }
 
 /** 悬浮面板与右侧“子智能体”Tab 共用的节点列表。 */
@@ -83,19 +65,22 @@ export function RuntimeExecutionNodeList({
       {nodes.map((node) => {
         const activelyRunning = isNodeRunning(node)
         const detached = node.turnCompletionPolicy === 'detach'
-        return (
+        const presentation = buildSubagentPresentation(node, activelyRunning)
+        const item = (
           <button
             key={node.id}
             type="button"
             data-execution-node-id={node.id}
-            className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-accent/55"
-            onClick={() => onOpenNode(node)}
+            className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-accent/55 disabled:cursor-default disabled:opacity-60"
+            disabled={!presentation.canOpen}
+            onClick={() => {
+              if (presentation.canOpen) onOpenNode(node)
+            }}
+            title={presentation.modelTooltip}
           >
-            <span className="shrink-0 text-muted-foreground">
-              <RuntimeExecutionNodeKindIcon kind={node.kind} />
-            </span>
+            <SubagentAvatar seed={presentation.avatarSeed} name={presentation.name} />
             <span className="min-w-0 flex-1 truncate text-xs font-medium">
-              {node.name || node.description}
+              {presentation.name}
             </span>
             <span className="flex shrink-0 items-center gap-1">
               <RuntimeExecutionNodeStatusIcon
@@ -111,15 +96,12 @@ export function RuntimeExecutionNodeList({
                   node.status === 'failed' && 'text-destructive',
                 )}
               >
-                {runtimeExecutionNodeStatusLabel(
-                  node.status,
-                  activelyRunning,
-                  detached,
-                )}
+                {presentation.statusLabel}
               </span>
             </span>
           </button>
         )
+        return item
       })}
     </div>
   )

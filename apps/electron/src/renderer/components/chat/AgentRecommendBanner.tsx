@@ -19,6 +19,8 @@ import { toast } from 'sonner'
 import { Sparkles, X, ArrowRight } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { pendingAgentRecommendationAtom } from '@/atoms/chat-atoms'
+import { inputAreaContainerClass } from '@/components/ai-elements/input-toolbar-styles'
+import { cn } from '@/lib/utils'
 import {
   agentChannelIdAtom,
   agentModelIdAtom,
@@ -120,43 +122,46 @@ export function AgentRecommendBanner(): React.ReactElement | null {
   }
 
   return (
-    <div className="mx-4 mb-3 rounded-xl bg-card shadow-lg overflow-hidden animate-in slide-in-from-bottom-2 duration-200">
-      {/* 头部 */}
-      <div className="px-4 pt-3 pb-2">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Sparkles className="size-4 text-primary" />
-            <span className="text-sm font-medium text-foreground">推荐使用 Agent 模式</span>
+    // 与 ChatInput 共用同一容器宽度（max-w-[800px] + 相同水平 padding）
+    <div className={cn(inputAreaContainerClass, 'pb-0')}>
+      <div className="mb-3 rounded-xl bg-card shadow-lg overflow-hidden animate-in slide-in-from-bottom-2 duration-200">
+        {/* 头部 */}
+        <div className="px-4 pt-3 pb-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Sparkles className="size-4 text-primary" />
+              <span className="text-sm font-medium text-foreground">推荐使用 Agent 模式</span>
+            </div>
+            <button
+              type="button"
+              className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
+              onClick={handleDismiss}
+            >
+              <X className="size-3.5" />
+            </button>
           </div>
-          <button
-            type="button"
-            className="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-muted/50 transition-colors"
-            onClick={handleDismiss}
-          >
-            <X className="size-3.5" />
-          </button>
         </div>
-      </div>
 
-      {/* 推荐理由 */}
-      <div className="px-4 pb-3">
-        <p className="text-sm text-foreground/80 leading-relaxed">
-          {recommendation.reason}
-        </p>
-      </div>
+        {/* 推荐理由 */}
+        <div className="px-4 pb-3">
+          <p className="text-sm text-foreground/80 leading-relaxed">
+            {recommendation.reason}
+          </p>
+        </div>
 
-      {/* 操作按钮 */}
-      <div className="flex items-center justify-end px-4 pb-3">
-        <Button
-          variant="default"
-          size="sm"
-          onClick={handleMigrate}
-          disabled={migrating}
-          className="h-7 px-3 text-xs"
-        >
-          {migrating ? '切换中...' : '切换到 Agent 模式'}
-          {!migrating && <ArrowRight className="size-3 ml-1" />}
-        </Button>
+        {/* 操作按钮 */}
+        <div className="flex items-center justify-end px-4 pb-3">
+          <Button
+            variant="default"
+            size="sm"
+            onClick={handleMigrate}
+            disabled={migrating}
+            className="h-7 px-3 text-xs"
+          >
+            {migrating ? '切换中...' : '切换到 Agent 模式'}
+            {!migrating && <ArrowRight className="size-3 ml-1" />}
+          </Button>
+        </div>
       </div>
     </div>
   )

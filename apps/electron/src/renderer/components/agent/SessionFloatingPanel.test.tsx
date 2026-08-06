@@ -123,34 +123,27 @@ describe('SessionFloatingPanel 会话悬浮面板', () => {
     expect(html).toContain('scrollbar-none')
   })
 
-  test('Given 会话存在计划和节点 When 渲染 Then 二者共用无滚动条区域且节点只显示名称', () => {
+  test('Given 会话存在计划和节点 When 渲染 Then 悬浮面板移除重复计划并展示后台智能体', () => {
     const html = renderFloatingPanel(true)
 
     expect(html).toContain('环境信息')
     expect(html).toContain('分支')
-    expect(html).toContain('计划')
-    expect(html).not.toContain('执行进度')
-    expect(html).toContain('1 / 3')
-    expect(html).toContain('完成悬浮面板布局')
-    expect(html).toContain('实现动态功能区')
-    expect(html).toContain('验证计划入口')
-    expect(html).toContain('执行完成')
-    expect(html).toContain('执行中')
-    expect(html).toContain('未执行')
-    expect(html).toContain('data-session-plan-progress="readonly"')
-    expect(html).toContain('子智能体 · 2')
-    expect(html).toContain('构建主任务')
+    expect(html).not.toContain('data-session-plan-progress')
+    expect(html).not.toContain('完成悬浮面板布局')
+    expect(html).toContain('正在运行')
+    expect(html).toContain('1 个后台智能体')
+    expect(html).not.toContain('构建主任务')
     expect(html).toContain('布局分析')
     expect(html).not.toContain('分析会话区动态布局')
     expect(html).toContain('data-session-floating-runtime-region')
     expect(html).not.toContain('data-session-floating-scroll-region')
   })
 
-  test('Given 会话已经停止但执行图残留 running When 渲染 Then 显示未执行且不旋转', () => {
+  test('Given 父会话已经停止但 CCB 子智能体仍在实时图运行 When 渲染 Then 继续显示正在运行', () => {
     const html = renderFloatingPanel(false)
 
-    expect(html).toContain('未执行')
-    expect(html).not.toContain('animate-spin')
+    expect(html).toContain('正在运行')
+    expect(html).toContain('animate-spin')
   })
 
   test('Given Proma collaboration 创建了子会话 When 渲染 Then 与 CCB 原生节点合并展示', () => {
@@ -166,9 +159,30 @@ describe('SessionFloatingPanel 会话悬浮面板', () => {
       updatedAt: 20,
     }])
 
-    expect(html).toContain('子智能体 · 3')
+    expect(html).toContain('2 个后台智能体')
     expect(html).toContain('分析右侧动态 Tabs')
     expect(html).not.toContain('检查动态 Tab 的打开与关闭逻辑')
+    expect(html).not.toContain('全部停止')
+  })
+
+  test('Given 活跃节点全部是可停止的 Collaboration 子会话 When 渲染 Then 显示全部停止', () => {
+    const html = renderFloatingPanel(true, [{
+      id: 'running-child',
+      title: '运行中的协作节点',
+      parentSessionId: SESSION_ID,
+      sourceDelegationId: 'delegation-running',
+      delegationStatus: 'running',
+      createdAt: 10,
+      updatedAt: 20,
+    }], {
+      nodes: [],
+      todos: [],
+      updatedAt: 100,
+    })
+
+    expect(html).toContain('1 个后台智能体')
+    expect(html).toContain('运行中的协作节点')
+    expect(html).toContain('全部停止')
   })
 
   test('Given 没有计划和执行节点 When 渲染 Then 不显示空区块标题和占位提示', () => {
@@ -179,7 +193,7 @@ describe('SessionFloatingPanel 会话悬浮面板', () => {
     })
 
     expect(html).not.toContain('data-session-plan-progress')
-    expect(html).not.toContain('子智能体 · 0')
+    expect(html).not.toContain('0 个后台智能体')
     expect(html).not.toContain('当前没有执行节点')
   })
 
@@ -259,7 +273,7 @@ describe('SessionFloatingPanel 会话悬浮面板', () => {
     )
 
     expect(html).not.toContain('已经完成的节点')
-    expect(html).not.toContain('子智能体 · 1')
+    expect(html).not.toContain('1 个后台智能体')
   })
 
   test('Given CCB 节点仍在排队且父会话已停止 When 渲染 Then 节点仍显示且不会被当作终态关闭', () => {
@@ -276,11 +290,11 @@ describe('SessionFloatingPanel 会话悬浮面板', () => {
       updatedAt: 100,
     })
 
-    expect(html).toContain('子智能体 · 1')
+    expect(html).toContain('1 个后台智能体')
     expect(html).toContain('等待执行的 CCB 节点')
   })
 
-  test('Given 计划超过 5 条且子智能体超过 4 个 When 渲染 Then 两区截断并分别显示查看全部', () => {
+  test('Given 计划和子智能体都很多 When 渲染 Then 只截断子智能体且不重复展示计划', () => {
     const graph: AgentRuntimeExecutionGraph = {
       nodes: Array.from({ length: 6 }, (_, index) => ({
         id: `node-${index + 1}`,
@@ -300,9 +314,9 @@ describe('SessionFloatingPanel 会话悬浮面板', () => {
 
     const html = renderFloatingPanel(true, [], graph)
 
-    expect(html).toContain('data-session-plan-view-all')
+    expect(html).not.toContain('data-session-plan-view-all')
     expect(html).toContain('data-session-subagent-view-all')
-    expect(html).toContain('子智能体 · 6')
+    expect(html).toContain('6 个后台智能体')
     expect(html).toContain('overflow-y-auto')
     expect(
       allocateFloatingRuntimeListRows(graph.todos.length, graph.nodes.length),
@@ -312,7 +326,7 @@ describe('SessionFloatingPanel 会话悬浮面板', () => {
     })
   })
 
-  test('Given 计划超过可见数量且后续步骤正在执行 When 渲染 Then 可见窗口向后补位且不修改完整计划', () => {
+  test('Given 计划超过可见数量 When 渲染悬浮面板 Then 不展示重复计划但纯函数仍不修改原计划', () => {
     const todos: AgentRuntimeExecutionGraph['todos'] = Array.from(
       { length: 8 },
       (_, index) => ({
@@ -337,10 +351,9 @@ describe('SessionFloatingPanel 会话悬浮面板', () => {
       updatedAt: 1,
     })
     expect(html).not.toContain('计划步骤 1')
-    expect(html).toContain('计划步骤 4')
-    expect(html).toContain('计划步骤 8')
-    expect(html).toContain('3 / 8')
-    expect(html).toContain('data-session-plan-view-all')
+    expect(html).not.toContain('计划步骤 4')
+    expect(html).not.toContain('计划步骤 8')
+    expect(html).not.toContain('data-session-plan-view-all')
   })
 
   test('Given 当前步骤接近计划末尾 When 计算可见窗口 Then 向前补齐但保持原计划顺序', () => {
@@ -395,14 +408,14 @@ describe('SessionFloatingPanel 会话悬浮面板', () => {
 
     const html = renderFloatingPanel(true, [], graph)
 
-    expect(html).toContain('子智能体 · 6')
+    expect(html).toContain('6 个后台智能体')
     expect(html).toContain('子智能体 2')
     expect(html).toContain('子智能体 5')
     expect(html).not.toContain('子智能体 6</span>')
     expect(html).toContain('data-session-subagent-view-all')
   })
 
-  test('Given CCB 节点仍为 running 但父会话已停止 When 渲染 Then 保留节点但不显示旋转状态', () => {
+  test('Given CCB 节点仍为 running 且仍在实时图 When 父会话已停止 Then 保留独立运行状态', () => {
     const html = renderFloatingPanel(false, [], {
       nodes: [{
         id: 'running-node',
@@ -417,7 +430,8 @@ describe('SessionFloatingPanel 会话悬浮面板', () => {
     })
 
     expect(html).toContain('仍在运行的 CCB 节点')
-    expect(html).not.toContain('animate-spin')
+    expect(html).toContain('正在运行')
+    expect(html).toContain('animate-spin')
   })
 
   test('Given Collaboration 子会话刚完成 When 终态保留时间未到 Then 先显示完成状态', () => {

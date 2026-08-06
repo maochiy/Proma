@@ -890,6 +890,11 @@ export interface AgentSessionMeta {
   completedButUnconfirmed?: boolean
   /** 最后一次流式执行是否被用户主动中断 */
   stoppedByUser?: boolean
+  /**
+   * 最近一次用户中断本轮执行的耗时（毫秒）。
+   * 用于中断后 UI 显示「你在 N 秒后停止了」；无 result 消息时作为 fallback。
+   */
+  lastStopDurationMs?: number
   /** 该会话当前的权限模式（持久化到磁盘，重启后恢复）。未设置时新会话默认 auto */
   permissionMode?: PromaPermissionMode
   /** 是否启用独立计划模式；审批模式仍保存在 permissionMode 中。 */
@@ -1433,6 +1438,8 @@ export interface AgentStreamCompletePayload {
   stoppedByUser?: boolean
   /** 本轮流式开始时间戳（用于区分新旧流，防止旧流的 complete 事件重置新流状态） */
   startedAt?: number
+  /** 用户中断时本轮耗时（毫秒），供 UI 立即显示「你在 N 秒后停止了」 */
+  lastStopDurationMs?: number
   /** SDK result 消息的 subtype（success / error_max_turns / error_max_budget_usd / error_during_execution 等） */
   resultSubtype?: string
   /** SDK result 消息携带的错误详情（error_during_execution 等场景下的真实错误原因，用于展示具体错误） */

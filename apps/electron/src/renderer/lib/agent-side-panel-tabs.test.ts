@@ -8,11 +8,15 @@ import {
   agentSidePanelOpenAtom,
   agentSidePanelTabsAtom,
   agentSidePanelWidthAtom,
+  agentTerminalTabSnapshotsAtom,
   closeAgentSidePanelAtom,
   closeAgentSidePanelTabAtom,
   createAgentExecutionNodeTab,
+  createAgentTerminalTab,
   getAgentExecutionNodeId,
+  getAgentTerminalSessionId,
   isAgentExecutionNodeTab,
+  isAgentTerminalTab,
   openAgentSidePanelLauncherAtom,
   openAgentSidePanelTabAtom,
   reorderAgentSidePanelTabsAtom,
@@ -120,6 +124,55 @@ describe('右侧动态功能区状态', () => {
     expect(store.get(agentDiffPanelTabAtom).get(SESSION_ID)).toBe(secondNodeTab)
   })
 
+  test('Given 创建两个终端会话 When 打开动态 Tabs Then 每个 PTY 使用独立 Tab 和快照', () => {
+    const store = createStore()
+    const firstTab = createAgentTerminalTab('terminal-1')
+    const secondTab = createAgentTerminalTab('terminal-2')
+    const createSnapshot = (id: string, cwd: string) => ({
+      id,
+      conversationId: SESSION_ID,
+      cwd,
+      shellName: 'zsh',
+      shellKind: 'zsh' as const,
+      cols: 80,
+      rows: 24,
+      output: '',
+      outputSequence: 0,
+      truncated: false,
+      alternateScreen: false,
+    })
+
+    store.set(openAgentSidePanelTabAtom, {
+      sessionId: SESSION_ID,
+      tab: firstTab,
+      terminalSnapshot: createSnapshot('terminal-1', '/tmp/project-a'),
+    })
+    store.set(openAgentSidePanelTabAtom, {
+      sessionId: SESSION_ID,
+      tab: secondTab,
+      terminalSnapshot: createSnapshot('terminal-2', '/tmp/project-b'),
+    })
+
+    expect(store.get(agentSidePanelTabsAtom).get(SESSION_ID)).toEqual([
+      firstTab,
+      secondTab,
+    ])
+    expect(isAgentTerminalTab(firstTab)).toBe(true)
+    expect(getAgentTerminalSessionId(secondTab)).toBe('terminal-2')
+    expect(
+      store.get(agentTerminalTabSnapshotsAtom).get(SESSION_ID)?.get(firstTab)?.cwd,
+    ).toBe('/tmp/project-a')
+
+    store.set(closeAgentSidePanelTabAtom, {
+      sessionId: SESSION_ID,
+      tab: firstTab,
+    })
+    expect(store.get(agentSidePanelTabsAtom).get(SESSION_ID)).toEqual([secondTab])
+    expect(
+      store.get(agentTerminalTabSnapshotsAtom).get(SESSION_ID)?.has(firstTab),
+    ).toBe(false)
+  })
+
   test('Given 已打开 Tabs When 收起并再次打开功能区 Then 恢复原 Tabs 和激活项', () => {
     const store = createStore()
     store.set(openAgentSidePanelTabAtom, { sessionId: SESSION_ID, tab: 'changes' })
@@ -165,7 +218,7 @@ describe('右侧功能区加号菜单', () => {
       hasExecutionGraph: true,
       hasPlan: true,
       hasSideChat: true,
-    })).toEqual(['workspace', 'plan', 'execution', 'chat'])
+    })).toEqual(['workspace', 'plan', 'execution', 'chat', 'terminal'])
   })
 
   test('Given 没有执行图和侧边问答 When 生成可选项 Then 不显示执行与问答', () => {
@@ -174,7 +227,7 @@ describe('右侧功能区加号菜单', () => {
       hasExecutionGraph: false,
       hasPlan: false,
       hasSideChat: false,
-    })).toEqual(['session', 'workspace', 'changes'])
+    })).toEqual(['session', 'workspace', 'changes', 'terminal'])
   })
 
   test('Given 执行节点动态 Tab 已打开 When 生成加号菜单 Then 不影响静态功能候选项', () => {
@@ -183,7 +236,7 @@ describe('右侧功能区加号菜单', () => {
       hasExecutionGraph: true,
       hasPlan: false,
       hasSideChat: false,
-    })).toEqual(['session', 'workspace', 'changes', 'execution'])
+    })).toEqual(['session', 'workspace', 'changes', 'execution', 'terminal'])
   })
 
   test('Given 当前存在计划 When 子智能体不存在 Then 加号菜单仍可单独打开计划', () => {
@@ -192,6 +245,6 @@ describe('右侧功能区加号菜单', () => {
       hasExecutionGraph: false,
       hasPlan: true,
       hasSideChat: false,
-    })).toEqual(['session', 'workspace', 'changes', 'plan'])
+    })).toEqual(['session', 'workspace', 'changes', 'plan', 'terminal'])
   })
 })

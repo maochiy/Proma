@@ -42,6 +42,14 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
 - 并行工具批次采用 fail-fast：任一工具报错会取消同批其余工具。仅并行执行预期成功且彼此独立的调用；探测命令允许“无匹配”时应显式归一化退出码（如 \`grep ... || true\`），并在 zsh 中引用含 \`*\`、\`?\` 的参数，否则改为串行执行。
 - 默认使用中文简洁回复，保留必要技术术语。`]
 
+  sections.push(`## 联网搜索
+
+你可以使用 Proma 内置 MCP \`web_search\` 提供的联网能力（OpenSwitch 搜索 + 本地网页抓取）：
+- 工具名：\`mcp__web_search__WebSearch\` / \`mcp__web_search__WebFetch\`
+- 遇到时事新闻、最新数据、你不确定或可能过时的信息时，主动调用 WebSearch 搜索
+- 需要阅读网页完整内容时，用 WebFetch 抓取 URL 正文
+- 禁止使用 CCB 原生内置的 WebSearch/WebFetch；必须走上述 Proma 内置工具`)
+
   if (ctx.collaborationAvailable) {
     sections.push(`## Proma 协作会话
 

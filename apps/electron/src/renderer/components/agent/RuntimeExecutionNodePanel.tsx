@@ -3,26 +3,41 @@ import { useAtomValue, useSetAtom } from 'jotai'
 import { Loader2 } from 'lucide-react'
 import type {
   AgentRuntimeSubagentTranscript,
+  SDKContentBlock,
+  SDKMessage,
+  SDKToolUseBlock,
+  SDKUserMessage,
 } from '@proma/shared'
 import {
+  extractUserText,
+  groupIntoTurns,
+  type AssistantTurn,
+} from '@proma/session-core'
+import {
   BasePathsProvider,
+  MessageResponse,
 } from '@/components/ai-elements/message'
 import {
-  Conversation,
-  ConversationContent,
-} from '@/components/ai-elements/conversation'
+  agentExecutionNodeTranscriptCacheAtom,
+  agentSDKMessagesCacheAtom,
+  agentStreamingStatesAtom,
+  liveMessagesMapAtom,
+} from '@/atoms/agent-atoms'
+import type { SessionExecutionNode } from '@/lib/session-execution-nodes'
+import {
+  buildAgentTurnPresentation,
+  orderAssistantMessagesForPresentation,
+} from '@/lib/agent-turn-presentation'
+import { upsertAgentLiveMessage } from '@/lib/agent-live-message'
+import { buildSubagentPresentation } from '@/lib/subagent-presentation'
 import {
   getGroupId,
-  groupIntoTurns,
   MessageGroupRenderer,
+  type MessageGroup,
 } from './SDKMessageRenderer'
-import {
-  agentExecutionNodeTranscriptCacheAtom,
-} from '@/atoms/agent-atoms'
-import {
-  type SessionExecutionNode,
-} from '@/lib/session-execution-nodes'
 import { AgentRunningIndicator } from './AgentRunningIndicator'
+import { normalizeThinkTagsInContentBlocks } from './thinking-tag-parser'
+import { SubagentAvatar } from './SubagentAvatar'
 
 interface RuntimeExecutionNodePanelProps {
   cacheKey?: string
@@ -32,11 +47,223 @@ interface RuntimeExecutionNodePanelProps {
   running: boolean
 }
 
+interface TopLevelTurnBlocks {
+  blocks: SDKContentBlock[]
+  forcedActivityIndexes: Set<number>
+}
+
+function collectTopLevelBlocks(turn: AssistantTurn): TopLevelTurnBlocks {
+  const enriched: Array<{
+    block: SDKContentBlock
+    parentToolUseId?: string | null
+    forcedActivity: boolean
+  }> = []
+
+  for (const message of orderAssistantMessagesForPresentation(turn)) {
+    const blocks = message.message?.content
+    if (!Array.isArray(blocks)) continue
+    const forcedActivity = message.message?.stop_reason === 'tool_use'
+    for (const block of blocks) {
+      for (const normalized of normalizeThinkTagsInContentBlocks([block])) {
+        enriched.push({
+          block: normalized,
+          parentToolUseId: message.parent_tool_use_id,
+          forcedActivity,
+        })
+      }
+    }
+  }
+
+  const agentToolIds = new Set<string>()
+  for (const item of enriched) {
+    if (item.block.type !== 'tool_use') continue
+    const tool = item.block as SDKToolUseBlock
+    if (tool.name === 'Agent' || tool.name === 'Task') {
+      agentToolIds.add(tool.id)
+    }
+  }
+
+  const blocks: SDKContentBlock[] = []
+  const forcedActivityIndexes = new Set<number>()
+  for (const item of enriched) {
+    if (item.parentToolUseId && agentToolIds.has(item.parentToolUseId)) {
+      continue
+    }
+    if (item.forcedActivity) forcedActivityIndexes.add(blocks.length)
+    blocks.push(item.block)
+  }
+  return { blocks, forcedActivityIndexes }
+}
+
+function extractResultText(messages: SDKMessage[]): string | undefined {
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (message?.type !== 'result') continue
+    const result = (message as unknown as Record<string, unknown>).result
+    if (typeof result === 'string' && result.trim()) return result.trim()
+  }
+  return undefined
+}
+
+export interface RuntimeExecutionNodeDetails {
+  delegatedTask: string
+  finalReply?: string
+}
+
+/** 从子智能体 Transcript 提取委派任务和最终正文兜底。 */
+export function buildRuntimeExecutionNodeDetails(
+  messages: SDKMessage[],
+  node: SessionExecutionNode,
+): RuntimeExecutionNodeDetails {
+  const delegatedTask = messages
+    .filter((message): message is SDKUserMessage => message.type === 'user')
+    .map((message) => extractUserText(message))
+    .find((text) => text?.trim())
+    ?.trim()
+    ?? node.description
+
+  const turns = groupIntoTurns(messages)
+    .filter((group): group is AssistantTurn => group.type === 'assistant-turn')
+
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const turn = turns[index]
+    if (!turn) continue
+    const { blocks, forcedActivityIndexes } = collectTopLevelBlocks(turn)
+    const presentation = buildAgentTurnPresentation({
+      id: `execution-node:${node.id}:${index}`,
+      turn,
+      blocks,
+      forcedActivityIndexes,
+    })
+    const answer = presentation.finalItems
+      .filter((item) => item.kind === 'answer' && item.block.type === 'text')
+      .map((item) => (item.block as { text: string }).text.trim())
+      .filter(Boolean)
+      .join('\n\n')
+    if (answer) return { delegatedTask, finalReply: answer }
+
+    const result = extractResultText(turn.turnMessages)
+    if (result) return { delegatedTask, finalReply: result }
+  }
+
+  return { delegatedTask }
+}
+
 /**
- * 执行节点独立 Tab。
+ * 将已持久化 Transcript 与 Renderer 实时消息合并。
  *
- * Transcript 使用与主会话相同的 SDKMessageRenderer 渲染链，
- * 仅保留只读消息正文，不挂载输入框与会话操作入口。
+ * 实时 partial/final 使用与主会话相同的 upsert 规则，避免轮询结果和 IPC
+ * 增量同时存在时重复渲染同一条思考、命令或最终回答。
+ */
+export function mergeRuntimeExecutionTranscriptMessages(
+  persistedMessages: SDKMessage[],
+  liveMessages: SDKMessage[],
+): SDKMessage[] {
+  return liveMessages.reduce<SDKMessage[]>(
+    (messages, message) => upsertAgentLiveMessage(messages, message),
+    persistedMessages,
+  )
+}
+
+function DetailSection({
+  title,
+  children,
+}: {
+  title: string
+  children: React.ReactNode
+}): React.ReactElement {
+  return (
+    <section className="space-y-2">
+      <h3 className="text-[11px] font-medium text-muted-foreground">{title}</h3>
+      {children}
+    </section>
+  )
+}
+
+interface RuntimeExecutionTranscriptProps {
+  messages: SDKMessage[]
+  node: SessionExecutionNode
+  parentSessionId: string
+  running: boolean
+  startedAt?: number
+  sessionPath: string | null
+}
+
+/**
+ * 子智能体详情复用主会话的 Turn 渲染器：
+ * - 运行中沿用“最新活动替换旧活动”的实时规则；
+ * - 执行结束后作为完整 Transcript 强制展开活动；
+ * - 委派提示词已在上方单独展示，因此这里不重复渲染 user group。
+ */
+function RuntimeExecutionTranscript({
+  messages,
+  node,
+  parentSessionId,
+  running,
+  startedAt,
+  sessionPath,
+}: RuntimeExecutionTranscriptProps): React.ReactElement {
+  const groups = React.useMemo(
+    () => groupIntoTurns(messages, node.model)
+      .filter((group) => group.type !== 'user'),
+    [messages, node.model],
+  )
+  const assistantGroups = groups.filter(
+    (group): group is Extract<MessageGroup, { type: 'assistant-turn' }> =>
+      group.type === 'assistant-turn',
+  )
+  const latestAssistantGroup = assistantGroups.at(-1)
+  const transcriptSessionId = node.transcriptSessionId
+    ?? `${parentSessionId}:execution-node:${node.id}`
+
+  if (groups.length === 0) {
+    return running ? (
+      <AgentRunningIndicator
+        startedAt={startedAt ?? node.startedAt}
+        model={node.model}
+      />
+    ) : (
+      <p className="text-xs text-muted-foreground">暂无可显示的执行记录。</p>
+    )
+  }
+
+  return (
+    <div className="space-y-3">
+      {groups.map((group) => {
+        const isLatestAssistantTurn = group === latestAssistantGroup
+        return (
+          <MessageGroupRenderer
+            key={getGroupId(group)}
+            group={group}
+            allMessages={messages}
+            basePath={sessionPath || undefined}
+            isStreaming={running && isLatestAssistantTurn}
+            sessionModelId={node.model}
+            sessionId={transcriptSessionId}
+            fullTranscript={!running}
+            hideFinalItems
+            isLatestAssistantTurn={isLatestAssistantTurn}
+            runningStartedAt={
+              running && isLatestAssistantTurn
+                ? startedAt ?? node.startedAt
+                : undefined
+            }
+          />
+        )
+      })}
+      {running && !latestAssistantGroup && (
+        <AgentRunningIndicator
+          startedAt={startedAt ?? node.startedAt}
+          model={node.model}
+        />
+      )}
+    </div>
+  )
+}
+
+/**
+ * 执行节点详情采用委派任务 / 状态 / 执行过程 / 最终回复结构。
+ * 执行过程与主会话共用同一套模型 Logo、活动状态和折叠规则。
  */
 export function RuntimeExecutionNodePanel({
   cacheKey,
@@ -47,20 +274,29 @@ export function RuntimeExecutionNodePanel({
 }: RuntimeExecutionNodePanelProps): React.ReactElement {
   const resolvedCacheKey = cacheKey ?? `${sessionId}:${node.id}`
   const transcriptCache = useAtomValue(agentExecutionNodeTranscriptCacheAtom)
+  const sdkMessagesCache = useAtomValue(agentSDKMessagesCacheAtom)
+  const liveMessagesMap = useAtomValue(liveMessagesMapAtom)
+  const streamingStates = useAtomValue(agentStreamingStatesAtom)
   const setTranscriptCache = useSetAtom(agentExecutionNodeTranscriptCacheAtom)
+  const childSessionId = node.transcriptSessionId
+  const cachedSessionMessages = childSessionId
+    ? sdkMessagesCache.get(childSessionId)
+    : undefined
+  const cachedTranscript = transcriptCache.get(resolvedCacheKey)
+    ?? (cachedSessionMessages
+      ? {
+          executionNodeId: node.id,
+          messages: cachedSessionMessages,
+        }
+      : undefined)
   const [transcript, setTranscript] = React.useState<
     AgentRuntimeSubagentTranscript | undefined
-  >(
-    () => transcriptCache.get(resolvedCacheKey),
-  )
-  const [loading, setLoading] = React.useState(
-    () => transcriptCache.get(resolvedCacheKey) == null,
-  )
+  >(cachedTranscript)
+  const [loading, setLoading] = React.useState(cachedTranscript == null)
   const [error, setError] = React.useState<string>()
   const canQueryTranscript = (
     node.source === 'delegation'
-    ||
-    node.transcriptAvailable
+    || node.transcriptAvailable
     || node.kind === 'subagent'
     || node.kind === 'teammate'
   )
@@ -95,32 +331,20 @@ export function RuntimeExecutionNodePanel({
       setError(undefined)
     } catch (reason) {
       if (requestSequence !== requestSequenceRef.current) return
-      const message = reason instanceof Error
-        ? reason.message
-        : '读取执行节点会话失败'
-      // Runtime 任务结束后会被清理；历史节点点开时优先展示摘要，而不是空白失败。
-      if (
-        node.source !== 'delegation'
-        && !running
-        && (node.status === 'completed' || node.status === 'failed' || node.status === 'stopped')
-      ) {
-        setError(
-          node.summary
-            ? undefined
-            : `${message}。节点已结束，Runtime 可能已清理 Transcript。`,
-        )
-      } else {
-        setError(message)
-      }
+      setError(
+        reason instanceof Error
+          ? reason.message
+          : '读取子智能体执行记录失败',
+      )
     } finally {
       if (requestSequence === requestSequenceRef.current) setLoading(false)
     }
   }, [
     canQueryTranscript,
-    resolvedCacheKey,
     node.id,
     node.source,
     node.transcriptSessionId,
+    resolvedCacheKey,
     sessionId,
     setTranscriptCache,
   ])
@@ -129,9 +353,6 @@ export function RuntimeExecutionNodePanel({
     const cached = transcriptCache.get(resolvedCacheKey)
     setTranscript(cached)
     setError(undefined)
-    // 缓存只用于立即回显，不能作为“终态节点无需刷新”的依据。
-    // 子智能体刚启动时缓存里可能只有首条用户提示词，完成后必须再从磁盘
-    // 读取一次，才能补齐思考、工具调用和最终回复。
     void loadTranscript(cached == null)
     return () => {
       requestSequenceRef.current += 1
@@ -156,62 +377,102 @@ export function RuntimeExecutionNodePanel({
     }
   }, [canQueryTranscript, loadTranscript, running])
 
-  const transcriptMessages = transcript?.messages ?? []
-  // 节点创建提示词本身就是子会话的第一条真实用户消息，应与主会话一样
-  // 按正文样式展示；这里只是不额外固定节点说明，也不显示底层 JSONL。
-  const messages = transcriptMessages
-  const groups = React.useMemo(() => groupIntoTurns(messages), [messages])
+  const childStreamState = childSessionId
+    ? streamingStates.get(childSessionId)
+    : undefined
+  const effectiveRunning = running || childStreamState?.running === true
+  const presentation = buildSubagentPresentation(node, effectiveRunning)
+  const liveMessages = childSessionId
+    ? liveMessagesMap.get(childSessionId) ?? []
+    : []
+  const transcriptMessages = React.useMemo(() => {
+    const persistedMessages = transcript?.messages ?? []
+    if (!effectiveRunning || liveMessages.length === 0) {
+      return persistedMessages
+    }
+    return mergeRuntimeExecutionTranscriptMessages(
+      persistedMessages,
+      liveMessages,
+    )
+  }, [effectiveRunning, liveMessages, transcript?.messages])
+  const hasTranscriptContent = transcriptMessages.some(
+    (message) => message.type === 'assistant' || message.type === 'system',
+  )
+  const details = React.useMemo(
+    () => buildRuntimeExecutionNodeDetails(transcriptMessages, node),
+    [node, transcriptMessages],
+  )
+  const completionContent = details.finalReply
+    ?? (!effectiveRunning ? node.summary?.trim() : undefined)
+  const completionTitle = details.finalReply ? '最终回复' : '执行摘要'
+  const shouldShowCompletion = (
+    !effectiveRunning
+    && !loading
+    && !!completionContent
+  )
 
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      {loading ? (
-        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 text-xs text-muted-foreground">
-          <div className="flex items-center gap-2">
-            <Loader2 className="size-3.5 animate-spin" />
-            正在读取执行节点会话
-          </div>
-          {running && <AgentRunningIndicator startedAt={node.startedAt} />}
+    <BasePathsProvider basePaths={sessionPath ? [sessionPath] : []}>
+      <div className="scrollbar-none h-full min-h-0 overflow-y-auto px-3 py-5">
+        <div className="mx-auto w-full max-w-[48rem] space-y-6">
+          <DetailSection title="委派的任务">
+            <MessageResponse className="text-[13px] leading-5 text-foreground/85">
+              {details.delegatedTask}
+            </MessageResponse>
+          </DetailSection>
+
+          <DetailSection title="状态">
+            <div
+              className="flex min-h-10 items-center gap-2 rounded-lg px-2 py-1.5 hover:bg-accent/40"
+              title={presentation.modelTooltip}
+            >
+              <SubagentAvatar
+                seed={presentation.avatarSeed}
+                name={presentation.name}
+                className="size-6 text-[10px]"
+              />
+              <span className="min-w-0 flex-1 truncate text-[13px] font-medium">
+                {presentation.name}
+              </span>
+              <span className="shrink-0 text-[11px] text-muted-foreground">
+                {presentation.statusLabel}
+              </span>
+            </div>
+          </DetailSection>
+
+          <DetailSection title="执行过程">
+            {loading && transcriptMessages.length === 0 ? (
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                <Loader2 className="size-3.5 animate-spin motion-reduce:animate-none" />
+                正在加载执行记录…
+              </div>
+            ) : hasTranscriptContent || effectiveRunning ? (
+              <RuntimeExecutionTranscript
+                messages={transcriptMessages}
+                node={node}
+                parentSessionId={sessionId}
+                running={effectiveRunning}
+                startedAt={childStreamState?.startedAt}
+                sessionPath={sessionPath}
+              />
+            ) : error ? (
+              <p className="text-xs leading-5 text-muted-foreground">
+                此子智能体在当前分支上已不可用。
+              </p>
+            ) : (
+              <p className="text-xs text-muted-foreground">暂无可显示的执行记录。</p>
+            )}
+          </DetailSection>
+
+          {shouldShowCompletion && (
+            <DetailSection title={completionTitle}>
+              <MessageResponse className="text-[13px] leading-5">
+                {completionContent}
+              </MessageResponse>
+            </DetailSection>
+          )}
         </div>
-      ) : groups.length > 0 ? (
-        <BasePathsProvider basePaths={sessionPath ? [sessionPath] : []}>
-          <Conversation resize="smooth">
-            <ConversationContent>
-              {groups.map((group) => (
-                <MessageGroupRenderer
-                  key={getGroupId(group)}
-                  group={group}
-                  allMessages={messages}
-                  basePath={sessionPath ?? undefined}
-                  sessionId={node.transcriptSessionId ?? sessionId}
-                />
-              ))}
-              {running && (
-                <AgentRunningIndicator
-                  startedAt={node.startedAt}
-                  className="pl-8"
-                />
-              )}
-            </ConversationContent>
-          </Conversation>
-        </BasePathsProvider>
-      ) : (
-        <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 text-center">
-          <p className={error ? 'text-xs text-destructive' : 'text-xs text-muted-foreground'}>
-            {error
-              ? error
-              : node.summary
-                ? node.summary
-                : canQueryTranscript
-                  ? (
-                    node.source === 'delegation'
-                      ? '该协作子会话暂时没有可显示的消息，请稍后重试或从左侧打开子会话查看。'
-                      : '该执行节点暂时没有可显示的会话内容。'
-                  )
-                  : '该执行节点不产生独立会话内容。'}
-          </p>
-          {running && <AgentRunningIndicator startedAt={node.startedAt} />}
-        </div>
-      )}
-    </div>
+      </div>
+    </BasePathsProvider>
   )
 }

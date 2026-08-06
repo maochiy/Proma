@@ -167,6 +167,78 @@ function isUnstructuredRuntimeAssistantError(message: SDKMessage): boolean {
   if (typeof error !== 'object') return true
   return typeof (error as { message?: unknown }).message !== 'string'
 }
+/**
+ * CCB 用户中断时写入 transcript 的合成 user 文本。
+ * 这不是真实用户输入：CCB CLI 用它做会话边界，UI 应忽略。
+ * 若写入 Proma JSONL，会变成用户气泡，并触发「你在 N 秒后停止了」二次显示。
+ */
+const CCB_INTERRUPT_USER_TEXTS = new Set([
+  '[Request interrupted by user]',
+  '[Request interrupted by user for tool use]',
+])
+
+/** 是否为 CCB 中断合成 user 消息（应丢弃，不进入 UI 投影） */
+export function isCcbInterruptUserMessage(message: SDKMessage): boolean {
+  const text = getUserMessageText(message)
+  return Boolean(text && CCB_INTERRUPT_USER_TEXTS.has(text))
+}
+
+/**
+ * CCB 自动压缩后会写入一条「This session is being continued...」合成 user，
+ * 用于 Runtime 续写上下文，不是用户真实输入，UI 投影中应丢弃。
+ */
+export function isCcbCompactionContinuationUserMessage(message: SDKMessage): boolean {
+  if (message.type !== 'user') return false
+  if ((message as { parent_tool_use_id?: unknown }).parent_tool_use_id) return false
+  if (isToolResultOnlyUserMessage(message)) return false
+  const text = getUserMessageText(message)
+  if (!text) return false
+  return /^This session is being continued from a previous conversation\b/i.test(text)
+}
+
+/**
+ * CCB 在 abort / 429 重试等场景会写入仅含 “API Error: ...” 的 assistant。
+ * 这不是有用的过程正文；桌面端已有 interrupted result / 停止文案，投影中应丢弃。
+ */
+function isCcbTransientApiErrorAssistantMessage(message: SDKMessage): boolean {
+  if (message.type !== 'assistant') return false
+  const content = getMessageContentBlocks(message)
+  if (content.length === 0) return false
+  let textCount = 0
+  let onlyApiErrorText = true
+  for (const block of content) {
+    if (!block || typeof block !== 'object') {
+      onlyApiErrorText = false
+      break
+    }
+    const record = block as { type?: unknown; text?: unknown; thinking?: unknown }
+    if (record.type === 'thinking') {
+      // 允许夹带空 thinking，但仍需至少一段 API Error 正文
+      continue
+    }
+    if (record.type === 'text' && typeof record.text === 'string') {
+      textCount += 1
+      const text = record.text.trim()
+      if (
+        !/^API Error:\s*Request was aborted\.?$/i.test(text)
+        && !/^API Error:\s*\d{3}\b/i.test(text)
+      ) {
+        onlyApiErrorText = false
+        break
+      }
+      continue
+    }
+    onlyApiErrorText = false
+    break
+  }
+  return onlyApiErrorText && textCount > 0
+}
+
+/** @deprecated 语义并入 isCcbTransientApiErrorAssistantMessage */
+function isCcbAbortAssistantMessage(message: SDKMessage): boolean {
+  return isCcbTransientApiErrorAssistantMessage(message)
+}
+
 
 function migrateLegacyPermissionMode(index: AgentSessionsIndex): boolean {
   let changed = false
@@ -506,8 +578,9 @@ export function getAgentSessionSDKMessages(id: string): SDKMessage[] {
  *
  * 1) 同一 assistant message.id 的非连续重复：正常流式拆分会以相同 message.id
  *    连续出现，需要保留；compact 后再落一次完整消息时丢弃。
- * 2) 新 message.id 但 tool_use call id 已出现过：compact 可能改写 message.id
+ * 2) 新 message.id 但 assistant tool_use call id 已出现过：compact 可能改写 message.id
  *    却保留原 call id，把历史工具调用重新甩到最新一轮之后，需要按 call id 折叠。
+ *    注意：仅看 assistant tool_use，不因先出现的 tool_result 误杀真正的工具调用。
  * 3) 纯 tool_result 用户消息按 tool_use_id 去重，避免 compact 后结果重放。
  */
 export function collapseDuplicateAssistantMessageGroups(
@@ -515,15 +588,48 @@ export function collapseDuplicateAssistantMessageGroups(
 ): SDKMessage[] {
   const seenAssistantMessageIds = new Set<string>()
   const seenToolResultIds = new Set<string>()
-  const knownExecutedToolIds = new Set<string>()
+  // 仅统计 assistant 侧已见 tool_use。不能把 tool_result 算作“已出现 tool_use”，
+  // 否则顺序错乱（result 先于 use）时会把真正的 Agent/工具调用整段丢掉。
+  const knownAssistantToolUseIds = new Set<string>()
+  // 顶层用户原文：用于折叠 429 重试导入的重复用户气泡
+  const seenTopLevelUserTexts = new Set<string>()
   const collapsed: SDKMessage[] = []
 
   for (const message of messages) {
+    // 丢弃 CCB 中断合成 user，避免显示为用户气泡 / 二次停止状态
+    if (isCcbInterruptUserMessage(message)) {
+      continue
+    }
+    // 丢弃压缩续写合成 user
+    if (isCcbCompactionContinuationUserMessage(message)) {
+      continue
+    }
+    // 丢弃 abort / 429 等瞬时 API Error 合成 assistant
+    if (isCcbTransientApiErrorAssistantMessage(message)) {
+      continue
+    }
+
+    // 顶层同文案重复 user：保留带桌面元数据的真实发送；无元数据的多为 Runtime 重试导入
+    const parentToolUseId = (message as { parent_tool_use_id?: unknown }).parent_tool_use_id
+    const topLevelUserText =
+      message.type === 'user'
+      && !parentToolUseId
+      && !isToolResultOnlyUserMessage(message)
+        ? getUserMessageText(message)
+        : undefined
+    if (topLevelUserText) {
+      if (
+        seenTopLevelUserTexts.has(topLevelUserText)
+        && !hasDesktopMessageMetadata(message)
+      ) {
+        continue
+      }
+    }
     const assistantMessageId = getAssistantMessageId(message)
     if (assistantMessageId) {
       if (seenAssistantMessageIds.has(assistantMessageId)) {
         const previous = collapsed[collapsed.length - 1]
-        if (getAssistantMessageId(previous) !== assistantMessageId) {
+        if (!previous || getAssistantMessageId(previous) !== assistantMessageId) {
           continue
         }
       } else {
@@ -534,12 +640,13 @@ export function collapseDuplicateAssistantMessageGroups(
     const assistantToolUseIds = uniqueStrings(extractAssistantToolUseIds(message))
     if (
       assistantToolUseIds.length > 0
-      && assistantToolUseIds.every((id) => knownExecutedToolIds.has(id))
+      && assistantToolUseIds.every((id) => knownAssistantToolUseIds.has(id))
     ) {
       // 同 message.id 的连续流式拆分可能重复携带已出现的 tool_use，仍保留。
       const previous = collapsed[collapsed.length - 1]
       const isContiguousSameAssistantId =
         Boolean(assistantMessageId)
+        && previous !== undefined
         && getAssistantMessageId(previous) === assistantMessageId
       if (!isContiguousSameAssistantId) {
         continue
@@ -558,12 +665,14 @@ export function collapseDuplicateAssistantMessageGroups(
 
     collapsed.push(message)
 
+    if (topLevelUserText) {
+      seenTopLevelUserTexts.add(topLevelUserText)
+    }
     for (const id of assistantToolUseIds) {
-      knownExecutedToolIds.add(id)
+      knownAssistantToolUseIds.add(id)
     }
     for (const id of extractUserToolResultIds(message)) {
       seenToolResultIds.add(id)
-      knownExecutedToolIds.add(id)
     }
   }
 
@@ -733,6 +842,61 @@ function hasDesktopMessageMetadata(message: SDKMessage): boolean {
     .some(key => key.startsWith('_'))
 }
 
+/**
+ * 评估一组 assistant 消息的内容完整度。
+ *
+ * 同一 message.id 下，桌面端可能只有流式 partial（仅 thinking / 单段 text），
+ * 而 Runtime Transcript 已是 THINK + TEXT + tool_use 的完整消息。
+ * 合并时不能只因本地有 `_createdAt` 等桌面元数据就压过更完整的 Runtime。
+ */
+function scoreAssistantMessagesCompleteness(messages: SDKMessage[]): number {
+  let textLength = 0
+  let thinkingLength = 0
+  let toolUseCount = 0
+  let blockCount = 0
+  const toolUseIds = new Set<string>()
+
+  for (const message of messages) {
+    for (const block of getMessageContentBlocks(message)) {
+      if (!block || typeof block !== 'object') continue
+      const record = block as {
+        type?: unknown
+        text?: unknown
+        thinking?: unknown
+        id?: unknown
+      }
+      blockCount += 1
+      if (record.type === 'text' && typeof record.text === 'string') {
+        textLength += record.text.trim().length
+      } else if (record.type === 'thinking') {
+        const thinkingText =
+          typeof record.thinking === 'string'
+            ? record.thinking
+            : typeof record.text === 'string'
+              ? record.text
+              : ''
+        thinkingLength += thinkingText.trim().length
+      } else if (record.type === 'tool_use') {
+        toolUseCount += 1
+        if (typeof record.id === 'string' && record.id.length > 0) {
+          toolUseIds.add(record.id)
+        }
+      }
+    }
+  }
+
+  // 正文与 tool_use 权重高于 thinking，避免「仅 thinking 的 partial」压过完整 Runtime。
+  let score = 0
+  score += textLength * 10
+  score += thinkingLength
+  score += toolUseCount * 500
+  score += toolUseIds.size * 100
+  score += blockCount * 20
+  if (textLength > 0) score += 1000
+  if (toolUseCount > 0) score += 2000
+  return score
+}
+
 function mergeRuntimeMessageWithLocalMetadata(
   runtimeMessage: SDKMessage,
   localMessage: SDKMessage,
@@ -742,6 +906,9 @@ function mergeRuntimeMessageWithLocalMetadata(
   const desktopMetadata = Object.fromEntries(
     Object.entries(localRecord).filter(([key]) => key.startsWith('_')),
   )
+  // 内容以 Runtime 完整消息为准时，丢弃本地 partial 流式索引，避免误导后续合并。
+  delete desktopMetadata._partialBlockIndex
+  delete desktopMetadata._partialBlockIndexes
   return {
     ...runtimeRecord,
     ...desktopMetadata,
@@ -792,14 +959,24 @@ export function mergeAgentSessionSDKMessages(
   const projectionRuntimeMessages = runtimeMessages
     .map(normalizeCcbAssistantMessage)
     .filter(message => !isUnstructuredRuntimeAssistantError(message))
+    .filter(message => !isCcbInterruptUserMessage(message))
+    .filter(message => !isCcbCompactionContinuationUserMessage(message))
+    .filter(message => !isCcbTransientApiErrorAssistantMessage(message))
   if (projectionRuntimeMessages.length === 0) return localMessages
 
   const consumedLocalIndexes = new Set<number>()
   const seenAssistantMessageIds = new Set<string>()
   const seenToolResultIds = new Set<string>()
   const knownExecutedToolIds = new Set<string>()
+  // 仅 assistant 侧 tool_use。不能把本地 tool_result 算作“已有 tool_use”，
+  // 否则停止后残缺 partial（无 tool_use 仅有 tool_result）会让 Runtime 完整
+  // assistant 被误判为 compact 重放而整条丢弃，正文与工具调用一并消失。
+  const knownAssistantToolUseIds = new Set<string>()
   const merged: SDKMessage[] = []
   let lastMatchedLocalCreatedAt: number | undefined
+  // 已并入投影的顶层用户原文。CCB 429 重试会在 Transcript 重复同一 prompt；
+  // 本地没有新的 user 发送时不应再导入成多个用户气泡。
+  const mergedTopLevelUserTexts = new Set<string>()
 
   const findLocalIndexes = (
     predicate: (message: SDKMessage) => boolean,
@@ -813,6 +990,7 @@ export function mergeAgentSessionSDKMessages(
 
   const registerMessageToolIds = (message: SDKMessage): void => {
     for (const id of extractAssistantToolUseIds(message)) {
+      knownAssistantToolUseIds.add(id)
       knownExecutedToolIds.add(id)
     }
     for (const id of extractUserToolResultIds(message)) {
@@ -845,7 +1023,7 @@ export function mergeAgentSessionSDKMessages(
     const assistantToolUseIds = uniqueStrings(extractAssistantToolUseIds(message))
     if (
       assistantToolUseIds.length > 0
-      && assistantToolUseIds.every((id) => knownExecutedToolIds.has(id))
+      && assistantToolUseIds.every((id) => knownAssistantToolUseIds.has(id))
     ) {
       return true
     }
@@ -861,6 +1039,14 @@ export function mergeAgentSessionSDKMessages(
     return false
   }
 
+  const sameToolResultIdSet = (
+    left: string[],
+    right: string[],
+  ): boolean => {
+    if (left.length === 0 || left.length !== right.length) return false
+    return left.every((id) => right.includes(id))
+  }
+
   for (const runtimeMessage of projectionRuntimeMessages) {
     const assistantMessageId = getAssistantMessageId(runtimeMessage)
     // Runtime Transcript 在 compact 后可能重复给出同一 message.id。
@@ -869,10 +1055,9 @@ export function mergeAgentSessionSDKMessages(
       consumeLocalAssistantDuplicates(assistantMessageId)
       continue
     }
-    // compact 也可能用新 message.id 重放历史 tool_use / tool_result。
-    if (isCompactToolReplay(runtimeMessage)) {
-      continue
-    }
+    // 先按 message.id / tool_result 匹配本地消息，再判定 compact 重放。
+    // 否则「本地已有完整 tool_use/tool_result」时会把 Runtime 的正确交错顺序
+    // 整段跳过，最终回落 insertLocalMessageByCreatedAt，停止后过程正文顺序错乱。
     if (assistantMessageId) {
       const matchingIndexes = findLocalIndexes(
         localMessage =>
@@ -893,25 +1078,86 @@ export function mergeAgentSessionSDKMessages(
         const desktopIndexes = firstGroupIndexes.filter(index =>
           hasDesktopMessageMetadata(localMessages[index]!),
         )
+        // 与历史行为一致：有桌面元数据时优先评估桌面拆分（避免把本地残留的
+        // 无元数据完整副本算进“本地完整度”，导致拆条与 Runtime 并存）。
         const preferredIndexes =
           desktopIndexes.length > 0 ? desktopIndexes : firstGroupIndexes
+        const preferredMessages = preferredIndexes.map(
+          index => localMessages[index]!,
+        )
+        const preferredScore = scoreAssistantMessagesCompleteness(preferredMessages)
+        const runtimeScore = scoreAssistantMessagesCompleteness([runtimeMessage])
         for (const index of matchingIndexes) consumedLocalIndexes.add(index)
-        const preferredMessages = preferredIndexes.map(index => localMessages[index]!)
-        merged.push(...preferredMessages)
-        for (const message of preferredMessages) markAssistantMessageSeen(message)
-        const matchedCreatedAt = preferredIndexes
-          .map(index => getMessageCreatedAt(localMessages[index]!))
-          .filter((createdAt): createdAt is number => createdAt !== undefined)
-          .reduce<number | undefined>(
-            (latest, createdAt) =>
-              latest === undefined ? createdAt : Math.max(latest, createdAt),
-            undefined,
+
+        if (runtimeScore > preferredScore) {
+          // Runtime 更完整：取完整内容，同时保留本地桌面元数据（渠道/时间等）。
+          const metadataSource =
+            preferredMessages.find(message => hasDesktopMessageMetadata(message))
+            ?? preferredMessages[0]
+            ?? runtimeMessage
+          const mergedMessage = mergeRuntimeMessageWithLocalMetadata(
+            runtimeMessage,
+            metadataSource,
           )
-        if (matchedCreatedAt !== undefined) {
-          lastMatchedLocalCreatedAt = matchedCreatedAt
+          merged.push(mergedMessage)
+          markAssistantMessageSeen(mergedMessage)
+          const matchedCreatedAt = getMessageCreatedAt(metadataSource)
+          if (matchedCreatedAt !== undefined) {
+            lastMatchedLocalCreatedAt = matchedCreatedAt
+          }
+        } else {
+          // 本地拆分至少同等完整：保留桌面投影（含流式拆条）。
+          merged.push(...preferredMessages)
+          for (const message of preferredMessages) markAssistantMessageSeen(message)
+          const matchedCreatedAt = preferredMessages
+            .map(message => getMessageCreatedAt(message))
+            .filter((createdAt): createdAt is number => createdAt !== undefined)
+            .reduce<number | undefined>(
+              (latest, createdAt) =>
+                latest === undefined ? createdAt : Math.max(latest, createdAt),
+              undefined,
+            )
+          if (matchedCreatedAt !== undefined) {
+            lastMatchedLocalCreatedAt = matchedCreatedAt
+          }
         }
         continue
       }
+    }
+
+    if (isToolResultOnlyUserMessage(runtimeMessage)) {
+      const runtimeToolResultIds = uniqueStrings(extractUserToolResultIds(runtimeMessage))
+      if (runtimeToolResultIds.length > 0) {
+        const matchingIndexes = findLocalIndexes((localMessage) => {
+          if (!isToolResultOnlyUserMessage(localMessage)) return false
+          return sameToolResultIdSet(
+            runtimeToolResultIds,
+            uniqueStrings(extractUserToolResultIds(localMessage)),
+          )
+        })
+        if (matchingIndexes.length > 0) {
+          const preferredIndex =
+            matchingIndexes.find((index) =>
+              hasDesktopMessageMetadata(localMessages[index]!),
+            ) ?? matchingIndexes[0]!
+          // 同一 tool_use_id 的本地重复 tool_result 一并消费，避免尾部再插一遍。
+          for (const index of matchingIndexes) consumedLocalIndexes.add(index)
+          const preferredLocal = localMessages[preferredIndex]!
+          merged.push(preferredLocal)
+          registerMessageToolIds(preferredLocal)
+          const matchedCreatedAt = getMessageCreatedAt(preferredLocal)
+          if (matchedCreatedAt !== undefined) {
+            lastMatchedLocalCreatedAt = matchedCreatedAt
+          }
+          continue
+        }
+      }
+    }
+
+    // compact 也可能用新 message.id 重放历史 tool_use / tool_result。
+    // 仅对「尚未匹配到本地消息」的 Runtime 条目生效。
+    if (isCompactToolReplay(runtimeMessage)) {
+      continue
     }
 
     const userText = getUserMessageText(runtimeMessage)
@@ -942,8 +1188,26 @@ export function mergeAgentSessionSDKMessages(
               const createdAt = getMessageCreatedAt(localMessages[index]!)
               return createdAt === undefined || createdAt >= localCreatedAtFloor
             })
-        const candidateIndexes =
+        let candidateIndexes =
           eligibleIndexes.length > 0 ? eligibleIndexes : chronologicalIndexes
+        const alreadyMergedUserText =
+          mergedTopLevelUserTexts.has(normalizedRuntimeText)
+          || mergedTopLevelUserTexts.has(userText)
+        // 同一原文已并入后，只允许再匹配带桌面元数据的真实二次发送。
+        // 无元数据的本地副本通常是 429 重试导入，不能继续匹配成多个气泡。
+        if (alreadyMergedUserText) {
+          candidateIndexes = candidateIndexes.filter((index) =>
+            hasDesktopMessageMetadata(localMessages[index]!),
+          )
+          if (candidateIndexes.length === 0) {
+            for (const index of equivalentIndexes) {
+              if (!hasDesktopMessageMetadata(localMessages[index]!)) {
+                consumedLocalIndexes.add(index)
+              }
+            }
+            continue
+          }
+        }
         const runtimeIdentity = getSDKMessageIdentity(runtimeMessage)
         const identityIndex = candidateIndexes.find(index =>
           getSDKMessageIdentity(localMessages[index]!) === runtimeIdentity,
@@ -975,13 +1239,33 @@ export function mergeAgentSessionSDKMessages(
         if (enhancedPromptIndex !== undefined) {
           consumedLocalIndexes.add(enhancedPromptIndex)
         }
+        // 首次并入后，顺带消费同文案的无桌面元数据污染副本（429 重试导入）。
+        for (const index of equivalentIndexes) {
+          if (consumedLocalIndexes.has(index)) continue
+          if (!hasDesktopMessageMetadata(localMessages[index]!)) {
+            consumedLocalIndexes.add(index)
+          }
+        }
         const preferredLocal = localMessages[preferredIndex]!
         merged.push(preferredLocal)
         registerMessageToolIds(preferredLocal)
+        const preferredText = getUserMessageText(preferredLocal)
+        if (preferredText) mergedTopLevelUserTexts.add(preferredText)
         const matchedCreatedAt = getMessageCreatedAt(preferredLocal)
         if (matchedCreatedAt !== undefined) {
           lastMatchedLocalCreatedAt = matchedCreatedAt
         }
+        continue
+      }
+    }
+
+    // Runtime-only 重复 prompt（本地已展示过同一用户原文）：视为重试记录，不新增气泡
+    if (userText) {
+      const normalizedRuntimeText = normalizeRuntimeUserMessageText(userText)
+      if (
+        mergedTopLevelUserTexts.has(normalizedRuntimeText)
+        || mergedTopLevelUserTexts.has(userText)
+      ) {
         continue
       }
     }
@@ -1007,6 +1291,10 @@ export function mergeAgentSessionSDKMessages(
     } else {
       merged.push(runtimeMessage)
       markAssistantMessageSeen(runtimeMessage)
+      const runtimeUserText = getUserMessageText(runtimeMessage)
+      if (runtimeUserText) {
+        mergedTopLevelUserTexts.add(normalizeRuntimeUserMessageText(runtimeUserText))
+      }
       const runtimeCreatedAt = getMessageCreatedAt(runtimeMessage)
       if (runtimeCreatedAt !== undefined) {
         lastMatchedLocalCreatedAt = runtimeCreatedAt
@@ -1017,6 +1305,26 @@ export function mergeAgentSessionSDKMessages(
   const pendingResults: SDKMessage[] = []
   localMessages.forEach((localMessage, index) => {
     if (consumedLocalIndexes.has(index)) return
+    // 本地历史若已混入 CCB 中断合成 user，合并时一并剔除
+    if (isCcbInterruptUserMessage(localMessage)) return
+    if (isCcbCompactionContinuationUserMessage(localMessage)) return
+    if (isCcbTransientApiErrorAssistantMessage(localMessage)) return
+    // 未消费的无元数据同文案 user：视为 429 重试导入污染，不再插回
+    const pendingUserText = getUserMessageText(localMessage)
+    const pendingParent = (localMessage as { parent_tool_use_id?: unknown }).parent_tool_use_id
+    if (
+      localMessage.type === 'user'
+      && !pendingParent
+      && pendingUserText
+      && !isToolResultOnlyUserMessage(localMessage)
+      && (
+        mergedTopLevelUserTexts.has(pendingUserText)
+        || mergedTopLevelUserTexts.has(normalizeRuntimeUserMessageText(pendingUserText))
+      )
+      && !hasDesktopMessageMetadata(localMessage)
+    ) {
+      return
+    }
     if (localMessage.type === 'result') {
       pendingResults.push(localMessage)
       return
@@ -1078,7 +1386,7 @@ export function mergeAgentSessionSDKMessages(
  */
 export function updateAgentSessionMeta(
   id: string,
-  updates: Partial<Pick<AgentSessionMeta, 'title' | 'draft' | 'titleSource' | 'channelId' | 'modelId' | 'runtimeSessionId' | 'runtimeVersion' | 'runtimeArtifactCommit' | 'runtimeProtocolVersion' | 'runtimeLastSequence' | 'runtimeWorkerState' | 'workspaceId' | 'pinned' | 'starred' | 'archived' | 'attachedDirectories' | 'attachedFiles' | 'resumeAtMessageUuid' | 'stoppedByUser' | 'permissionMode' | 'planModeEnabled' | 'completedButUnconfirmed' | 'sourceAutomationId' | 'automationGraduated' | 'parentSessionId' | 'rootSessionId' | 'sourceDelegationId' | 'delegationRole' | 'delegationStatus' | 'delegationDepth' | 'delegationGoal'>>,
+  updates: Partial<Pick<AgentSessionMeta, 'title' | 'draft' | 'titleSource' | 'channelId' | 'modelId' | 'runtimeSessionId' | 'runtimeVersion' | 'runtimeArtifactCommit' | 'runtimeProtocolVersion' | 'runtimeLastSequence' | 'runtimeWorkerState' | 'workspaceId' | 'pinned' | 'starred' | 'archived' | 'attachedDirectories' | 'attachedFiles' | 'resumeAtMessageUuid' | 'stoppedByUser' | 'lastStopDurationMs' | 'permissionMode' | 'planModeEnabled' | 'completedButUnconfirmed' | 'sourceAutomationId' | 'automationGraduated' | 'parentSessionId' | 'rootSessionId' | 'sourceDelegationId' | 'delegationRole' | 'delegationStatus' | 'delegationDepth' | 'delegationGoal'>>,
 ): AgentSessionMeta {
   const index = readIndex()
   const idx = index.sessions.findIndex((s) => s.id === id)

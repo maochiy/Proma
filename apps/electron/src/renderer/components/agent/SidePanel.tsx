@@ -7,7 +7,7 @@
 
 import * as React from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
-import { X, FolderOpen, ExternalLink, ChevronRight, MoreHorizontal, FolderSearch, Pencil, FolderInput, Info, FolderHeart, MessageSquarePlus, FileDiff, PanelRightClose } from 'lucide-react'
+import { X, FolderOpen, ExternalLink, ChevronRight, MoreHorizontal, FolderSearch, Pencil, FolderInput, Info, FolderHeart, MessageSquarePlus, FileDiff, Terminal } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import {
@@ -43,12 +43,16 @@ import {
   agentRuntimeExecutionGraphAtomFamily,
   agentRuntimePlanLifecycleAtom,
   agentExecutionNodeTabSnapshotsAtom,
+  agentTerminalTabSnapshotsAtom,
   agentSidePanelRuntimeHistoryAtom,
   agentSessionsAtom,
+  createAgentTerminalTab,
   agentStreamingStatesAtom,
   createAgentExecutionNodeTab,
   getAgentExecutionNodeId,
+  getAgentTerminalSessionId,
   isAgentExecutionNodeTab,
+  isAgentTerminalTab,
   openAgentSidePanelTabAtom,
 } from '@/atoms/agent-atoms'
 import type { AgentSidePanelTab } from '@/atoms/agent-atoms'
@@ -61,6 +65,7 @@ import { getAvailableAgentSidePanelTabs } from '@/lib/agent-side-panel-tabs'
 import { getVisibleRuntimePlanTodos } from '@/lib/runtime-plan-lifecycle'
 import {
   buildSessionExecutionNodes,
+  isSubagentExecutionNode,
   isSessionExecutionNodeDetailRunning,
 } from '@/lib/session-execution-nodes'
 import type {
@@ -69,6 +74,8 @@ import type {
   FileEntry,
 } from '@proma/shared'
 import { RuntimeExecutionNodePanel } from './RuntimeExecutionNodePanel'
+import { IntegratedTerminalPanel } from './IntegratedTerminalPanel'
+import type { AgentSidePanelAddTab } from '@/lib/agent-side-panel-tabs'
 
 function getPathBasename(filePath: string): string {
   return filePath.split(/[\\/]/).filter(Boolean).pop() || filePath
@@ -89,7 +96,8 @@ interface SidePanelProps {
   onTabChange: (tab: AgentSidePanelTab) => void
   openTabs: AgentSidePanelTab[]
   launcherVisible: boolean
-  onOpenTab: (tab: AgentSidePanelTab) => void
+  onOpenTab: (tab: AgentSidePanelAddTab) => void
+  onCreateTerminal: () => void
   onCloseTab: (tab: AgentSidePanelTab) => void
   onReorderTabs: (source: AgentSidePanelTab, target: AgentSidePanelTab) => void
   onClosePanel: () => void
@@ -106,6 +114,7 @@ export function SidePanel({
   openTabs,
   launcherVisible,
   onOpenTab,
+  onCreateTerminal,
   onCloseTab,
   onReorderTabs,
   onClosePanel,
@@ -446,6 +455,7 @@ export function SidePanel({
   const runtimeHistory = useAtomValue(agentSidePanelRuntimeHistoryAtom).get(sessionId)
   const executionNodeTabSnapshots = useAtomValue(agentExecutionNodeTabSnapshotsAtom)
     .get(sessionId)
+  const terminalTabSnapshots = useAtomValue(agentTerminalTabSnapshotsAtom).get(sessionId)
   const agentSessions = useAtomValue(agentSessionsAtom)
   const agentStreamingStates = useAtomValue(agentStreamingStatesAtom)
   const effectiveExecutionGraph = React.useMemo(() => {
@@ -477,7 +487,7 @@ export function SidePanel({
       liveRuntimeNodeIds: new Set(
         (executionGraph?.nodes ?? []).map((node) => node.id),
       ),
-    }),
+    }).filter(isSubagentExecutionNode),
     [agentSessions, effectiveExecutionGraph, executionGraph?.nodes, sessionId],
   )
   const hasExecutionGraph = executionNodes.length > 0
@@ -491,6 +501,10 @@ export function SidePanel({
     })
   }, [hasExecutionGraph, hasPlan, openTabs, sideChatConversationId])
   const activeExecutionNodeId = getAgentExecutionNodeId(activeTab)
+  const activeTerminalSessionId = getAgentTerminalSessionId(activeTab)
+  const activeTerminalSnapshot = isAgentTerminalTab(activeTab)
+    ? terminalTabSnapshots?.get(activeTab)
+    : undefined
   const activeExecutionNodeSnapshot = activeExecutionNodeId && isAgentExecutionNodeTab(activeTab)
     ? executionNodeTabSnapshots?.get(activeTab)
     : undefined
@@ -510,12 +524,28 @@ export function SidePanel({
       )
     : false
   const getTabLabel = React.useCallback((tab: AgentSidePanelTab): string | undefined => {
+    if (isAgentTerminalTab(tab)) {
+      const terminal = terminalTabSnapshots?.get(tab)
+      if (!terminal) return '终端'
+      if (terminal.title) return terminal.title
+      const baseTitle = getPathBasename(terminal.cwd) || terminal.shellName || '终端'
+      const sameTitleTabs = openTabs.filter((openTab) => {
+        if (!isAgentTerminalTab(openTab)) return false
+        const item = terminalTabSnapshots?.get(openTab)
+        if (!item || item.title) return false
+        return (getPathBasename(item.cwd) || item.shellName || '终端') === baseTitle
+      })
+      const duplicateIndex = sameTitleTabs.indexOf(tab)
+      return sameTitleTabs.length > 1 && duplicateIndex >= 0
+        ? `${baseTitle} ${duplicateIndex + 1}`
+        : baseTitle
+    }
     const nodeId = getAgentExecutionNodeId(tab)
     if (!nodeId || !isAgentExecutionNodeTab(tab)) return undefined
     const node = executionNodeTabSnapshots?.get(tab)?.node
       ?? executionNodes.find((item) => item.id === nodeId)
     return node?.name || node?.description || '执行节点'
-  }, [executionNodeTabSnapshots, executionNodes])
+  }, [executionNodeTabSnapshots, executionNodes, openTabs, terminalTabSnapshots])
 
   const handleCloseChatTab = React.useCallback(() => {
     setSideChatMap((prev) => {
@@ -526,6 +556,10 @@ export function SidePanel({
     })
     onCloseTab('chat')
   }, [onCloseTab, sessionId, setSideChatMap])
+  const handleActiveTerminalExit = React.useCallback(() => {
+    if (!activeTerminalSessionId) return
+    onCloseTab(createAgentTerminalTab(activeTerminalSessionId))
+  }, [activeTerminalSessionId, onCloseTab])
 
   React.useEffect(() => {
     if (sideChatConversationId || !openTabs.includes('chat')) return
@@ -553,23 +587,13 @@ export function SidePanel({
         >
           {launcherVisible ? (
             <>
-              <div className="relative flex h-[34px] shrink-0 items-center justify-end tabbar-bg">
+              <div className="relative flex h-[34px] shrink-0 items-center tabbar-bg">
                 <div className={cn('absolute inset-0 titlebar-drag-region', isWindows && 'right-[126px]')} />
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button
-                      type="button"
-                      className="titlebar-no-drag relative mr-1 flex size-7 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
-                      aria-label="折叠右侧功能区"
-                      onClick={onClosePanel}
-                    >
-                      <PanelRightClose className="size-4" />
-                    </button>
-                  </TooltipTrigger>
-                  <TooltipContent side="bottom">折叠功能区</TooltipContent>
-                </Tooltip>
               </div>
-              <SidePanelLauncher onOpenTab={onOpenTab} />
+              <SidePanelLauncher
+                onOpenTab={onOpenTab}
+                onCreateTerminal={onCreateTerminal}
+              />
             </>
           ) : (
             <>
@@ -582,14 +606,26 @@ export function SidePanel({
                   if (tab === 'chat') handleCloseChatTab()
                   else onCloseTab(tab)
                 }}
-                onTabAdd={onOpenTab}
+                onTabAdd={(tab) => {
+                  if (tab === 'terminal') onCreateTerminal()
+                  else onOpenTab(tab)
+                }}
                 onTabReorder={onReorderTabs}
                 getTabLabel={getTabLabel}
                 onClose={onClosePanel}
                 isWindows={isWindows}
               />
 
-              {activeExecutionNodeId ? (
+              {activeTerminalSessionId ? (
+                <IntegratedTerminalPanel
+                  sessionId={sessionId}
+                  terminalSessionId={activeTerminalSessionId}
+                  terminalCwd={activeTerminalSnapshot?.cwd ?? null}
+                  currentSessionPath={sessionPath}
+                  onCreateSibling={onCreateTerminal}
+                  onExit={handleActiveTerminalExit}
+                />
+              ) : activeExecutionNodeId ? (
                 activeExecutionNode ? (
                   <RuntimeExecutionNodePanel
                     cacheKey={`${sessionId}:${activeTab}`}
@@ -837,7 +873,7 @@ export function SidePanel({
 }
 
 const SIDE_PANEL_LAUNCHER_ENTRIES: Array<{
-  tab: AgentSidePanelTab
+  tab: AgentSidePanelAddTab
   title: string
   description: string
   icon: React.ReactNode
@@ -860,12 +896,20 @@ const SIDE_PANEL_LAUNCHER_ENTRIES: Array<{
     description: '查看当前工作树的全部变更',
     icon: <FileDiff className="size-4" />,
   },
+  {
+    tab: 'terminal',
+    title: '终端',
+    description: '在当前会话目录打开交互式 Shell',
+    icon: <Terminal className="size-4" />,
+  },
 ]
 
 export function SidePanelLauncher({
   onOpenTab,
+  onCreateTerminal,
 }: {
-  onOpenTab: (tab: AgentSidePanelTab) => void
+  onOpenTab: (tab: AgentSidePanelAddTab) => void
+  onCreateTerminal?: () => void
 }): React.ReactElement {
   return (
     <div className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto px-6 py-8">
@@ -875,7 +919,10 @@ export function SidePanelLauncher({
             key={entry.tab}
             type="button"
             className="flex w-full items-center gap-3 rounded-xl px-3 py-3 text-left transition-colors hover:bg-muted/55"
-            onClick={() => onOpenTab(entry.tab)}
+            onClick={() => {
+              if (entry.tab === 'terminal' && onCreateTerminal) onCreateTerminal()
+              else onOpenTab(entry.tab)
+            }}
           >
             <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted/70 text-muted-foreground">
               {entry.icon}

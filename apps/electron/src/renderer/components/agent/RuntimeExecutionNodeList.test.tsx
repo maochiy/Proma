@@ -18,12 +18,12 @@ const DETACHED_NODE: SessionExecutionNode = {
 }
 
 describe('运行时执行节点列表', () => {
-  test('Given 长期监控节点仍在运行 When 父 Turn 已结束 Then 标签显示后台监控', () => {
+  test('Given 长期监控节点仍在运行 When 父 Turn 已结束 Then 标签显示等待指示', () => {
     expect(runtimeExecutionNodeStatusLabel(
       'running',
       false,
       true,
-    )).toBe('后台监控')
+    )).toBe('正在等待指示')
   })
 
   test('Given detach 节点 When 渲染节点列表 Then 不显示执行中旋转图标', () => {
@@ -35,8 +35,8 @@ describe('运行时执行节点列表', () => {
       />,
     )
 
-    expect(html).toContain('后台监控')
+    expect(html).toContain('正在等待指示')
     expect(html).not.toContain('animate-spin')
-    expect(html).not.toContain('执行中')
+    expect(html).not.toContain('正在运行')
   })
 })

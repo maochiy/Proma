@@ -2,6 +2,8 @@ import { describe, expect, test } from 'bun:test'
 import type { SDKMessage } from '@proma/shared'
 import {
   getAssistantModelMessageId,
+  hasUnpersistedLiveAssistantNarrative,
+  mergePersistedAndLiveMessages,
   upsertAgentLiveMessage,
 } from './agent-live-message'
 
@@ -173,5 +175,75 @@ describe('Agent 实时消息合并', () => {
     )
 
     expect(result).toBe(before)
+  })
+})
+
+
+describe('mergePersistedAndLiveMessages 暂停后继续对话顺序', () => {
+  test('Given 第一轮 assistant 仅在 live 且第二轮 user 已持久化 When 合并 Then assistant 仍在第一轮 user 之后', () => {
+    const user1 = {
+      type: 'user',
+      uuid: 'u1',
+      message: { content: [{ type: 'text', text: '第一轮' }] },
+      _createdAt: 1000,
+    } as any
+    const interrupted = {
+      type: 'result',
+      subtype: 'interrupted',
+      uuid: 'r1',
+      _createdAt: 1300,
+    } as any
+    const user2 = {
+      type: 'user',
+      uuid: 'u2',
+      message: { content: [{ type: 'text', text: '第二轮' }] },
+      _createdAt: 2000,
+    } as any
+    const assistant1 = {
+      type: 'assistant',
+      uuid: 'a1',
+      message: { id: 'm1', content: [{ type: 'text', text: '第一轮回复' }] },
+      _createdAt: 1200,
+    } as any
+
+    const merged = mergePersistedAndLiveMessages(
+      [user1, interrupted, user2],
+      [assistant1],
+    )
+
+    expect(merged.map((item) => (item as any).uuid)).toEqual(['u1', 'a1', 'r1', 'u2'])
+  })
+
+  test('Given live 与 persisted 有相同 assistant When 合并 Then 不重复', () => {
+    const assistant = {
+      type: 'assistant',
+      uuid: 'a1',
+      message: { id: 'm1', content: [{ type: 'text', text: '回复' }] },
+      _createdAt: 1200,
+    } as any
+    const merged = mergePersistedAndLiveMessages([assistant], [{ ...assistant }])
+    expect(merged).toHaveLength(1)
+  })
+})
+
+describe('hasUnpersistedLiveAssistantNarrative', () => {
+  test('Given live 仅有过程正文且 JSONL 只有 thinking When 判断 Then 视为未落盘', () => {
+    const live = [
+      assistant('live-text', 'msg-1', { type: 'text', text: '我先看项目结构' }, true),
+    ]
+    const persisted = [
+      assistant('disk-think', 'msg-1', { type: 'thinking', thinking: 'plan' }),
+    ]
+    expect(hasUnpersistedLiveAssistantNarrative(live, persisted)).toBe(true)
+  })
+
+  test('Given live 过程正文已在 JSONL When 判断 Then 视为已落盘', () => {
+    const live = [
+      assistant('live-text', 'msg-1', { type: 'text', text: '我先看项目结构' }, true),
+    ]
+    const persisted = [
+      assistant('disk-text', 'msg-1', { type: 'text', text: '我先看项目结构' }),
+    ]
+    expect(hasUnpersistedLiveAssistantNarrative(live, persisted)).toBe(false)
   })
 })

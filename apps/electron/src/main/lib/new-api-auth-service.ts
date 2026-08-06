@@ -107,6 +107,16 @@ function unauthenticatedState(warning?: string): NewApiAuthState {
   }
 }
 
+/**
+ * 获取当前已登录的 OpenSwitch 渠道 ID（未登录 / 已退出返回 undefined）。
+ * 供联网搜索等基础能力复用登录渠道的 API Key，不做在线验证。
+ */
+export function getAuthenticatedChannelId(): string | undefined {
+  const config = readAuthConfig()
+  if (!config || config.signedOut) return undefined
+  return config.channelId
+}
+
 function authenticatedState(config: NewApiAuthConfig, warning?: string): NewApiAuthState {
   return {
     authenticated: true,

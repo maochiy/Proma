@@ -15,6 +15,95 @@
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+  --vscode-terminal-background: #ffffff;
+  --vscode-terminal-foreground: #242424;
+  --vscode-terminal-selectionBackground: #add6ff;
+  --vscode-terminal-inactiveSelectionBackground: #e5ebf1;
+  --vscode-terminal-ansiBlack: #000000;
+  --vscode-terminal-ansiRed: #cd3131;
+  --vscode-terminal-ansiGreen: #00bc00;
+  --vscode-terminal-ansiYellow: #949800;
+  --vscode-terminal-ansiBlue: #0451a5;
+  --vscode-terminal-ansiMagenta: #bc05bc;
+  --vscode-terminal-ansiCyan: #0598bc;
+  --vscode-terminal-ansiWhite: #555555;
+  --vscode-terminal-ansiBrightBlack: #666666;
+  --vscode-terminal-ansiBrightRed: #cd3131;
+  --vscode-terminal-ansiBrightGreen: #14ce14;
+  --vscode-terminal-ansiBrightYellow: #b5ba00;
+  --vscode-terminal-ansiBrightBlue: #0451a5;
+  --vscode-terminal-ansiBrightMagenta: #bc05bc;
+  --vscode-terminal-ansiBrightCyan: #0598bc;
+  --vscode-terminal-ansiBrightWhite: #a5a5a5;
+  --vscode-scrollbarSlider-background: rgb(100 100 100 / 0.25);
+  --vscode-scrollbarSlider-hoverBackground: rgb(100 100 100 / 0.4);
+  --vscode-scrollbarSlider-activeBackground: rgb(100 100 100 / 0.55);
+}
+
+.dark {
+  --vscode-terminal-background: #181818;
+  --vscode-terminal-foreground: #cccccc;
+  --vscode-terminal-selectionBackground: #264f78;
+  --vscode-terminal-inactiveSelectionBackground: #3a3d41;
+  --vscode-terminal-ansiBlack: #000000;
+  --vscode-terminal-ansiRed: #cd3131;
+  --vscode-terminal-ansiGreen: #0dbc79;
+  --vscode-terminal-ansiYellow: #e5e510;
+  --vscode-terminal-ansiBlue: #2472c8;
+  --vscode-terminal-ansiMagenta: #bc3fbc;
+  --vscode-terminal-ansiCyan: #11a8cd;
+  --vscode-terminal-ansiWhite: #e5e5e5;
+  --vscode-terminal-ansiBrightBlack: #666666;
+  --vscode-terminal-ansiBrightRed: #f14c4c;
+  --vscode-terminal-ansiBrightGreen: #23d18b;
+  --vscode-terminal-ansiBrightYellow: #f5f543;
+  --vscode-terminal-ansiBrightBlue: #3b8eea;
+  --vscode-terminal-ansiBrightMagenta: #d670d6;
+  --vscode-terminal-ansiBrightCyan: #29b8db;
+  --vscode-terminal-ansiBrightWhite: #ffffff;
+  --vscode-scrollbarSlider-background: rgb(121 121 121 / 0.3);
+  --vscode-scrollbarSlider-hoverBackground: rgb(121 121 121 / 0.5);
+  --vscode-scrollbarSlider-activeBackground: rgb(121 121 121 / 0.65);
+}
+
+.integrated-terminal-surface {
+  color: hsl(var(--foreground));
+  background: hsl(var(--content-area));
+}
+
+.integrated-terminal-surface .xterm,
+.integrated-terminal-surface .xterm-screen,
+.integrated-terminal-surface .xterm-viewport {
+  background-color: transparent !important;
+}
+
+.integrated-terminal-surface .xterm-viewport {
+  scrollbar-color:
+    var(--vscode-scrollbarSlider-background)
+    transparent;
+  scrollbar-width: thin;
+}
+
+.integrated-terminal-surface .xterm-viewport::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.integrated-terminal-surface .xterm-viewport::-webkit-scrollbar-track,
+.integrated-terminal-surface .xterm-viewport::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+.integrated-terminal-surface .xterm-viewport::-webkit-scrollbar-thumb {
+  background: var(--vscode-scrollbarSlider-background);
+}
+
+.integrated-terminal-surface .xterm-viewport::-webkit-scrollbar-thumb:hover {
+  background: var(--vscode-scrollbarSlider-hoverBackground);
+}
+
+.integrated-terminal-surface .xterm-viewport::-webkit-scrollbar-thumb:active {
+  background: var(--vscode-scrollbarSlider-activeBackground);
 }
 
 /* CRT Terminal 主题：全局等宽字体覆盖 */
@@ -828,6 +917,102 @@
 
 @media (prefers-reduced-motion: reduce) {
   .theme-terminal-dark .mode-switcher-track .mode-slider {
+    animation: none;
+  }
+}
+
+/* Agent 运行态文字：首次延迟约 600ms，单次扫光约 1 秒，每约 4 秒重复。 */
+@keyframes agent-status-shimmer {
+  0%,
+  15% {
+    background-position: 120% 0;
+  }
+
+  40% {
+    background-position: -20% 0;
+  }
+
+  41%,
+  100% {
+    background-position: -20% 0;
+  }
+}
+
+.agent-status-shimmer {
+  /* 文字保持弱化颜色可见，高光在其上方横向扫过 */
+  color: hsl(var(--muted-foreground));
+  background-image: linear-gradient(
+    100deg,
+    transparent 0%,
+    transparent 38%,
+    hsl(var(--foreground) / 0.55) 50%,
+    transparent 62%,
+    transparent 100%
+  );
+  background-position: 120% 0;
+  background-size: 220% 100%;
+  background-clip: text;
+  -webkit-background-clip: text;
+  animation: agent-status-shimmer 4s ease-in-out 600ms infinite;
+}
+
+/* 活动/开局入场：仅淡入，不做 max-height 撑开，避免「正在思考/阶段行」上下跳 */
+@keyframes agent-activity-fade-in {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+/* 兼容旧类名：统一落到纯淡入，避免历史引用再次引入高度动画 */
+@keyframes agent-processing-enter {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes agent-activity-enter {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
+  }
+}
+
+.agent-activity-fade-in {
+  animation: agent-activity-fade-in 220ms ease-out both;
+  animation-fill-mode: backwards;
+}
+
+.agent-processing-enter {
+  animation: agent-processing-enter 220ms ease-out both;
+  animation-fill-mode: backwards;
+}
+
+.agent-activity-enter {
+  animation: agent-activity-enter 220ms ease-out both;
+  animation-fill-mode: backwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-status-shimmer {
+    color: hsl(var(--muted-foreground));
+    background: none;
+    animation: none;
+  }
+
+  .agent-processing-enter,
+  .agent-activity-enter,
+  .agent-activity-fade-in {
     animation: none;
   }
 }

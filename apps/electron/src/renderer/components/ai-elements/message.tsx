@@ -125,7 +125,7 @@ export function MessageContent({
     <div
       className={cn(
         'flex max-w-full min-w-0 flex-col gap-2 overflow-hidden',
-        'group-[.is-user]:ml-auto group-[.is-user]:max-w-[78%] group-[.is-user]:items-start group-[.is-user]:rounded-xl group-[.is-user]:bg-muted/70 group-[.is-user]:px-3.5 group-[.is-user]:py-2.5 group-[.is-user]:text-foreground',
+        'group-[.is-user]:ml-auto group-[.is-user]:max-w-[77%] group-[.is-user]:items-start group-[.is-user]:rounded-2xl group-[.is-user]:bg-muted/65 group-[.is-user]:px-3 group-[.is-user]:py-2 group-[.is-user]:text-foreground',
         'group-[.is-assistant]:w-full group-[.is-assistant]:pl-8 group-[.is-assistant]:text-foreground',
         className
       )}
@@ -653,7 +653,7 @@ export const UserMessageContent = React.memo(
     }, [])
 
     return (
-      <div className={cn('relative inline-block max-w-full rounded-[10px] bg-primary/10 px-3.5 py-2.5', className)} {...props}>
+      <div className={cn('relative max-w-full', className)} {...props}>
         <div
           ref={contentRef}
           className={cn(

@@ -35,7 +35,7 @@ import {
 import type { PendingAttachment, ChatPendingMessage } from '@/atoms/chat-atoms'
 import { quotedSelectionMapAtom } from '@/atoms/preview-atoms'
 import { promptConfigAtom, promptSidebarOpenAtom, conversationPromptIdAtom, resolveSystemMessage, selectedPromptIdAtom } from '@/atoms/system-prompt-atoms'
-import { activeToolIdsAtom } from '@/atoms/chat-tool-atoms'
+import { activeToolIdsAtom, chatToolsAtom } from '@/atoms/chat-tool-atoms'
 import { userProfileAtom } from '@/atoms/user-profile'
 import { ConversationProvider } from '@/contexts/session-context'
 import {
@@ -107,6 +107,7 @@ function ChatViewInner({ conversationId }: ChatViewProps): React.ReactElement {
   const userProfile = useAtomValue(userProfileAtom)
   const promptSidebarOpen = useAtomValue(promptSidebarOpenAtom)
   const activeToolIds = useAtomValue(activeToolIdsAtom)
+  const chatTools = useAtomValue(chatToolsAtom)
   const setPendingRecommendation = useSetAtom(pendingAgentRecommendationAtom)
   const [chatPendingMessage, setChatPendingMessage] = React.useState<ChatPendingMessage | null>(null)
 
@@ -347,7 +348,8 @@ function ChatViewInner({ conversationId }: ChatViewProps): React.ReactElement {
       attachments: savedAttachments.length > 0 ? savedAttachments : undefined,
       thinkingEnabled: thinkingEnabled || undefined,
       systemMessage: resolveSystemMessage(conversationPromptId, promptConfig, userProfile.userName),
-      enabledToolIds: activeToolIds.length > 0 ? activeToolIds : undefined,
+      // 工具列表已加载后始终传显式 ID 列表：空数组表示全部关闭，避免回落到配置默认值误开联网搜索
+      enabledToolIds: chatTools.length > 0 ? activeToolIds : undefined,
     }
 
     // 乐观更新：立即在 UI 中显示用户消息
@@ -389,6 +391,7 @@ function ChatViewInner({ conversationId }: ChatViewProps): React.ReactElement {
     promptConfig,
     userProfile.userName,
     activeToolIds,
+    chatTools.length,
     setChatStreamErrors,
     setStreamingStates,
     setConversations,

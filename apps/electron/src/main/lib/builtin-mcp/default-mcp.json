@@ -57,6 +57,21 @@
       ]
     },
     {
+      "id": "web-search",
+      "name": "web_search",
+      "displayName": "联网搜索",
+      "description": "基于 OpenSwitch 搜索接口与本地网页抓取，为 Agent 提供实时联网搜索（WebSearch）与网页正文提取（WebFetch）能力。登录 OpenSwitch 后自动可用，无需配置。",
+      "category": "system",
+      "kind": "internal",
+      "deletable": false,
+      "defaultEnabled": true,
+      "toggleable": false,
+      "tools": [
+        { "name": "WebSearch", "description": "搜索互联网获取实时信息。", "readOnly": true },
+        { "name": "WebFetch", "description": "抓取网页并提取正文内容。", "readOnly": true }
+      ]
+    },
+    {
       "id": "chrome-devtools",
       "name": "chrome_devtools",
       "displayName": "Chrome 浏览器",

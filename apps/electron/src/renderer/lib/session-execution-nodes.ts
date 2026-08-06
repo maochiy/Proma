@@ -16,6 +16,13 @@ export interface SessionExecutionNode extends AgentRuntimeExecutionNode {
   runtimeWorkerState?: AgentSessionMeta['runtimeWorkerState']
 }
 
+/** 右侧子智能体区和后台智能体浮层不展示普通 Shell 执行节点。 */
+export function isSubagentExecutionNode(
+  node: AgentRuntimeExecutionNode,
+): boolean {
+  return node.kind !== 'shell'
+}
+
 interface BuildSessionExecutionNodesInput {
   sessionId: string
   runtimeGraph?: AgentRuntimeExecutionGraph

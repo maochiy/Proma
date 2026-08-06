@@ -1,14 +1,13 @@
 import { describe, expect, test } from 'bun:test'
 import type { SDKMessage } from '@proma/shared'
 import { getContextCompactionProgress, isCompactionControlHistoryGroup } from './AgentMessages'
-import { shouldRestoreCompactionProgress } from './TaskProgressOverlay'
 
 function systemMessage(fields: Record<string, unknown>): SDKMessage {
   return { type: 'system', ...fields } as unknown as SDKMessage
 }
 
 describe('context compaction progress overlay state', () => {
-  test('hides /compact control messages from conversation history', () => {
+  test('hides compacting controls but keeps completed boundary in history', () => {
     expect(isCompactionControlHistoryGroup({
       type: 'user',
       message: { type: 'user', message: { content: [{ type: 'text', text: '/compact' }] } },
@@ -16,7 +15,7 @@ describe('context compaction progress overlay state', () => {
     expect(isCompactionControlHistoryGroup({
       type: 'system',
       message: { type: 'system', subtype: 'compact_boundary' },
-    } as never)).toBe(true)
+    } as never)).toBe(false)
     expect(isCompactionControlHistoryGroup({
       type: 'system',
       message: { type: 'system', subtype: 'context_compaction_config' },
@@ -31,7 +30,7 @@ describe('context compaction progress overlay state', () => {
   test('shows a running state before the SDK emits a compacting message', () => {
     expect(getContextCompactionProgress([], true, undefined)).toMatchObject({
       status: 'running',
-      label: '正在整理上下文',
+      label: '正在压缩上下文',
     })
   })
 
@@ -45,19 +44,12 @@ describe('context compaction progress overlay state', () => {
     })
   })
 
-  test('does not restore an already dismissed success or no-op feedback state', () => {
-    expect(shouldRestoreCompactionProgress('success:上下文已压缩::', 'success:上下文已压缩::')).toBe(false)
-    expect(shouldRestoreCompactionProgress('noop:当前上下文无需压缩::', 'noop:当前上下文无需压缩::')).toBe(false)
-    expect(shouldRestoreCompactionProgress('running:正在整理上下文::', 'noop:当前上下文无需压缩::')).toBe(true)
-  })
-
   test('maps successful compaction to a terminal state', () => {
     expect(getContextCompactionProgress([
       systemMessage({ subtype: 'compact_boundary', summary: '已完成的工作已整理。' }),
     ], false, undefined)).toMatchObject({
       status: 'success',
       label: '上下文已压缩',
-      summary: '已完成的工作已整理。',
     })
   })
 
@@ -71,6 +63,45 @@ describe('context compaction progress overlay state', () => {
       status: 'success',
       label: '上下文已自动压缩',
       detail: '上下文约 168.0k → 24.0k tokens。',
+    })
+  })
+
+  test('manual running state uses manual wording', () => {
+    expect(getContextCompactionProgress([], false, {
+      status: 'running',
+      trigger: 'manual',
+    })).toMatchObject({
+      status: 'running',
+      label: '正在压缩上下文',
+    })
+  })
+
+  test('auto running state uses auto wording', () => {
+    expect(getContextCompactionProgress([], false, {
+      status: 'running',
+      trigger: 'auto',
+    })).toMatchObject({
+      status: 'running',
+      label: '正在自动压缩上下文',
+    })
+  })
+
+  test('manual success state uses manual wording', () => {
+    expect(getContextCompactionProgress([], false, {
+      status: 'success',
+      trigger: 'manual',
+    })).toMatchObject({
+      status: 'success',
+      label: '上下文已压缩',
+    })
+  })
+
+  test('persisted auto compact boundary uses auto wording', () => {
+    expect(getContextCompactionProgress([
+      systemMessage({ subtype: 'compact_boundary', compactTrigger: 'auto' }),
+    ], false, undefined)).toMatchObject({
+      status: 'success',
+      label: '上下文已自动压缩',
     })
   })
 

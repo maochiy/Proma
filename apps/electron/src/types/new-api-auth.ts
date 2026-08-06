@@ -8,7 +8,7 @@
 import type { UserProfile } from './user-profile'
 
 /** New API 服务地址 */
-export const NEW_API_SERVER_ADDRESS = 'https://test-ai.xiujiadian.com/zhuxiangwei-macmini'
+export const NEW_API_SERVER_ADDRESS = 'https://ais.xiudarepair.com'
 
 /** OpenAI 兼容协议 Base URL */
 export const NEW_API_OPENAI_BASE_URL = `${NEW_API_SERVER_ADDRESS}/v1`

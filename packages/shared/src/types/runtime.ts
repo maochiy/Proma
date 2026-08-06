@@ -152,6 +152,110 @@ export interface WorktreeInfo {
   name: string
 }
 
+/** 本地分支信息 */
+export interface GitBranchInfo {
+  /** 分支名 */
+  name: string
+  /** 是否为当前检出分支 */
+  current: boolean
+}
+
+/** 列出本地分支结果 */
+export interface ListGitBranchesResult {
+  /** 是否为 Git 仓库 */
+  isRepo: boolean
+  /** 当前分支名；detached HEAD 时为 null */
+  currentBranch: string | null
+  /** 本地分支列表 */
+  branches: GitBranchInfo[]
+}
+
+/** 列出远程结果 */
+export interface ListGitRemotesResult {
+  /** 是否为 Git 仓库 */
+  isRepo: boolean
+  /** 远程名称列表（如 origin） */
+  remotes: string[]
+  /** 当前分支的上游远程（如有） */
+  upstreamRemote: string | null
+}
+
+/** 通用 Git 操作结果 */
+export interface GitOperationResult {
+  ok: boolean
+  /** 成功时的简要信息 */
+  message?: string
+  /** 失败时的错误信息（可直接展示给用户） */
+  error?: string
+  /** 操作后的当前分支 */
+  branch?: string | null
+}
+
+/** 检出分支输入 */
+export interface CheckoutGitBranchInput {
+  dirPath: string
+  /** 目标分支名 */
+  branch: string
+  /** 若分支不存在则创建并检出 */
+  create?: boolean
+  /** 当前 Agent 会话 ID，用于主进程校验可访问路径 */
+  sessionId?: string
+}
+
+/** 提交输入 */
+export interface GitCommitInput {
+  dirPath: string
+  /** 提交信息 */
+  message: string
+  /** 是否先把未暂存/未追踪改动全部 stage（默认 true） */
+  includeUnstaged?: boolean
+  /** 当前 Agent 会话 ID */
+  sessionId?: string
+}
+
+/** 推送输入 */
+export interface GitPushInput {
+  dirPath: string
+  /** 远程名；省略时优先 upstream，否则 origin / 唯一远程 */
+  remote?: string
+  /** 推送的本地分支；省略时为当前分支 */
+  branch?: string
+  /** 设置 upstream（-u） */
+  setUpstream?: boolean
+  /** 当前 Agent 会话 ID */
+  sessionId?: string
+}
+
+/** 提交并可选推送的输入 */
+export interface GitCommitAndPushInput {
+  dirPath: string
+  message: string
+  includeUnstaged?: boolean
+  /** 是否在提交成功后推送 */
+  push?: boolean
+  remote?: string
+  setUpstream?: boolean
+  sessionId?: string
+}
+
+/** 生成提交信息输入 */
+export interface GenerateGitCommitMessageInput {
+  dirPath: string
+  channelId: string
+  modelId: string
+  /** 是否包含未暂存改动的上下文（与提交选项一致） */
+  includeUnstaged?: boolean
+  sessionId?: string
+}
+
+/** 生成提交信息结果 */
+export interface GenerateGitCommitMessageResult {
+  ok: boolean
+  message?: string
+  error?: string
+}
+
+
 /** 获取文件 Diff 的输入 */
 export interface GetFileDiffInput {
   dirPath: string
@@ -334,6 +438,65 @@ export interface ShellEnvResult {
   error: string | null
 }
 
+// ===== 集成终端 =====
+
+export type IntegratedTerminalShellKind =
+  | 'zsh'
+  | 'bash'
+  | 'fish'
+  | 'powershell'
+  | 'cmd'
+  | 'wsl'
+  | 'unknown'
+
+export interface IntegratedTerminalCreateInput {
+  conversationId: string
+  conversationTitle?: string
+  cwd?: string
+  cols?: number
+  rows?: number
+}
+
+export interface IntegratedTerminalSessionSnapshot {
+  id: string
+  conversationId: string
+  cwd: string
+  shellName: string
+  shellKind: IntegratedTerminalShellKind
+  cols: number
+  rows: number
+  output: string
+  outputSequence: number
+  truncated: boolean
+  alternateScreen: boolean
+}
+
+export type IntegratedTerminalEvent =
+  | {
+      type: 'data'
+      sessionId: string
+      data: string
+      sequence: number
+    }
+  | {
+      type: 'attached'
+      sessionId: string
+      cwd: string
+      shellName: string
+      shellKind: IntegratedTerminalShellKind
+    }
+  | {
+      type: 'exit'
+      sessionId: string
+      exitCode: number
+      signal?: number
+    }
+  | {
+      type: 'error'
+      sessionId: string
+      message: string
+    }
+
 /**
  * IPC 通道名称常量
  */
@@ -357,6 +520,21 @@ export const IPC_CHANNELS = {
   LIST_WORKTREES: 'git:list-worktrees',
   /** 获取 Worktree 相对于基准分支的全量变更 */
   GET_WORKTREE_CHANGES: 'git:get-worktree-changes',
+  /** 列出本地分支 */
+  LIST_GIT_BRANCHES: 'git:list-branches',
+  /** 列出远程 */
+  LIST_GIT_REMOTES: 'git:list-remotes',
+  /** 检出 / 创建并检出分支 */
+  CHECKOUT_GIT_BRANCH: 'git:checkout-branch',
+  /** 提交 */
+  GIT_COMMIT: 'git:commit',
+  /** 推送 */
+  GIT_PUSH: 'git:push',
+  /** 提交并可选推送 */
+  GIT_COMMIT_AND_PUSH: 'git:commit-and-push',
+  /** 根据变更生成提交信息 */
+  GENERATE_GIT_COMMIT_MESSAGE: 'git:generate-commit-message',
+
   /** 在系统默认浏览器中打开外部链接 */
   OPEN_EXTERNAL: 'shell:open-external',
   /** 用系统默认应用打开任意文件 */
@@ -381,6 +559,18 @@ export const IPC_CHANNELS = {
   WINDOW_IS_MAXIMIZED: 'window:is-maximized',
   /** 截图导出：将 HTML 渲染为 PNG 图片 */
   SCREENSHOT_CAPTURE: 'screenshot:capture',
+  /** 创建集成终端会话 */
+  TERMINAL_CREATE: 'terminal:create',
+  /** 重新挂载并读取集成终端末尾缓存 */
+  TERMINAL_ATTACH: 'terminal:attach',
+  /** 向集成终端写入键盘数据 */
+  TERMINAL_WRITE: 'terminal:write',
+  /** 调整集成终端 PTY 尺寸 */
+  TERMINAL_RESIZE: 'terminal:resize',
+  /** 关闭集成终端会话 */
+  TERMINAL_CLOSE: 'terminal:close',
+  /** 集成终端增量事件 */
+  TERMINAL_EVENT: 'terminal:event',
 } as const
 
 /**

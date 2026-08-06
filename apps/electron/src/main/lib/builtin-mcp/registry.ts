@@ -9,6 +9,7 @@ import type { AgentSessionMeta, PromaPermissionMode } from '@proma/shared'
 import { injectAgentCollaborationMcpServer } from '../agent-collaboration-tools'
 import { injectAutomationMcpServer } from '../automation-agent-tools'
 import { injectNanoBananaMcpServer } from '../chat-tools/nano-banana-mcp'
+import { injectWebSearchMcpServer } from './web-search-mcp'
 import { isBuiltinMcpUserEnabled } from './settings'
 import { builtinMcpToolFactory } from './tool-definition'
 import { promaBuiltinMcpHttpHost } from './http-host'
@@ -35,6 +36,12 @@ async function injectBuiltinSafely(name: string, task: () => Promise<void>): Pro
 }
 
 export async function injectBuiltinMcpServers(ctx: BuiltinMcpInjectContext): Promise<{ collaborationAvailable: boolean }> {
+  // 联网搜索是基础设施型能力（toggleable: false）：始终注入，
+  // 可用性由服务层 OpenSwitch 登录态决定。
+  await injectBuiltinSafely('web-search', async () => {
+    injectWebSearchMcpServer(builtinMcpToolFactory, ctx.mcpServers)
+  })
+
   if (isBuiltinMcpUserEnabled('nano-banana')) {
     await injectBuiltinSafely('nano-banana', () => injectNanoBananaMcpServer(
       builtinMcpToolFactory,

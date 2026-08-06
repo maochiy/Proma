@@ -10,6 +10,7 @@ import { join, resolve, sep, dirname } from 'node:path'
 import { existsSync, realpathSync, rmSync, readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
+import { registerIntegratedTerminalIpcHandlers } from './lib/integrated-terminal-manager'
 import { IPC_CHANNELS, CHANNEL_IPC_CHANNELS, CHAT_IPC_CHANNELS, AGENT_IPC_CHANNELS, ENVIRONMENT_IPC_CHANNELS, INSTALLER_IPC_CHANNELS, PROXY_IPC_CHANNELS, GITHUB_RELEASE_IPC_CHANNELS, SYSTEM_PROMPT_IPC_CHANNELS, CHAT_TOOL_IPC_CHANNELS, FEISHU_IPC_CHANNELS, DINGTALK_IPC_CHANNELS, WECHAT_IPC_CHANNELS, AUTOMATION_IPC_CHANNELS, CCB_NATIVE_CHANNEL_ID, isPromaPermissionMode, normalizePathForCompare } from '@proma/shared'
 import { USER_PROFILE_IPC_CHANNELS, NEW_API_AUTH_IPC_CHANNELS, SETTINGS_IPC_CHANNELS, SCRATCH_PAD_IPC_CHANNELS, QUICK_TASK_IPC_CHANNELS, VOICE_DICTATION_IPC_CHANNELS, APP_ICON_IPC_CHANNELS, DOCK_BADGE_IPC_CHANNELS, STORAGE_IPC_CHANNELS } from '../types'
 import type {
@@ -129,6 +130,15 @@ import type {
 import type { UserProfile, AppSettings } from '../types'
 import { getRuntimeStatus, getGitRepoStatus, reinitializeRuntime } from './lib/runtime-init'
 import { getUnstagedChanges, getFileDiff, getUntrackedContent, revertFile, getDiffContents, listWorktrees, getWorktreeChanges, getMainRepoRoot } from './lib/git-diff-service'
+import {
+  listGitBranches,
+  listGitRemotes,
+  checkoutGitBranch,
+  gitCommit,
+  gitPush,
+  gitCommitAndPush,
+  generateGitCommitMessage,
+} from './lib/git-ops-service'
 import { registerPromaFilePath } from './lib/local-file-protocol'
 import { registerUpdaterIpc } from './lib/updater/updater-ipc'
 import {
@@ -1008,6 +1018,7 @@ function scheduleAgentTranscriptBackgroundSync(sessionId: string): void {
 
 export function registerIpcHandlers(): void {
   console.log('[IPC] 正在注册 IPC 处理器...')
+  registerIntegratedTerminalIpcHandlers()
   const enabledChannel = listChannels().find(channel => channel.enabled)
   if (enabledChannel) {
     try {
@@ -1148,6 +1159,111 @@ export function registerIpcHandlers(): void {
         return { isGitRepo: false, files: [], untrackedFiles: [], gitRootNames: [] }
       }
       return getWorktreeChanges(worktreePath, baseBranch)
+    }
+  )
+
+  // 列出本地分支
+  ipcMain.handle(
+    IPC_CHANNELS.LIST_GIT_BRANCHES,
+    async (_, dirPath: string, sessionId?: string) => {
+      if (!dirPath || typeof dirPath !== 'string') {
+        return { isRepo: false, currentBranch: null, branches: [] }
+      }
+      const access = normalizeFileAccessOptions({ sessionId })
+      if (!(await ensurePathAllowedWithWorktree(dirPath, access))) {
+        return { isRepo: false, currentBranch: null, branches: [] }
+      }
+      return listGitBranches(dirPath)
+    }
+  )
+
+  // 列出远程
+  ipcMain.handle(
+    IPC_CHANNELS.LIST_GIT_REMOTES,
+    async (_, dirPath: string, sessionId?: string) => {
+      if (!dirPath || typeof dirPath !== 'string') {
+        return { isRepo: false, remotes: [], upstreamRemote: null }
+      }
+      const access = normalizeFileAccessOptions({ sessionId })
+      if (!(await ensurePathAllowedWithWorktree(dirPath, access))) {
+        return { isRepo: false, remotes: [], upstreamRemote: null }
+      }
+      return listGitRemotes(dirPath)
+    }
+  )
+
+  // 检出 / 创建并检出分支
+  ipcMain.handle(
+    IPC_CHANNELS.CHECKOUT_GIT_BRANCH,
+    async (_, input: import('@proma/shared').CheckoutGitBranchInput) => {
+      if (!input || typeof input.dirPath !== 'string' || typeof input.branch !== 'string') {
+        return { ok: false, error: '无效的检出参数' }
+      }
+      const access = normalizeFileAccessOptions({ sessionId: input.sessionId })
+      if (!(await ensurePathAllowedWithWorktree(input.dirPath, access))) {
+        return { ok: false, error: '无权访问该目录' }
+      }
+      return checkoutGitBranch(input)
+    }
+  )
+
+  // 提交
+  ipcMain.handle(
+    IPC_CHANNELS.GIT_COMMIT,
+    async (_, input: import('@proma/shared').GitCommitInput) => {
+      if (!input || typeof input.dirPath !== 'string' || typeof input.message !== 'string') {
+        return { ok: false, error: '无效的提交参数' }
+      }
+      const access = normalizeFileAccessOptions({ sessionId: input.sessionId })
+      if (!(await ensurePathAllowedWithWorktree(input.dirPath, access))) {
+        return { ok: false, error: '无权访问该目录' }
+      }
+      return gitCommit(input)
+    }
+  )
+
+  // 推送
+  ipcMain.handle(
+    IPC_CHANNELS.GIT_PUSH,
+    async (_, input: import('@proma/shared').GitPushInput) => {
+      if (!input || typeof input.dirPath !== 'string') {
+        return { ok: false, error: '无效的推送参数' }
+      }
+      const access = normalizeFileAccessOptions({ sessionId: input.sessionId })
+      if (!(await ensurePathAllowedWithWorktree(input.dirPath, access))) {
+        return { ok: false, error: '无权访问该目录' }
+      }
+      return gitPush(input)
+    }
+  )
+
+  // 提交并可选推送
+  ipcMain.handle(
+    IPC_CHANNELS.GIT_COMMIT_AND_PUSH,
+    async (_, input: import('@proma/shared').GitCommitAndPushInput) => {
+      if (!input || typeof input.dirPath !== 'string' || typeof input.message !== 'string') {
+        return { ok: false, error: '无效的提交参数' }
+      }
+      const access = normalizeFileAccessOptions({ sessionId: input.sessionId })
+      if (!(await ensurePathAllowedWithWorktree(input.dirPath, access))) {
+        return { ok: false, error: '无权访问该目录' }
+      }
+      return gitCommitAndPush(input)
+    }
+  )
+
+  // 生成提交信息
+  ipcMain.handle(
+    IPC_CHANNELS.GENERATE_GIT_COMMIT_MESSAGE,
+    async (_, input: import('@proma/shared').GenerateGitCommitMessageInput) => {
+      if (!input || typeof input.dirPath !== 'string') {
+        return { ok: false, error: '无效的生成参数' }
+      }
+      const access = normalizeFileAccessOptions({ sessionId: input.sessionId })
+      if (!(await ensurePathAllowedWithWorktree(input.dirPath, access))) {
+        return { ok: false, error: '无权访问该目录' }
+      }
+      return generateGitCommitMessage(input)
     }
   )
 
@@ -2892,36 +3008,7 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(
     CHAT_TOOL_IPC_CHANNELS.TEST_TOOL,
     async (_, toolId: string): Promise<{ success: boolean; message: string }> => {
-      // 联网搜索工具测试
-      if (toolId === 'web-search') {
-        const { getToolCredentials: getCredentials } = await import('./lib/chat-tool-config')
-        const credentials = getCredentials('web-search')
-        if (!credentials.apiKey) {
-          return { success: false, message: '请先填写 Tavily API Key' }
-        }
-        try {
-          const response = await fetch('https://api.tavily.com/search', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${credentials.apiKey}`,
-            },
-            body: JSON.stringify({
-              query: 'test connection',
-              search_depth: 'basic',
-              max_results: 1,
-            }),
-          })
-          if (!response.ok) {
-            const errorText = await response.text()
-            return { success: false, message: `API 请求失败 (${response.status}): ${errorText}` }
-          }
-          return { success: true, message: '连接成功，Tavily 搜索 API 可用' }
-        } catch (error) {
-          const msg = error instanceof Error ? error.message : String(error)
-          return { success: false, message: `连接失败: ${msg}` }
-        }
-      }
+      // 联网搜索已升级为 OpenSwitch 登录即用的基础能力，无需测试配置
       // Nano Banana 生图工具测试
       if (toolId === 'nano-banana') {
         const { getToolCredentials: getCredentials } = await import('./lib/chat-tool-config')

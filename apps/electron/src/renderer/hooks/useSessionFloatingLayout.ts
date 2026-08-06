@@ -11,12 +11,27 @@ const HIDDEN_LAYOUT: SessionFloatingLayout = {
   contentPanelGap: 0,
 }
 
+export interface SessionFloatingLayoutResult extends SessionFloatingLayout {
+  /**
+   * @deprecated Code 模式与 Chat 对齐：offset 只跟随真实宽度，不再做折叠专用 transition。
+   * 保留字段以免调用方解构报错。
+   */
+  contentOffsetTransition?: string
+}
+
+/**
+ * 计算会话悬浮面板布局。
+ *
+ * 与 Chat 对齐：contentOffsetX 只由容器真实宽度驱动（ResizeObserver 逐帧），
+ * 不做「预测终态 / 冻结 / 结束后再对齐」。侧栏折叠时主区宽度本身已是 CSS
+ * 连续动画；再叠加一套延迟或抢跑的 JS 宽度，就会和 Chat 不一样、看起来不同步。
+ */
 export function useSessionFloatingLayout(
   containerRef: React.RefObject<HTMLElement | null>,
   enabled: boolean,
   forceVisible = false,
   onForceVisibilityInvalidated?: () => void,
-): SessionFloatingLayout {
+): SessionFloatingLayoutResult {
   const [viewportWidth, setViewportWidth] = React.useState(0)
   const [wasVisible, setWasVisible] = React.useState(false)
   const forcedAtViewportWidthRef = React.useRef<number | null>(null)
@@ -28,7 +43,8 @@ export function useSessionFloatingLayout(
     if (!element) return
 
     const updateWidth = (): void => {
-      setViewportWidth(element.getBoundingClientRect().width)
+      const next = element.getBoundingClientRect().width
+      setViewportWidth((prev) => (Math.abs(prev - next) < 0.5 ? prev : next))
     }
 
     updateWidth()

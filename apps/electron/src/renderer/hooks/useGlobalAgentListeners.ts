@@ -1156,6 +1156,15 @@ export function useGlobalAgentListeners(): void {
           map.set(data.sessionId, {
             ...current,
             running: false,
+            // 压缩未收到终态事件（如用户在压缩中暂停）时，在流结束时收尾：
+            // 收不到失败信息则按成功收敛，确保对话流显示「上下文已压缩 / 上下文已自动压缩」。
+            ...(current.isCompacting && {
+              isCompacting: false,
+              contextCompaction: {
+                status: 'success' as const,
+                trigger: current.contextCompaction?.trigger,
+              },
+            }),
             // backgroundTasksPending=true → 进入/保持软空闲态（通道仍开着，handleSend 走注入路径）；
             // false → 真正结束，清除软空闲态，新消息回到新建 run 路径。
             backgroundWaiting: backgroundTasksPending,
@@ -1181,13 +1190,24 @@ export function useGlobalAgentListeners(): void {
           })
         }
 
-        // 标记用户主动打断状态
+        // 标记用户主动打断状态，并立刻写入耗时，避免等 listAgentSessions 才显示「你在 N 秒后停止了」
         if (data.stoppedByUser) {
           store.set(stoppedByUserSessionsAtom, (prev: Set<string>) => {
             const next = new Set(prev)
             next.add(data.sessionId)
             return next
           })
+          if (data.lastStopDurationMs != null && data.lastStopDurationMs > 0) {
+            store.set(agentSessionsAtom, (prev) => prev.map((session) => (
+              session.id === data.sessionId
+                ? {
+                    ...session,
+                    stoppedByUser: true,
+                    lastStopDurationMs: data.lastStopDurationMs,
+                  }
+                : session
+            )))
+          }
         }
 
         const runtimePlanTurnEpoch = store.get(agentRuntimePlanLifecycleAtom)

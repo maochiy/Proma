@@ -41,8 +41,10 @@ export function ToolResultRenderer({ toolName, input, result, isError, basePath 
     case 'Glob':
       return <GlobResultRenderer result={result} isError={isError} />
     case 'WebSearch':
+    case 'mcp__web_search__WebSearch':
       return <WebSearchResultRenderer result={result} isError={isError} />
     case 'WebFetch':
+    case 'mcp__web_search__WebFetch':
       return <WebFetchResultRenderer result={result} isError={isError} />
     case 'TaskGet':
       return <TaskGetResultRenderer result={result} isError={isError} />

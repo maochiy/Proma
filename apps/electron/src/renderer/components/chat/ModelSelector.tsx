@@ -94,6 +94,8 @@ interface ModelSelectorProps {
   runtimeModelsLoading?: boolean
   /** 触发器仅显示文字和展开箭头，用于 Codex 风格输入区 */
   textOnlyTrigger?: boolean
+  /** 触发器是否显示模型 Logo（默认显示；textOnlyTrigger 下可通过此属性开启） */
+  showTriggerLogo?: boolean
 }
 
 export function ModelSelector({
@@ -107,6 +109,7 @@ export function ModelSelector({
   runtimeModelOptions,
   runtimeModelsLoading = false,
   textOnlyTrigger = false,
+  showTriggerLogo = false,
 }: ModelSelectorProps = {}): React.ReactElement {
   const [conversationModel, setConversationModel] = useConversationModelOptional()
   const conversationId = useConversationIdOptional()
@@ -290,17 +293,13 @@ export function ModelSelector({
           aria-expanded={open}
           className="model-selector-trigger flex min-w-0 max-w-full items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent hover:text-foreground data-[state=open]:bg-accent data-[state=open]:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45"
         >
-          {!textOnlyTrigger && (
+          {(!textOnlyTrigger || showTriggerLogo) && (
             displayModelInfo ? (
-              runtimeModelOptions ? (
-                <Cpu className="size-3.5 text-muted-foreground/80" />
-              ) : (
-                <img
-                  src={getModelLogo(displayModelInfo.modelId, displayModelInfo.provider)}
-                  alt=""
-                  className="size-4 rounded object-cover"
-                />
-              )
+              <img
+                src={getModelLogo(displayModelInfo.modelId, displayModelInfo.provider)}
+                alt=""
+                className="size-4 rounded object-cover"
+              />
             ) : (
               <Cpu className="size-3.5 text-muted-foreground/80" />
             )
@@ -394,21 +393,11 @@ export function ModelSelector({
                             isSelected && 'bg-accent/80'
                           )}
                         >
-                          {runtimeModelOptions ? (
-                            <span
-                              aria-hidden
-                              className={cn(
-                                'size-1.5 shrink-0 rounded-full',
-                                isSelected ? 'bg-foreground/75' : 'bg-muted-foreground/35',
-                              )}
-                            />
-                          ) : (
-                            <img
-                              src={getModelLogo(option.modelId, option.provider)}
-                              alt=""
-                              className="size-4 flex-shrink-0 rounded object-cover"
-                            />
-                          )}
+                          <img
+                            src={getModelLogo(option.modelId, option.provider)}
+                            alt=""
+                            className="size-4 flex-shrink-0 rounded object-cover"
+                          />
                           <div className="min-w-0 flex-1">
                             <div className={cn(
                               'truncate text-sm',

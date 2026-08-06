@@ -111,6 +111,9 @@ import type {
   WeChatBridgeState,
   AgentQueueMessageInput,
   PendingRequestsSnapshot,
+  IntegratedTerminalCreateInput,
+  IntegratedTerminalEvent,
+  IntegratedTerminalSessionSnapshot,
   Automation,
   CreateAutomationInput,
   UpdateAutomationInput,
@@ -147,6 +150,34 @@ import { QUICK_TASK_IPC_CHANNELS, TRAY_IPC_CHANNELS, VOICE_DICTATION_IPC_CHANNEL
 export interface ElectronAPI {
   // ===== 运行时相关 =====
 
+  /** 创建一个绑定当前 Agent 会话的交互式集成终端。 */
+  createIntegratedTerminal: (
+    input: IntegratedTerminalCreateInput,
+  ) => Promise<IntegratedTerminalSessionSnapshot>
+
+  /** 重新挂载终端并读取末尾输出缓存。 */
+  attachIntegratedTerminal: (
+    sessionId: string,
+  ) => Promise<IntegratedTerminalSessionSnapshot>
+
+  /** 向终端 PTY 写入键盘数据。 */
+  writeIntegratedTerminal: (sessionId: string, data: string) => Promise<void>
+
+  /** 同步终端的列数和行数。 */
+  resizeIntegratedTerminal: (
+    sessionId: string,
+    cols: number,
+    rows: number,
+  ) => Promise<void>
+
+  /** 关闭终端并销毁对应 PTY。 */
+  closeIntegratedTerminal: (sessionId: string) => Promise<void>
+
+  /** 订阅终端增量输出、退出和错误事件。 */
+  onIntegratedTerminalEvent: (
+    callback: (event: IntegratedTerminalEvent) => void,
+  ) => () => void
+
   /**
    * 获取运行时状态
    * @returns 运行时状态，包含 Bun、Git 等信息
@@ -180,6 +211,20 @@ export interface ElectronAPI {
   listWorktrees: (repoPath: string, sessionId: string) => Promise<import('@proma/shared').WorktreeInfo[]>
   /** 获取 Worktree 相对于基准分支的全量变更 */
   getWorktreeChanges: (worktreePath: string, baseBranch: string, sessionId: string) => Promise<import('@proma/shared').UnstagedChangesResult>
+  /** 列出本地分支 */
+  listGitBranches: (dirPath: string, sessionId?: string) => Promise<import('@proma/shared').ListGitBranchesResult>
+  /** 列出远程 */
+  listGitRemotes: (dirPath: string, sessionId?: string) => Promise<import('@proma/shared').ListGitRemotesResult>
+  /** 检出 / 创建并检出分支 */
+  checkoutGitBranch: (input: import('@proma/shared').CheckoutGitBranchInput) => Promise<import('@proma/shared').GitOperationResult>
+  /** 提交 */
+  gitCommit: (input: import('@proma/shared').GitCommitInput) => Promise<import('@proma/shared').GitOperationResult>
+  /** 推送 */
+  gitPush: (input: import('@proma/shared').GitPushInput) => Promise<import('@proma/shared').GitOperationResult>
+  /** 提交并可选推送 */
+  gitCommitAndPush: (input: import('@proma/shared').GitCommitAndPushInput) => Promise<import('@proma/shared').GitOperationResult>
+  /** 根据变更生成提交信息 */
+  generateGitCommitMessage: (input: import('@proma/shared').GenerateGitCommitMessageInput) => Promise<import('@proma/shared').GenerateGitCommitMessageResult>
   /** 在独立窗口打开当前文件预览 */
   openDetachedPreview: (input: DetachedPreviewWindowInput) => Promise<string | null>
   /** 获取独立预览窗口数据 */
@@ -1172,6 +1217,34 @@ interface MigrationExportResult {
  * 实现 ElectronAPI 接口
  */
 const electronAPI: ElectronAPI = {
+  createIntegratedTerminal: (input) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.TERMINAL_CREATE, input)
+  },
+
+  attachIntegratedTerminal: (sessionId) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.TERMINAL_ATTACH, sessionId)
+  },
+
+  writeIntegratedTerminal: (sessionId, data) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.TERMINAL_WRITE, sessionId, data)
+  },
+
+  resizeIntegratedTerminal: (sessionId, cols, rows) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.TERMINAL_RESIZE, sessionId, cols, rows)
+  },
+
+  closeIntegratedTerminal: (sessionId) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.TERMINAL_CLOSE, sessionId)
+  },
+
+  onIntegratedTerminalEvent: (callback) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: IntegratedTerminalEvent): void => {
+      callback(payload)
+    }
+    ipcRenderer.on(IPC_CHANNELS.TERMINAL_EVENT, listener)
+    return () => ipcRenderer.removeListener(IPC_CHANNELS.TERMINAL_EVENT, listener)
+  },
+
   // 运行时
   getRuntimeStatus: () => {
     return ipcRenderer.invoke(IPC_CHANNELS.GET_RUNTIME_STATUS)
@@ -1211,6 +1284,34 @@ const electronAPI: ElectronAPI = {
 
   getWorktreeChanges: (worktreePath: string, baseBranch: string, sessionId: string) => {
     return ipcRenderer.invoke(IPC_CHANNELS.GET_WORKTREE_CHANGES, worktreePath, baseBranch, sessionId)
+  },
+
+  listGitBranches: (dirPath: string, sessionId?: string) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.LIST_GIT_BRANCHES, dirPath, sessionId)
+  },
+
+  listGitRemotes: (dirPath: string, sessionId?: string) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.LIST_GIT_REMOTES, dirPath, sessionId)
+  },
+
+  checkoutGitBranch: (input: import('@proma/shared').CheckoutGitBranchInput) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.CHECKOUT_GIT_BRANCH, input)
+  },
+
+  gitCommit: (input: import('@proma/shared').GitCommitInput) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.GIT_COMMIT, input)
+  },
+
+  gitPush: (input: import('@proma/shared').GitPushInput) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.GIT_PUSH, input)
+  },
+
+  gitCommitAndPush: (input: import('@proma/shared').GitCommitAndPushInput) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.GIT_COMMIT_AND_PUSH, input)
+  },
+
+  generateGitCommitMessage: (input: import('@proma/shared').GenerateGitCommitMessageInput) => {
+    return ipcRenderer.invoke(IPC_CHANNELS.GENERATE_GIT_COMMIT_MESSAGE, input)
   },
 
   openDetachedPreview: (input: DetachedPreviewWindowInput) => {

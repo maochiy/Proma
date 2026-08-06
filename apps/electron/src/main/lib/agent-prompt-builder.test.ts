@@ -12,4 +12,15 @@ describe('Agent 系统提示词', () => {
     expect(prompt).toContain('grep ... || true')
     expect(prompt).toContain('在 zsh 中引用')
   })
+
+  test('Given 构建系统提示词 When 注入联网搜索指引 Then 指向 Proma 内置 web_search MCP 并禁用原生工具', () => {
+    const prompt = buildSystemPrompt({
+      sessionId: 'session-id',
+      permissionMode: 'default',
+    })
+
+    expect(prompt).toContain('mcp__web_search__WebSearch')
+    expect(prompt).toContain('mcp__web_search__WebFetch')
+    expect(prompt).toContain('禁止使用 CCB 原生内置的 WebSearch/WebFetch')
+  })
 })

@@ -28,7 +28,11 @@ function renderViews(
   state: AgentRuntimePlanSessionState,
   running: boolean = true,
   legacySuppressed: boolean = false,
-): string[] {
+): {
+  todoPill: string
+  floatingPanel: string
+  planPanel: string
+} {
   const store = createStore()
   store.set(agentRuntimeExecutionGraphsAtom, new Map([[SESSION_ID, {
     nodes: [],
@@ -53,15 +57,17 @@ function renderViews(
   const render = (node: ReactNode): string => renderToStaticMarkup(
     <Provider store={store}>{node}</Provider>,
   )
-  return [
-    render(<RuntimeTodoHoverProgress sessionId={SESSION_ID} />),
-    render(<SessionFloatingPanel sessionId={SESSION_ID} sessionPath={null} />),
-    render(<RuntimePlanPanel sessionId={SESSION_ID} />),
-  ]
+  return {
+    todoPill: render(<RuntimeTodoHoverProgress sessionId={SESSION_ID} />),
+    floatingPanel: render(
+      <SessionFloatingPanel sessionId={SESSION_ID} sessionPath={null} />,
+    ),
+    planPanel: render(<RuntimePlanPanel sessionId={SESSION_ID} />),
+  }
 }
 
-describe('计划生命周期在三个入口保持同步', () => {
-  test('Given 本轮停止且计划未完成 When 渲染三个计划入口 Then 都显示待继续', () => {
+describe('计划生命周期展示', () => {
+  test('Given 本轮停止且计划未完成 When 渲染计划入口 Then 输入框 pill 消失、右侧计划显示待继续且悬浮面板不重复显示', () => {
     const views = renderViews({
       turnEpoch: 100,
       current: {
@@ -77,14 +83,16 @@ describe('计划生命周期在三个入口保持同步', () => {
       archived: [],
     }, false)
 
-    for (const html of views) {
-      expect(html).toContain('历史计划步骤')
-      expect(html).toContain('待继续')
-      expect(html).not.toContain('animate-spin')
-    }
+    expect(views.todoPill).not.toContain('历史计划步骤')
+    expect(views.todoPill).not.toContain('待继续')
+    expect(views.planPanel).toContain('历史计划步骤')
+    expect(views.planPanel).toContain('待继续')
+    expect(views.planPanel).not.toContain('animate-spin')
+    expect(views.floatingPanel).not.toContain('历史计划步骤')
+    expect(views.floatingPanel).not.toContain('待继续')
   })
 
-  test('Given 下一轮未明确继续旧计划 When 渲染三个计划入口 Then 都隐藏旧计划', () => {
+  test('Given 下一轮未明确继续旧计划 When 渲染计划入口 Then 全部隐藏旧计划', () => {
     const views = renderViews({
       turnEpoch: 100,
       current: {
@@ -100,13 +108,13 @@ describe('计划生命周期在三个入口保持同步', () => {
       archived: [],
     })
 
-    for (const html of views) {
+    for (const html of Object.values(views)) {
       expect(html).not.toContain('历史计划步骤')
       expect(html).not.toContain('执行中')
     }
   })
 
-  test('Given 模型明确继续旧计划 When 渲染三个计划入口 Then 都恢复显示执行中', () => {
+  test('Given 模型明确继续旧计划 When 渲染计划入口 Then 输入框和右侧计划恢复显示且悬浮面板不重复显示', () => {
     const views = renderViews({
       turnEpoch: 100,
       current: {
@@ -121,13 +129,15 @@ describe('计划生命周期在三个入口保持同步', () => {
       archived: [],
     })
 
-    for (const html of views) {
+    for (const html of [views.todoPill, views.planPanel]) {
       expect(html).toContain('历史计划步骤')
       expect(html).toContain('执行中')
     }
+    expect(views.floatingPanel).not.toContain('历史计划步骤')
+    expect(views.floatingPanel).not.toContain('执行中')
   })
 
-  test('Given 旧悬浮签名仍残留 When 生命周期计划可见 Then 三个入口仍保持统一显示', () => {
+  test('Given 旧悬浮签名仍残留 When 生命周期计划可见 Then 不影响输入框和右侧计划且悬浮面板仍不重复显示', () => {
     const views = renderViews({
       turnEpoch: 100,
       current: {
@@ -142,9 +152,11 @@ describe('计划生命周期在三个入口保持同步', () => {
       archived: [],
     }, true, true)
 
-    for (const html of views) {
+    for (const html of [views.todoPill, views.planPanel]) {
       expect(html).toContain('历史计划步骤')
       expect(html).toContain('执行中')
     }
+    expect(views.floatingPanel).not.toContain('历史计划步骤')
+    expect(views.floatingPanel).not.toContain('执行中')
   })
 })

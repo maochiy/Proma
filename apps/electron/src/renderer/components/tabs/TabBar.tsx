@@ -10,11 +10,13 @@
 
 import * as React from 'react'
 import { useAtom, useAtomValue, useSetAtom, useStore } from 'jotai'
-import { PanelRight, PanelTop } from 'lucide-react'
+import { PanelRight, PanelRightClose, PanelTop } from 'lucide-react'
 import {
   tabsAtom,
   activeTabIdAtom,
   tabIndicatorMapAtom,
+  sidebarCollapsedAtom,
+  sidebarPeekingAtom,
 } from '@/atoms/tab-atoms'
 import type { TabItem } from '@/atoms/tab-atoms'
 import type { SessionIndicatorStatus } from '@/atoms/agent-atoms'
@@ -33,6 +35,7 @@ import {
   unviewedCompletedSessionIdsAtom,
 } from '@/atoms/agent-atoms'
 import { appModeAtom } from '@/atoms/app-mode'
+import { leftSidebarWidthAtom } from '@/atoms/sidebar-atoms'
 import { automationFormAtom } from '@/atoms/automation-atoms'
 import { tearOffPreviewToSplit } from '@/components/diff/preview-opener'
 import { tearOffScratchToSplit } from '@/components/scratch-pad/scratch-pad-opener'
@@ -40,15 +43,42 @@ import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { TabBarItem } from './TabBarItem'
 import { useCloseTab } from '@/hooks/useCloseTab'
-import { detectIsWindows, WINDOW_CONTROLS_INSET_RIGHT, WINDOW_CONTROLS_PADDING_RIGHT } from '@/lib/platform'
+import { detectIsMac, detectIsWindows, WINDOW_CONTROLS_INSET_RIGHT, WINDOW_CONTROLS_PADDING_RIGHT } from '@/lib/platform'
+
 import { registerShortcut } from '@/lib/shortcut-registry'
 import { resolveSessionFloatingPanelToggle } from '@/lib/session-floating-layout'
+import { sidebarTopChromeReserve, titlebarDragLeftOffset } from '@/lib/sidebar-layout'
+import { interfaceVariantAtom } from '@/atoms/theme'
+
 import { cn } from '@/lib/utils'
 
 export function TabBar(): React.ReactElement {
   const tabs = useAtomValue(tabsAtom)
+  const isMac = React.useMemo(() => detectIsMac(), [])
+  const isWindows = React.useMemo(() => detectIsWindows(), [])
   const [activeTabId, setActiveTabId] = useAtom(activeTabIdAtom)
   const indicatorMap = useAtomValue(tabIndicatorMapAtom)
+  const sidebarCollapsed = useAtomValue(sidebarCollapsedAtom)
+  const sidebarPeeking = useAtomValue(sidebarPeekingAtom)
+  const leftSidebarWidth = useAtomValue(leftSidebarWidthAtom)
+  const interfaceVariant = useAtomValue(interfaceVariantAtom)
+  const isClassic = interfaceVariant === 'classic'
+  // TabBar 自身相对主区定位：展开时主区已在侧栏右侧，drag 从 0 即可；
+  // 收起后主区铺满，必须让出折叠按钮 / 飞出侧栏，否则 app-region 会吞点击与 hover。
+  const tabbarDragLeft = sidebarCollapsed
+    ? titlebarDragLeftOffset({
+        isMac,
+        sidebarCollapsed,
+        sidebarPeeking,
+        leftSidebarWidth: isClassic
+          ? Math.max(260, Math.min(360, leftSidebarWidth)) + 8
+          : Math.max(260, Math.min(360, leftSidebarWidth)),
+      })
+    : 0
+
+  // 仅收起时预留折叠按钮右缘；展开时主区已在侧栏右侧，再垫 chrome 会空一大截。
+  // 收起后草稿/会话 tab 紧挨固定折叠按钮，红绿灯由按钮本身挡住，无需额外大间距。
+  const tabBarPaddingLeft = sidebarCollapsed ? sidebarTopChromeReserve(isMac) : 0
 
   // Tab 切换时同步 sidebar 状态
   const appMode = useAtomValue(appModeAtom)
@@ -181,7 +211,29 @@ export function TabBar(): React.ReactElement {
     document.addEventListener('pointerup', handleUp)
   }, [tabs])
 
-  if (tabs.length === 0) return <div className="h-9 titlebar-drag-region" />
+  if (tabs.length === 0) {
+    // 空标签时也要在左侧挖掉折叠按钮热区：整条 drag 会让 Electron hitmask
+    // 盖住上层 no-drag 按钮（app-region 不完全吃 z-index）。
+    return (
+      <div
+        className={cn(
+          'relative',
+          isMac ? 'h-[52px]' : 'h-11',
+        )}
+        style={{ paddingLeft: tabBarPaddingLeft }}
+      >
+        {/* 收起时左侧让出折叠按钮；展开时无需预留 */}
+        <div
+          className={cn(
+            'absolute inset-y-0 right-0 titlebar-drag-region',
+            isWindows && WINDOW_CONTROLS_INSET_RIGHT,
+          )}
+          style={{ left: tabbarDragLeft }}
+          aria-hidden
+        />
+      </div>
+    )
+  }
 
   return (
     <>
@@ -196,6 +248,9 @@ export function TabBar(): React.ReactElement {
         onClose={requestClose}
         onDragStart={handleDragStart}
         onTearOff={handleTearOff}
+        isMac={isMac}
+        dragLeft={tabbarDragLeft}
+        paddingLeft={tabBarPaddingLeft}
       />
     </>
   )
@@ -213,6 +268,9 @@ function TabBarInner({
   onClose,
   onDragStart,
   onTearOff,
+  isMac,
+  dragLeft,
+  paddingLeft,
 }: {
   tabs: TabItem[]
   activeTabId: string | null
@@ -224,6 +282,11 @@ function TabBarInner({
   onClose: (tabId: string) => void
   onDragStart: (tabId: string, e: React.PointerEvent) => void
   onTearOff: (tabId: string) => void
+  isMac: boolean
+  /** 相对 TabBar 左缘的 drag 起点，收起时让出折叠按钮/飞出侧栏 */
+  dragLeft: number
+  /** 收起时为折叠按钮右缘预留；展开时为 0 */
+  paddingLeft: number
 }): React.ReactElement {
   const [hoveredTabId, setHoveredTabId] = React.useState<string | null>(null)
   const [isLeaving, setIsLeaving] = React.useState(false)
@@ -242,7 +305,7 @@ function TabBarInner({
   const openSidePanelLauncher = useSetAtom(openAgentSidePanelLauncherAtom)
   const closeSidePanel = useSetAtom(closeAgentSidePanelAtom)
   const activeTab = React.useMemo(() => tabs.find((t) => t.id === activeTabId), [tabs, activeTabId])
-  const showOpenPanelButton = !isPanelOpen && activeTab?.type === 'agent'
+  const showPanelToggleButton = activeTab?.type === 'agent'
   const showFloatingPanelButton = activeTab?.type === 'agent'
   const activeAgentSessionId = activeTab?.type === 'agent' ? activeTab.sessionId : null
   const floatingPanelActuallyVisible = activeAgentSessionId !== null
@@ -416,12 +479,23 @@ function TabBarInner({
   }, [])
 
   return (
-    <div ref={barRef} className="main-tabbar relative flex h-9 items-end tabbar-bg">
+    <div
+      ref={barRef}
+      className={cn(
+        'main-tabbar relative flex items-center tabbar-bg',
+        // 与红绿灯同一行高度。仅收起时左侧让出折叠按钮，展开时贴主区左缘
+        isMac ? 'h-[52px]' : 'h-11',
+      )}
+      style={{ paddingLeft }}
+    >
       {/* 顶部 TabBar 的空白区域必须保持可拖拽，尤其是 macOS/Windows 自定义标题栏。
           注意：不要把 titlebar-no-drag 加到下面的整条 flex 容器上，否则标签右侧空白会再次失去拖拽能力。
           Windows 上背景拖拽层避开右上角 WindowControls 区域（126px），防止 hitmask 重叠。
           需要交互的单个 Tab 会在 TabBarItem 内部自己声明 titlebar-no-drag。 */}
-      <div className={cn("absolute inset-0 titlebar-drag-region", isWindows && WINDOW_CONTROLS_INSET_RIGHT)} />
+      <div
+        className={cn('absolute inset-y-0 right-0 titlebar-drag-region', isWindows && WINDOW_CONTROLS_INSET_RIGHT)}
+        style={{ left: dragLeft }}
+      />
 
       {/* Tear-off 提示遮罩：拖出 TabBar 区域时，让 TabBar 下方出现一条高亮分割线 */}
       {tearingOff && (
@@ -431,10 +505,10 @@ function TabBarInner({
       <div
         ref={scrollRef}
         className={cn(
-          "relative flex items-end flex-1 min-w-0 overflow-x-auto scrollbar-none",
+          "relative flex items-center flex-1 min-w-0 overflow-x-auto scrollbar-none",
           // Windows 始终避开 WindowControls（~126px）；非 Windows 打开按钮时给 scroll 预留空间
           isWindows && WINDOW_CONTROLS_PADDING_RIGHT,
-          !isWindows && showFloatingPanelButton && (showOpenPanelButton ? "pr-20" : "pr-10"),
+          !isWindows && showFloatingPanelButton && (showPanelToggleButton ? "pr-20" : "pr-10"),
         )}
       >
         {tabs.map((tab) => (
@@ -467,15 +541,15 @@ function TabBarInner({
         <AgentFloatingPanelButton
           enabled={floatingPanelActuallyVisible}
           isWindows={isWindows}
-          hasPanelOpenButton={showOpenPanelButton}
+          hasPanelToggleButton={showPanelToggleButton}
           onToggle={toggleFloatingPanel}
         />
       )}
 
-      {/* 打开文件面板按钮：与文件面板打开时的 PanelRightClose 同坐标，避免开/关之间按钮位置跳变。
+      {/* 面板开关按钮：打开/关闭右侧面板，与悬浮面板图标并排。
           Windows 上需让出右上角 WindowControls 区域（126px）。 */}
-      {showOpenPanelButton && (
-        <AgentPanelOpenButton isWindows={isWindows} onToggle={togglePanel} />
+      {showPanelToggleButton && (
+        <AgentPanelToggleButton isWindows={isWindows} isOpen={isPanelOpen} onToggle={togglePanel} />
       )}
     </div>
   )
@@ -485,12 +559,12 @@ function TabBarInner({
 function AgentFloatingPanelButton({
   enabled,
   isWindows,
-  hasPanelOpenButton,
+  hasPanelToggleButton,
   onToggle,
 }: {
   enabled: boolean
   isWindows: boolean
-  hasPanelOpenButton: boolean
+  hasPanelToggleButton: boolean
   onToggle: () => void
 }): React.ReactElement {
   return (
@@ -498,8 +572,8 @@ function AgentFloatingPanelButton({
       className={cn(
         'absolute flex titlebar-no-drag',
         isWindows
-          ? cn('top-[37px] h-7 z-[52]', hasPanelOpenButton ? 'right-9' : 'right-1')
-          : cn('inset-y-0 items-end pb-[3px] z-10', hasPanelOpenButton ? 'right-9' : 'right-1'),
+          ? cn('top-[37px] h-7 z-[52]', hasPanelToggleButton ? 'right-9' : 'right-1')
+          : cn('inset-y-0 items-center z-10', hasPanelToggleButton ? 'right-9' : 'right-1'),
       )}
     >
       <Tooltip>
@@ -524,14 +598,16 @@ function AgentFloatingPanelButton({
   )
 }
 
-/** 打开 Agent 文件面板按钮。
+/** Agent 面板开关按钮：打开/关闭右侧面板。
  *  非 Windows：inset-y-0 撑满 TabBar，贴右边缘 right-1。
  *  Windows：溢出到 TabBar 下方（top-[37px]），避开 WindowControls，贴右边缘与关闭按钮对齐。 */
-function AgentPanelOpenButton({
+function AgentPanelToggleButton({
   isWindows,
+  isOpen,
   onToggle,
 }: {
   isWindows: boolean
+  isOpen: boolean
   onToggle: () => void
 }): React.ReactElement {
   return (
@@ -539,8 +615,8 @@ function AgentPanelOpenButton({
       className={cn(
         "absolute flex titlebar-no-drag",
         isWindows
-          ? "top-[37px] right-1 h-7 z-[52]"
-          : "inset-y-0 right-1 items-end pb-[3px] z-10",
+         ? "top-[37px] right-1 h-7 z-[52]"
+          : "inset-y-0 right-1 items-center z-10",
       )}
     >
       <Tooltip>
@@ -552,11 +628,15 @@ function AgentPanelOpenButton({
             className="relative h-7 w-7"
             onClick={onToggle}
           >
-            <PanelRight className="size-3.5" />
+            {isOpen ? (
+              <PanelRightClose className="size-3.5" />
+            ) : (
+              <PanelRight className="size-3.5" />
+            )}
           </Button>
         </TooltipTrigger>
         <TooltipContent side="bottom">
-          <p>打开文件面板 ({navigator.platform.includes('Mac') ? '⌘⇧B' : 'Ctrl+Shift+B'})</p>
+          <p>{isOpen ? '折叠功能区' : '打开文件面板'} ({navigator.platform.includes('Mac') ? '⌘⇧B' : 'Ctrl+Shift+B'})</p>
         </TooltipContent>
       </Tooltip>
     </div>

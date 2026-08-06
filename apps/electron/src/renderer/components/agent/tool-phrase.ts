@@ -41,14 +41,14 @@ export function getToolPhrase(toolName: string, input: Record<string, unknown>):
         const offset = typeof input.offset === 'number' ? input.offset : undefined
         const limit = typeof input.limit === 'number' ? input.limit : undefined
         if (offset !== undefined && limit !== undefined) {
-          return phrase(`读取 ${name} 第 ${offset}-${offset + limit} 行`)
+          return verb('读取', `${name} 第 ${offset}-${offset + limit} 行`)
         }
         if (offset !== undefined) {
-          return phrase(`读取 ${name} 从第 ${offset} 行`)
+          return verb('读取', `${name} 从第 ${offset} 行`)
         }
-        return phrase(`读取 ${name}`)
+        return verb('读取', name)
       }
-      return phrase('读取文件')
+      return verb('读取', '文件')
     }
 
     case 'Edit': {
@@ -56,9 +56,9 @@ export function getToolPhrase(toolName: string, input: Record<string, unknown>):
       const name = typeof fp === 'string' ? filename(fp) : '文件'
       const diff = computeDiffStats('Edit', input)
       if (diff && (diff.additions > 0 || diff.deletions > 0)) {
-        return { ...phrase(`编辑 ${name}`), diffStats: diff }
+        return { ...verbPast('编辑', name), diffStats: diff }
       }
-      return phrase(`编辑 ${name}`)
+      return verbPast('编辑', name)
     }
 
     case 'Write': {
@@ -67,62 +67,75 @@ export function getToolPhrase(toolName: string, input: Record<string, unknown>):
       const content = input.content
       if (typeof content === 'string' && content.length > 0) {
         const lines = content.split('\n').length
-        return { ...phrase(`写入 ${name}`), diffStats: { additions: lines, deletions: 0 } }
+        return { ...verb('写入', name), diffStats: { additions: lines, deletions: 0 } }
       }
-      return phrase(`写入 ${name}`)
+      return verb('写入', name)
     }
 
     case 'Bash': {
       const cmd = input.command
       if (typeof cmd === 'string') {
-        return phrase(`执行 ${truncate(cmd, 80)}`)
+        // 文档第 3 节：正在运行 <cmd> / 已运行 <cmd>
+        return verb('运行', truncate(cmd, 80))
       }
-      return phrase('执行命令')
+      return verb('运行', '命令')
     }
 
-    case 'Grep': {
-      const pattern = input.pattern
-      if (typeof pattern === 'string') {
-        const parts = [`搜索内容 /${pattern}/`]
-        const path = input.path
-        const glob = input.glob
-        if (typeof glob === 'string') {
-          parts.push(`in ${glob}`)
-        } else if (typeof path === 'string') {
-          parts.push(`in ${path}`)
+  case 'Grep': {
+    const pattern = input.pattern
+    if (typeof pattern === 'string') {
+      const path = input.path
+      const glob = input.glob
+      const quoted = `"${truncate(pattern, 60)}"`
+      if (typeof path === 'string') {
+        // 文档：运行中"正在 {path} 中搜索"{q}"" / 完成"已在 {path} 中搜索"{q}""
+        return {
+          label: `已在 ${path} 中搜索${quoted}`,
+          loadingLabel: `正在 ${path} 中搜索${quoted}`,
         }
-        return phrase(parts.join(' '))
       }
-      return phrase('搜索内容')
+      if (typeof glob === 'string') {
+        // 文档：运行中"正在搜索"{q}"" / 完成"已对"{q}"进行搜索"
+        return {
+          label: `已对${quoted}进行搜索`,
+          loadingLabel: `正在搜索${quoted}`,
+        }
+      }
+      return {
+        label: `已对${quoted}进行搜索`,
+        loadingLabel: `正在搜索${quoted}`,
+      }
     }
+    return verb('搜索', '内容')
+  }
 
     case 'Glob': {
-      const pattern = input.pattern
-      if (typeof pattern === 'string') {
-        const parts = [`搜索文件 ${pattern}`]
-        const path = input.path
-        if (typeof path === 'string') {
-          parts.push(`in ${path}`)
-        }
-        return phrase(parts.join(' '))
+      const path = input.path
+      if (typeof path === 'string') {
+        return verb(`在 ${path} 中搜索`, '文件')
       }
-      return phrase('搜索文件')
+      return verb('搜索', '文件')
     }
 
-    case 'WebFetch': {
+    case 'WebFetch':
+    case 'mcp__web_search__WebFetch': {
       const url = input.url
       if (typeof url === 'string') {
-        return phrase(`抓取 ${truncate(url, 60)}`)
+        return verb('抓取', truncate(url, 60))
       }
-      return phrase('抓取网页')
+      return verb('抓取', '网页')
     }
 
-    case 'WebSearch': {
+    case 'WebSearch':
+    case 'mcp__web_search__WebSearch': {
       const query = input.query
       if (typeof query === 'string') {
-        return phrase(`搜索 "${truncate(query, 60)}"`)
+        return {
+          label: `已搜索网页“${truncate(query, 60)}”`,
+          loadingLabel: `正在网络上搜索“${truncate(query, 60)}”`,
+        }
       }
-      return phrase('搜索网页')
+      return { label: '已搜索网页', loadingLabel: '正在搜索网页' }
     }
 
     case 'Skill': {
@@ -380,12 +393,44 @@ export function getToolPhrase(toolName: string, input: Record<string, unknown>):
   }
 }
 
-/** 构造短语对 */
+/**
+ * 构造短语对（完成态 label 保持原样，进行时自动加"正在"前缀）。
+ * 适合 label 本身就是完整动宾短语的场景（如"创建定时任务"、"使用技能 xxx"）。
+ */
 function phrase(label: string): ToolPhrase {
   return {
     label,
-    loadingLabel: `正在${label}...`,
+    loadingLabel: `正在${stripTrailingPunct(label)}`,
   }
+}
+
+/**
+ * 构造动词+宾语短语对。
+ * 运行中：正在{verb}{object}
+ * 完成态：已{verb}{object}
+ * 适用于读取、搜索、运行等标准动作。
+ */
+function verb(verb: string, object = ''): ToolPhrase {
+  return {
+    label: `已${verb}${object}`,
+    loadingLabel: `正在${verb}${object}`,
+  }
+}
+
+/**
+ * 构造"编辑了"型短语（完成态用"了"而非"已"）。
+ * 运行中：正在{verb}{object}
+ * 完成态：{verb}了{object}
+ */
+function verbPast(verb: string, object = ''): ToolPhrase {
+  return {
+    label: `${verb}了${object}`,
+    loadingLabel: `正在${verb}${object}`,
+  }
+}
+
+function stripTrailingPunct(text: string): string {
+  return text.replace(/[。，…]+$/, '')
 }
 
 /** 从 input 中提取第一个有意义的字符串值作为摘要 */

@@ -48,6 +48,12 @@ export function extractUserText(message: SDKUserMessage): string | null {
 
 // ===== 辅助：判断 user 消息是否为真正的人类用户输入（非工具结果/子代理提示） =====
 
+/** CCB 用户中断时写入 transcript 的合成文本，不是真实用户输入 */
+const CCB_INTERRUPT_USER_TEXTS = new Set([
+  '[Request interrupted by user]',
+  '[Request interrupted by user for tool use]',
+])
+
 export function isUserInputMessage(message: SDKUserMessage): boolean {
   if (message.parent_tool_use_id) return false
   // SDK 合成消息（如 Skill 展开 prompt）不是用户输入
@@ -55,7 +61,15 @@ export function isUserInputMessage(message: SDKUserMessage): boolean {
   // 包含 tool_result 块的消息是工具结果，不是用户输入
   const content = message.message?.content
   if (Array.isArray(content) && content.some((b) => b.type === 'tool_result')) return false
-  return extractUserText(message) !== null
+  const text = extractUserText(message)
+  if (text == null) return false
+  // CCB 中断哨兵：勿渲染为用户气泡，避免与「停止」状态线重复
+  if (CCB_INTERRUPT_USER_TEXTS.has(text.trim())) return false
+  // 自动压缩后续写合成 prompt：不是用户真实输入
+  if (/^This session is being continued from a previous conversation\b/i.test(text.trim())) {
+    return false
+  }
+  return true
 }
 
 // ===== Turn 分组类型 =====
@@ -107,7 +121,15 @@ export function groupIntoTurns(messages: SDKMessage[], sessionModelId?: string):
   let pendingWakeBoundary = false
 
   const flushTurn = (): void => {
-    if (currentTurn && currentTurn.assistantMessages.length > 0) {
+    if (!currentTurn) return
+    const hasInterruptedResult = currentTurn.turnMessages.some((message) => {
+      if (message.type !== 'result') return false
+      const raw = message as Record<string, unknown>
+      return raw._stoppedByUser === true
+        || (message as { subtype?: string }).subtype === 'interrupted'
+    })
+    // 普通 turn 需要 assistant 内容；仅含 interrupted result 的停止占位也要保留
+    if (currentTurn.assistantMessages.length > 0 || hasInterruptedResult) {
       groups.push(currentTurn)
     }
     currentTurn = null
@@ -204,6 +226,26 @@ export function groupIntoTurns(messages: SDKMessage[], sessionModelId?: string):
       }
       if (currentTurn) {
         currentTurn.turnMessages.push(msg)
+        continue
+      }
+
+      // 用户在模型返回任何 assistant 内容前就停止：仍要保留 interrupted result，
+      // 否则续聊清掉 session 级 stoppedByUser 后，历史「你在 N 秒后停止了」会丢失。
+      const raw = msg as Record<string, unknown>
+      const isInterruptedResult = msg.type === 'result'
+        && (
+          raw._stoppedByUser === true
+          || (msg as { subtype?: string }).subtype === 'interrupted'
+        )
+      if (isInterruptedResult) {
+        const meta = extractMeta(msg)
+        groups.push({
+          type: 'assistant-turn',
+          assistantMessages: [],
+          turnMessages: [msg],
+          model: sessionModelId,
+          createdAt: meta.createdAt,
+        })
       }
     }
   }

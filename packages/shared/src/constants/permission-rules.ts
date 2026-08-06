@@ -12,6 +12,8 @@ export const SAFE_TOOLS: readonly string[] = [
   'Grep',            // 内容搜索
   'WebSearch',       // 网络搜索
   'WebFetch',        // 网页获取
+  'mcp__web_search__WebSearch', // Proma 内置 OpenSwitch 联网搜索
+  'mcp__web_search__WebFetch',  // Proma 内置本地网页抓取
   'TodoRead',        // Todo 列表读取
   'TodoWrite',       // Todo 列表写入（无安全风险）
   'TaskOutput',      // 后台任务输出

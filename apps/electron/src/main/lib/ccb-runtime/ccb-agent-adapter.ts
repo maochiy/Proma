@@ -24,6 +24,7 @@ import {
   annotateCcbFinalAssistantMessage,
   applyCcbPartialAssistantEvent,
   createCcbPartialAssistantState,
+  finalizeCcbPartialAssistantMessage,
   type CcbPartialAssistantState,
 } from './ccb-partial-assistant'
 import { ccbDesktopRuntimeClient } from './runtime-client'
@@ -160,9 +161,11 @@ function createQueue(): AsyncMessageQueue {
       [Symbol.asyncIterator]() {
         return {
           next(): Promise<IteratorResult<SDKMessage>> {
-            if (failure) return Promise.reject(failure)
+            // 先排空已 push 的消息，再抛 failure。
+            // 这样 turn 异常结束前固化的过程正文不会因为 fail() 被直接丢弃。
             const value = values.shift()
             if (value) return Promise.resolve({ value, done: false })
+            if (failure) return Promise.reject(failure)
             if (finished) return Promise.resolve({ value: undefined, done: true })
             return new Promise((resolve, reject) => waiters.push({ resolve, reject }))
           },
@@ -1024,11 +1027,21 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
     }
 
     releaseTurnBeforeNotify(this.active, sessionId, active, () => {
+      // 用户中断 / Worker 异常等 Turn 结束场景：CCB 往往不会再补发完整 assistant。
+      // 无论成功还是失败，都先把仍停留在 partial 的流式正文/思考固化并推给上层，
+      // 否则编排器落盘缺正文，前端从 JSONL 重建后过程正文整体丢失。
+      const finalized = finalizeCcbPartialAssistantMessage(active.partialAssistantState)
+      active.partialAssistantState = finalized.state
+      if (finalized.message) active.queue.push(finalized.message)
+
       if (error) {
+        // fail() 会让后续 next() 直接 reject 且丢弃队列残留；
+        // 先 push 固化消息再 fail，若已有 waiter 会先拿到正文，其余靠编排器 partial 兜底。
         active.queue.fail(error)
         active.reject(error)
         return
       }
+
       const result = resolveCompletedTurnResult(active)
       if (result) {
         active.queue.push(normalizeCcbCompactionMessage(

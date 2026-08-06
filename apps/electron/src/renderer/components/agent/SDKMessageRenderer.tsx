@@ -12,13 +12,12 @@
  */
 
 import * as React from 'react'
-import { Bot, Loader2, AlertTriangle, FileText, FileImage, Download, Split, Undo2, RotateCw, Plus, Minimize2, Wrench, Settings, Cpu, ExternalLink, Quote, Clock } from 'lucide-react'
+import { Loader2, AlertTriangle, FileText, FileImage, Download, Split, Undo2, RotateCw, Plus, Minimize2, Wrench, Settings, Cpu, ExternalLink, Quote, Clock } from 'lucide-react'
 import { useAtomValue, useSetAtom } from 'jotai'
 import { cn } from '@/lib/utils'
 import { ImageLightbox, type LightboxImage } from '@/components/ui/image-lightbox'
 import { ContentBlock } from './ContentBlock'
 import { TurnFileChangesSummary, buildTurnFileNameMap } from './TurnFileChangesSummary'
-import { ProcessBlockGroup, buildAssistantTurnRenderItems, buildCompletedToolResultIds, projectOrphanThinkingAsText } from './ProcessBlockGroup'
 import { extractToolResultText, TASK_TOOL_NAMES } from './task-progress'
 import { normalizeThinkTagsInContentBlocks } from './thinking-tag-parser'
 // 会话转录的纯逻辑(Turn 分组 / 快照去重 / 预览)已下沉到 @proma/session-core 作为唯一真源。
@@ -27,7 +26,6 @@ import {
   groupIntoTurns,
   getGroupPreview,
   extractUserText,
-  extractMeta,
   isUserInputMessage,
   stripScheduledRunMarker,
   type MessageGroup,
@@ -35,10 +33,12 @@ import {
 } from '@proma/session-core'
 export { groupIntoTurns, getGroupPreview, extractUserText } from '@proma/session-core'
 export type { MessageGroup, AssistantTurn } from '@proma/session-core'
-import { DurationBadge } from './AgentMessages'
+import { AgentTurnActivityGroup } from './AgentTurnActivityGroup'
+import { AgentTurnActivityList } from './AgentTurnActivityList'
+import { AgentModelLogo, AgentTurnStatusLine } from './AgentTurnStatusLine'
+import { ProposedPlanCard } from './ProposedPlanCard'
 import {
   Message,
-  MessageHeader,
   MessageContent,
   MessageActions,
   MessageAction,
@@ -49,11 +49,14 @@ import {
 import { CopyButton } from '@/components/chat/CopyButton'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
-import { formatMessageTime } from '@/components/chat/ChatMessageItem'
-import { getModelLogo, resolveModelDisplayName, resolveModelProvider } from '@/lib/model-logo'
-import { channelsAtom, modelSelectorOpenAtom } from '@/atoms/chat-atoms'
-import { agentSessionPendingFilesAtom } from '@/atoms/agent-atoms'
-import { agentSessionsAtom } from '@/atoms/agent-atoms'
+import { modelSelectorOpenAtom } from '@/atoms/chat-atoms'
+import {
+  agentChildDelegationSessionsAtomFamily,
+  agentRuntimeExecutionGraphAtomFamily,
+  agentSessionPendingFilesAtom,
+  agentSessionsAtom,
+  agentTurnCollapseStatesAtom,
+} from '@/atoms/agent-atoms'
 import { activeSessionIdAtom } from '@/atoms/tab-atoms'
 import { automationsAtom, automationFormAtom, automationToDraft } from '@/atoms/automation-atoms'
 import { activeViewAtom } from '@/atoms/active-view'
@@ -63,6 +66,10 @@ import { useOpenPreview } from '@/components/diff/preview-opener'
 import { getFileParentPath } from '@/lib/file-utils'
 import { parseQuotedSelectionRefs } from '@/lib/quoted-selection'
 import { getAssistantModelMessageId } from '@/lib/agent-live-message'
+import {
+  extractDelegationReferences,
+  extractDelegationTitles,
+} from '@/lib/session-execution-nodes'
 import type { ParsedQuotedSelectionRef } from '@/lib/quoted-selection'
 import type {
   SDKMessage,
@@ -70,8 +77,6 @@ import type {
   SDKUserMessage,
   SDKSystemMessage,
   SDKContentBlock,
-  SDKResultMessage,
-  AgentEventUsage,
   SDKToolUseBlock,
   SDKToolResultBlock,
   RecoveryAction,
@@ -79,13 +84,20 @@ import type {
 import type { AgentPendingFile } from '@proma/shared'
 import {
   getSDKCompactStatus,
-  pickRuntimeReportedContextWindow,
   THINKING_SIGNATURE_ERROR_CODE,
   THINKING_SIGNATURE_ERROR_TITLE,
   THINKING_SIGNATURE_ERROR_MESSAGE,
   isThinkingSignatureError,
 } from '@proma/shared'
 import type { ToolActivity } from '@/atoms/agent-atoms'
+import {
+  buildAgentTurnPresentation,
+  collectPriorFoldableActivities,
+  collectPriorToolActivities,
+  isTurnStoppedByUser,
+  orderAssistantMessagesForPresentation,
+} from '@/lib/agent-turn-presentation'
+import { resolveAgentTurnExpanded } from '@/lib/agent-turn-collapse'
 
 // ===== SDKMessageRenderer Props =====
 
@@ -106,12 +118,12 @@ export interface SDKMessageRendererProps {
 
 // ===== system 消息：上下文压缩分割线 =====
 
-function CompactBoundaryDivider(): React.ReactElement {
+function CompactBoundaryDivider({ trigger }: { trigger?: 'manual' | 'auto' }): React.ReactElement {
   return (
     <div className="flex items-center gap-3 my-4 px-1">
       <div className="flex-1 h-px bg-border/40" />
       <span className="shrink-0 text-[11px] text-muted-foreground/60 px-2 py-0.5 rounded-full border border-border/30 bg-muted/20">
-        上下文已压缩
+        {trigger === 'auto' ? '上下文已自动压缩' : '上下文已压缩'}
       </span>
       <div className="flex-1 h-px bg-border/40" />
     </div>
@@ -160,7 +172,7 @@ function PermissionDeniedNotice({ message }: { message: SDKSystemMessage }): Rea
 
 function CompactStatusNotice({ message }: { message: SDKSystemMessage }): React.ReactElement | null {
   const compactStatus = getSDKCompactStatus(message)
-  if (compactStatus === 'success') return <CompactBoundaryDivider />
+  if (compactStatus === 'success') return <CompactBoundaryDivider trigger={message.compactTrigger} />
   if (compactStatus === 'compacting') {
     return (
       <div className="flex items-center gap-3 my-4 px-1">
@@ -202,32 +214,6 @@ function CompactStatusNotice({ message }: { message: SDKSystemMessage }): React.
 
 // extractMeta / MessageMeta 已迁移至 @proma/session-core
 
-/** 从 turn 消息列表中提取 result 消息的耗时和用量数据 */
-function extractTurnUsage(turnMessages: SDKMessage[]): { durationMs?: number; usage?: AgentEventUsage } {
-  for (const msg of turnMessages) {
-    if (msg.type !== 'result') continue
-    const resultMsg = msg as SDKResultMessage
-    const raw = msg as Record<string, unknown>
-    const durationMs = typeof raw._durationMs === 'number' ? raw._durationMs : undefined
-    const u = resultMsg.usage
-    if (!u) return { durationMs }
-    // 多 entry 场景（Task 子 Agent 等）只使用 CCB Runtime 明确报告的最大窗口。
-    const contextWindow = pickRuntimeReportedContextWindow(resultMsg.modelUsage)
-    return {
-      durationMs,
-      usage: {
-        inputTokens: u.input_tokens + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0),
-        outputTokens: u.output_tokens,
-        cacheReadTokens: u.cache_read_input_tokens,
-        cacheCreationTokens: u.cache_creation_input_tokens,
-        costUsd: resultMsg.total_cost_usd,
-        contextWindow,
-      },
-    }
-  }
-  return {}
-}
-
 // extractUserText 已迁移至 @proma/session-core
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -249,27 +235,36 @@ function extractToolResultForTask(message: SDKUserMessage, resultBlock: SDKToolR
   return extractStructuredToolResultText(message) ?? extractToolResultText(resultBlock.content)
 }
 
-// isUserInputMessage 已迁移至 @proma/session-core
-
-// ===== 助手头像 =====
-
-function AssistantLogo({ model }: { model?: string }): React.ReactElement {
-  const channels = useAtomValue(channelsAtom)
-  if (model) {
-    return (
-      <img
-        src={getModelLogo(model, resolveModelProvider(model, channels))}
-        alt={model}
-        className="size-6 rounded-md object-cover"
-      />
-    )
+function findToolResultText(
+  messages: SDKMessage[],
+  toolUseId: string,
+): string | undefined {
+  for (const message of messages) {
+    if (message.type !== 'user') continue
+    const userMessage = message as SDKUserMessage
+    const blocks = userMessage.message?.content
+    if (!Array.isArray(blocks)) continue
+    for (const block of blocks) {
+      if (
+        block.type === 'tool_result'
+        && (block as SDKToolResultBlock).tool_use_id === toolUseId
+      ) {
+        return extractToolResultForTask(
+          userMessage,
+          block as SDKToolResultBlock,
+        )
+      }
+    }
   }
-  return (
-    <div className="flex size-6 items-center justify-center rounded-md bg-primary/10">
-      <Bot size={14} className="text-primary" />
-    </div>
-  )
+  return undefined
 }
+
+const COLLABORATION_DELEGATION_TOOL_NAMES = new Set([
+  'mcp__collaboration__delegate_agent',
+  'mcp__collaboration__delegate_agents',
+])
+
+// isUserInputMessage 已迁移至 @proma/session-core
 
 // AssistantTurn / MessageGroup 类型已迁移至 @proma/session-core
 
@@ -378,21 +373,54 @@ export interface AssistantTurnRendererProps {
   sessionModelId?: string
   /** Proma 会话 ID，用于关联 CCB 执行节点。 */
   sessionId?: string
+  /** 稳定 Turn ID，用于跨 partial/final 保存手动折叠状态。 */
+  turnId?: string
+  /** 子智能体详情等完整记录模式强制展开活动。 */
+  fullTranscript?: boolean
+  /** 仅渲染执行活动，最终正文由外层独立区域承载。 */
+  hideFinalItems?: boolean
+  /** 是否为主会话当前最后一个 Assistant Turn。 */
+  isLatestAssistantTurn?: boolean
+  /** 当前流式执行的开始时间，用于最终正文开始后即时显示“已处理 N 秒”。 */
+  runningStartedAt?: number
+  /** 兜底耗时（毫秒）：无法从 SDK 消息计算执行时长时使用（如被中断的历史会话）。 */
+  fallbackDurationMs?: number
 }
 
-export function AssistantTurnRenderer({ turn, allMessages, basePath, onFork, onRewind, onRetry, onRetryInNewSession, onCompact, isStreaming, stoppedByUser, sessionModelId, sessionId }: AssistantTurnRendererProps): React.ReactElement | null {
-  const channels = useAtomValue(channelsAtom)
+function useRunningDurationMs(startedAt: number | undefined, active: boolean): number | undefined {
+  const [now, setNow] = React.useState(() => Date.now())
+
+  React.useEffect(() => {
+    if (!active || startedAt == null) return
+    setNow(Date.now())
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000)
+    return () => window.clearInterval(timer)
+  }, [active, startedAt])
+
+  return active && startedAt != null
+    ? Math.max(0, now - startedAt)
+    : undefined
+}
+
+export function AssistantTurnRenderer({ turn, allMessages, basePath, onFork, onRewind, onRetry, onRetryInNewSession, onCompact, isStreaming, stoppedByUser, sessionModelId, sessionId, turnId, fullTranscript, hideFinalItems, isLatestAssistantTurn, runningStartedAt, fallbackDurationMs }: AssistantTurnRendererProps): React.ReactElement | null {
+  const collapseStates = useAtomValue(agentTurnCollapseStatesAtom)
+  const setCollapseStates = useSetAtom(agentTurnCollapseStatesAtom)
+  const runtimeGraph = useAtomValue(agentRuntimeExecutionGraphAtomFamily(sessionId ?? ''))
+  const childSessions = useAtomValue(agentChildDelegationSessionsAtomFamily(sessionId ?? ''))
   // 收集所有 assistant 消息的内容块，保留 parent_tool_use_id 关联
   interface EnrichedBlock {
     block: SDKContentBlock
     parentToolUseId?: string | null
+    /** stop_reason=tool_use 的顶层 text 是过程说明，不是最终回答。 */
+    forcedActivity: boolean
   }
 
   const enrichedBlocks: EnrichedBlock[] = []
   let hasError = false
   let errorContent: SDKAssistantMessage | null = null
 
-  for (const aMsg of turn.assistantMessages) {
+  const orderedAssistantMessages = orderAssistantMessagesForPresentation(turn)
+  for (const aMsg of orderedAssistantMessages) {
     const msgAny = aMsg as unknown as Record<string, unknown>
     // 区分两种错误消息：
     // 1. Orchestrator 造的纯错误消息（带 _errorCode）：content 里的 text 就是错误摘要，不当正文渲染
@@ -407,20 +435,18 @@ export function AssistantTurnRenderer({ turn, allMessages, basePath, onFork, onR
     }
     const blocks = aMsg.message?.content
     if (Array.isArray(blocks)) {
+      const forcedActivity = aMsg.message?.stop_reason === 'tool_use'
       for (const block of blocks) {
         for (const normalizedBlock of normalizeThinkTagsInContentBlocks([block])) {
-          enrichedBlocks.push({ block: normalizedBlock, parentToolUseId: aMsg.parent_tool_use_id })
+          enrichedBlocks.push({
+            block: normalizedBlock,
+            parentToolUseId: aMsg.parent_tool_use_id,
+            forcedActivity,
+          })
         }
       }
     }
   }
-
-  // 从 turnMessages 中提取 result 消息的耗时和用量
-  const { durationMs, usage } = extractTurnUsage(turn.turnMessages)
-
-  // 只在用户点击停止时显示中断徽章。
-  // aborted_streaming / aborted_tools 是流式追加消息时的软中断，语义是继续补充信息。
-  const showStoppedBadge = !!stoppedByUser
 
   // 构建 Agent/Task tool_use → 子代理内容块映射
   const agentToolIds = new Set<string>()
@@ -435,6 +461,7 @@ export function AssistantTurnRenderer({ turn, allMessages, basePath, onFork, onR
 
   const childBlocksMap = new Map<string, SDKContentBlock[]>()
   const topLevelBlocks: SDKContentBlock[] = []
+  const forcedActivityIndexes = new Set<number>()
 
   for (const eb of enrichedBlocks) {
     if (eb.parentToolUseId && agentToolIds.has(eb.parentToolUseId)) {
@@ -442,29 +469,212 @@ export function AssistantTurnRenderer({ turn, allMessages, basePath, onFork, onR
       children.push(eb.block)
       childBlocksMap.set(eb.parentToolUseId, children)
     } else {
+      if (eb.forcedActivity) forcedActivityIndexes.add(topLevelBlocks.length)
       topLevelBlocks.push(eb.block)
     }
   }
 
-  // 无 text 时把末尾 orphan thinking 提升为 text，避免 Grok 等模型「只写思考」导致回复看起来消失
-  const displayBlocks = React.useMemo(() => {
-    return projectOrphanThinkingAsText(topLevelBlocks, { isStreaming })
-  }, [topLevelBlocks, isStreaming])
+  const resolvedTurnId = turnId ?? turn.assistantMessages[0]?.uuid ?? 'assistant-turn'
+  const shouldTrackRunningSubagents = isStreaming || isLatestAssistantTurn
+  const runningRuntimeNodes = shouldTrackRunningSubagents
+    ? (runtimeGraph?.nodes ?? []).filter((node) =>
+      node.kind !== 'shell'
+      && node.turnCompletionPolicy !== 'detach'
+      && (node.status === 'queued' || node.status === 'running'),
+    )
+    : []
+  const runningChildSessions = shouldTrackRunningSubagents
+    ? childSessions.filter((session) =>
+      session.delegationStatus === 'running'
+      || session.runtimeWorkerState === 'busy'
+      || session.runtimeWorkerState === 'starting',
+    )
+    : []
+  const hasRunningSubagent = runningRuntimeNodes.length > 0
+    || runningChildSessions.length > 0
+  const runningActivityToolIds = React.useMemo(() => {
+    const toolIds = new Set<string>()
+    for (const node of runningRuntimeNodes) {
+      if (node.toolUseId) toolIds.add(node.toolUseId)
+    }
 
-  // 检测是否有主要内容（text 块），用于决定 tool/thinking 是否 dimmed
-  const hasTextContent = displayBlocks.some(
-    (b) => b.type === 'text' && 'text' in b && !!(b as { text: string }).text
+    if (runningChildSessions.length === 0) return toolIds
+
+    const activeDelegationIds = new Set(
+      runningChildSessions
+        .map((session) => session.sourceDelegationId)
+        .filter((id): id is string => Boolean(id)),
+    )
+    const activeChildSessionIds = new Set(
+      runningChildSessions.map((session) => session.id),
+    )
+    const activeTitles = new Set(
+      runningChildSessions.map((session) => session.title),
+    )
+    const delegationBlocks = topLevelBlocks.filter(
+      (block): block is SDKToolUseBlock =>
+        block.type === 'tool_use'
+        && COLLABORATION_DELEGATION_TOOL_NAMES.has(
+          (block as SDKToolUseBlock).name,
+        ),
+    )
+
+    for (const block of delegationBlocks) {
+      const references = extractDelegationReferences(
+        findToolResultText(turn.turnMessages, block.id),
+      )
+      const requestedTitles = extractDelegationTitles(block.input)
+      const matchesRunningSession = (
+        [...references.delegationIds].some((id) => activeDelegationIds.has(id))
+        || [...references.childSessionIds].some((id) => activeChildSessionIds.has(id))
+        || [...requestedTitles].some((title) => activeTitles.has(title))
+      )
+      if (matchesRunningSession) toolIds.add(block.id)
+    }
+
+    if (
+      !delegationBlocks.some((block) => toolIds.has(block.id))
+      && delegationBlocks.length > 0
+    ) {
+      const latestDelegationBlock = delegationBlocks.at(-1)
+      if (latestDelegationBlock) toolIds.add(latestDelegationBlock.id)
+    }
+    return toolIds
+  }, [
+    runningChildSessions,
+    runningRuntimeNodes,
+    topLevelBlocks,
+    turn.turnMessages,
+  ])
+  const backgroundStartedAt = React.useMemo(() => {
+    const timestamps = [
+      ...runningRuntimeNodes.map((node) => node.startedAt),
+      ...runningChildSessions.map((session) => session.createdAt),
+    ].filter((timestamp): timestamp is number => typeof timestamp === 'number')
+    return timestamps.length > 0 ? Math.min(...timestamps) : undefined
+  }, [runningChildSessions, runningRuntimeNodes])
+  const isTurnExecuting = !!isStreaming || (
+    !!isLatestAssistantTurn
+    && hasRunningSubagent
   )
-
-  const completedToolResultIds = React.useMemo(() => {
-    return buildCompletedToolResultIds(turn.turnMessages)
-  }, [turn.turnMessages])
-  const renderItems = React.useMemo(() => {
-    return buildAssistantTurnRenderItems(displayBlocks, {
-      isStreaming,
-      completedToolResultIds,
+  // 轮次级中断优先：续聊会清掉 session 级 stoppedByUser，但历史轮仍应显示「你在 N 秒后停止了」
+  const turnStoppedByUser = Boolean(stoppedByUser) || isTurnStoppedByUser(turn.turnMessages)
+  // 停止后也需要耗时来显示"你在 N秒后停止了"，但不需持续刷新
+  const runningDurationMs = useRunningDurationMs(
+    runningStartedAt ?? backgroundStartedAt,
+    isTurnExecuting && !turnStoppedByUser,
+  )
+  // 用户中断后冻结耗时，避免 stopped 状态继续随秒跳动
+  const frozenStopDurationMs = React.useRef<number | undefined>(undefined)
+  if (!turnStoppedByUser) {
+    frozenStopDurationMs.current = undefined
+  } else if (frozenStopDurationMs.current == null) {
+    const liveElapsed = runningStartedAt != null
+      ? Math.max(0, Date.now() - runningStartedAt)
+      : undefined
+    const candidate = runningDurationMs
+      ?? liveElapsed
+      ?? (fallbackDurationMs != null && fallbackDurationMs >= 0 ? fallbackDurationMs : undefined)
+    frozenStopDurationMs.current = candidate
+  } else if (
+    (frozenStopDurationMs.current == null || frozenStopDurationMs.current <= 0)
+    && fallbackDurationMs != null
+    && fallbackDurationMs >= 0
+  ) {
+    frozenStopDurationMs.current = fallbackDurationMs
+  }
+  const presentation = React.useMemo(
+    () => buildAgentTurnPresentation({
+      id: resolvedTurnId,
+      turn,
+      blocks: topLevelBlocks,
+      isStreaming: isTurnExecuting && !turnStoppedByUser,
+      runningDurationMs: turnStoppedByUser
+        ? frozenStopDurationMs.current ?? runningDurationMs ?? fallbackDurationMs
+        : runningDurationMs,
+      stoppedByUser: turnStoppedByUser,
+      fullTranscript,
+      hasRunningSubagent,
+      runningActivityToolIds,
+      forcedActivityIndexes,
+      hasErrorOrBlockingItem: hasError,
+    }),
+    [
+      fallbackDurationMs,
+      fullTranscript,
+      forcedActivityIndexes,
+      hasError,
+      hasRunningSubagent,
+      isTurnExecuting,
+      runningDurationMs,
+      runningActivityToolIds,
+      resolvedTurnId,
+      turnStoppedByUser,
+      topLevelBlocks,
+      turn,
+    ],
+  )
+  const manualState = sessionId
+    ? collapseStates.get(sessionId)?.get(resolvedTurnId)
+    : undefined
+  const isLiveActivityPhase = isTurnExecuting && !fullTranscript
+  const isUserStoppedTurn = turnStoppedByUser
+    || presentation.status === 'stopped'
+    || presentation.cancellation === 'user'
+  // 运行中与用户停止共用「收起表面」：状态行 + 仅最新一行活动
+  const isCollapsedActivitySurface = !fullTranscript && (
+    isLiveActivityPhase || isUserStoppedTurn
+  )
+  const foldableActivities = presentation.activities.filter((item) => item.foldable)
+  const hiddenCollapsedFoldableActivities = isCollapsedActivitySurface
+    ? foldableActivities.filter(
+        (item) => !presentation.visibleActivities.some(
+          (visibleItem) => visibleItem.index === item.index,
+        ),
+      )
+    : []
+  // 运行中：默认折叠，仅当存在被隐藏的历史可折叠活动时允许展开
+  // 用户停止：可折叠查看完整轨迹，默认仍收起（与运行中一致）
+  // 正常完成带正文时整轮活动区会隐藏；失败/无正文完成仍可折叠查看过程
+  const canToggleActivities = !fullTranscript && (
+    presentation.collapsePolicy.collapsible
+    || (isCollapsedActivitySurface && hiddenCollapsedFoldableActivities.length > 0)
+    || (
+      !isCollapsedActivitySurface
+      && foldableActivities.length > 0
+      && !presentation.finalAnswerStarted
+    )
+  )
+  const expanded = fullTranscript
+    ? true
+    : manualState
+      ? manualState === 'expanded'
+      : isLiveActivityPhase
+        ? false
+        : resolveAgentTurnExpanded(
+            presentation.collapsePolicy,
+            undefined,
+            false,
+          )
+  const handleToggle = React.useCallback(() => {
+    if (!sessionId || !canToggleActivities || fullTranscript) return
+    setCollapseStates((previous) => {
+      const next = new Map(previous)
+      const sessionStates = new Map(next.get(sessionId) ?? new Map())
+      sessionStates.set(resolvedTurnId, expanded ? 'collapsed' : 'expanded')
+      next.set(sessionId, sessionStates)
+      return next
     })
-  }, [displayBlocks, isStreaming, completedToolResultIds])
+  }, [
+    canToggleActivities,
+    expanded,
+    fullTranscript,
+    resolvedTurnId,
+    sessionId,
+    setCollapseStates,
+  ])
+  const hasFinalText = presentation.finalItems.some((item) => item.kind === 'answer')
+  const displayModel = presentation.model ?? sessionModelId
 
   // 本轮「文件名 → 绝对路径」映射：与 footer chips 同源，供正文内联文件引用补全裸文件名
   const turnFileMap = React.useMemo(
@@ -484,10 +694,34 @@ export function AssistantTurnRenderer({ turn, allMessages, basePath, onFork, onR
     )
   }
 
-  // 如果没有任何内容
-  if (enrichedBlocks.length === 0 && !hasError) return null
+  // isActivelyStreaming 需要在 enrichedBlocks 空检查之前定义，否则 TDZ 导致 return null
+  const isActivelyStreaming = isTurnExecuting && !!isStreaming && !turnStoppedByUser
+  // 流式执行中即使还没有 block（首个 SSE 未到达），也要显示"正在思考"占位
+  // 用户中断且没有任何 assistant 内容时，仍需要显示"你在 N秒后停止了"状态行（规则文档第 8/14 节）
+  const isStoppedWithoutContent = enrichedBlocks.length === 0
+    && !hasError
+    && !isActivelyStreaming
+    && (turnStoppedByUser || presentation.status === 'stopped')
+  if (enrichedBlocks.length === 0 && !hasError && !isActivelyStreaming && !isStoppedWithoutContent) return null
+ if (hideFinalItems && !presentation.hasRenderableActivity && !hasError) {
+   return null
+ }
 
-  const renderTopLevelBlock = (block: SDKContentBlock, i: number): React.ReactNode => {
+  const renderTopLevelBlock = (
+    block: SDKContentBlock,
+    i: number,
+    options?: {
+      leadingModel?: string
+      activityRunning?: boolean
+      activityItem?: boolean
+      /** 思考展开时附带历史活动 */
+      priorActivities?: typeof presentation.activities
+    },
+  ): React.ReactNode => {
+    // 思考块传入 Turn 级别耗时，用于显示"已思考 N 秒"
+    const thinkingDurationMs = block.type === 'thinking'
+      ? presentation.durationMs
+      : undefined
     // 任务进度由底部浮层统一呈现，输出记录不再重复显示任务卡。
     if (block.type === 'tool_use' && TASK_TOOL_NAMES.has((block as SDKToolUseBlock).name)) {
       return null
@@ -499,54 +733,210 @@ export function AssistantTurnRenderer({ turn, allMessages, basePath, onFork, onR
       ? childBlocksMap.get((block as { id: string }).id)
       : undefined
 
+    const priorActivities = options?.priorActivities ?? []
+    const priorActivityNodes = priorActivities.length > 0
+      ? priorActivities.map((item) =>
+          renderTopLevelBlock(item.block, item.index, {
+            activityRunning: false,
+            activityItem: true,
+          }),
+        )
+      : undefined
+
     return (
       <ContentBlock
-        key={i}
+        key={
+          // 稳定 key：不要把正文内容拼进 key，否则流式增量会卸载重挂 → 视觉“跳”
+          block.type === 'tool_use'
+            ? `tool:${(block as SDKToolUseBlock).id}`
+            : block.type === 'text'
+              ? `text:${i}`
+              : block.type === 'thinking'
+                ? `thinking:${i}`
+                : `block:${i}:${block.type}`
+        }
         block={block}
         allMessages={allMessages}
         basePath={basePath}
         animate={!!isStreaming}
         index={i}
-        dimmed={hasTextContent && block.type !== 'text'}
+        dimmed={hasFinalText && block.type !== 'text'}
         childBlocks={childBlocks}
         isStreaming={isStreaming}
         sessionId={sessionId}
+        leadingModel={options?.leadingModel}
+        activityRunning={options?.activityRunning}
+        activityItem={options?.activityItem}
+        thinkingDurationMs={thinkingDurationMs}
+        priorActivityNodes={priorActivityNodes}
+        hasPriorActivities={priorActivities.length > 0}
       />
     )
-  }
-
-  const renderProcessGroupBlock = (block: SDKContentBlock, i: number): React.ReactNode => {
-    return renderTopLevelBlock(block, i)
-  }
+ }
+  // 用户约定时序（产品规则优先；codex.text 只参考运行中视觉动效）：
+  // 1) 开局：顶栏 +「正在思考」（无正文无箭头，无思考图标）
+  // 2) 思考有正文：默认仍收起，仅右侧箭头；点开用高度/透明度动画（不自动展开、不整行跳）
+  // 3) 过程正文：替换「正在思考」；多条换行追加，不把旧正文隐藏
+  // 4) 工具：最新一条替换思考；≥2 条可展开历史
+  // 5) 正常结束有正文：只留正文；暂停：你在 N 秒后停止了
+  const isNormallyCompletedWithAnswer = !isLiveActivityPhase
+    && !isUserStoppedTurn
+    && !fullTranscript
+    && presentation.status === 'completed'
+    && presentation.finalAnswerStarted
+    && presentation.cancellation === 'none'
+  // 流式开局：顶栏（已处理/正在思考）+ 下方思考占位
+  // 用户停止：有真实活动时显示「你在 N 秒后停止了」+ 最新一行；无活动仅停止状态行
+  const showTurnActivitySummary = (
+    presentation.hasRenderableActivity
+    || (isLiveActivityPhase && !isUserStoppedTurn && isActivelyStreaming)
+  ) && !isNormallyCompletedWithAnswer
+    && !(isUserStoppedTurn && !presentation.hasRenderableActivity)
+  // 折叠展开：完整活动轨迹（含过程正文，保持穿插顺序）
+  // 收起：折叠内为空；下方直接用 visibleActivities
+  // （过程正文固定追加 + 阶段行时间序穿插；暂停后过程正文也保留）
+  const foldedDetailActivities = expanded || !isCollapsedActivitySurface
+    ? presentation.activities
+    : []
+  // 收起表面：不再因 finalAnswerStarted 清空——流式/暂停时过程正文必须继续固定露出
+  const liveCollapsedActivities = (
+    isCollapsedActivitySurface && !expanded
+  )
+    ? presentation.visibleActivities
+    : []
+  // <1s 顶栏「正在思考」仅在还没有可展示的过程/阶段内容时使用；
+  // 已有过程正文或工具/最终正文时不要再用顶栏「正在思考」造成“没被替换”的错觉。
+  const hasSurfaceContent = liveCollapsedActivities.length > 0
+    || presentation.finalAnswerStarted
+  const liveStatusLabel = isLiveActivityPhase
+    && !isUserStoppedTurn
+    && presentation.status !== 'failed'
+    && !hasSurfaceContent
+    && (
+      presentation.durationMs == null || presentation.durationMs < 1_000
+    )
+    ? '正在思考'
+    : undefined
+  // 运行中（非停止/失败）整轮状态行统一走 completed 文案分支 →「已处理 N 秒」
+  const statusLineStatus = isLiveActivityPhase
+    && !isUserStoppedTurn
+    && presentation.status !== 'failed'
+      ? 'completed'
+      : presentation.status
+  const statusLineRunning = isLiveActivityPhase
+    && !isUserStoppedTurn
+    && presentation.status !== 'failed'
 
   return (
     <Message from="assistant">
-      <MessageHeader
-        model={turn.model ? resolveModelDisplayName(turn.model, channels) : undefined}
-        time={turn.createdAt ? formatMessageTime(turn.createdAt) : undefined}
-        logo={<AssistantLogo model={turn.model} />}
-      />
-      <MessageContent>
+      <MessageContent className="pl-0">
         <TurnFileMapProvider map={turnFileMap}>
-        <div className={cn('space-y-2')}>
-          {renderItems.map((item, itemIndex) => {
-            if (item.type === 'block') {
-              return renderTopLevelBlock(item.item.block, item.item.index)
-            }
-
-            const groupBlocks = item.items.map((groupItem) => groupItem.block)
-            const firstIndex = item.items[0]?.index ?? 0
-            return (
-              <ProcessBlockGroup
-                key={`process-${firstIndex}`}
-                blocks={groupBlocks}
-                isStreaming={isStreaming}
-                isMessageTail={itemIndex === renderItems.length - 1}
-              >
-                {item.items.map((groupItem) => renderProcessGroupBlock(groupItem.block, groupItem.index))}
-              </ProcessBlockGroup>
-            )
-          })}
+        <div className="space-y-2">
+          {/*
+            状态行永远在活动行之上。
+            暂停前：顶栏「正在思考/已处理」+ 下方「正在思考」
+            暂停后：顶栏变成「你在 N 秒后停止了」，不能再让「正在思考」跑到停止文案上面。
+          */}
+          {showTurnActivitySummary && (
+            <AgentTurnActivityGroup
+              model={displayModel}
+              status={statusLineStatus}
+              durationMs={presentation.durationMs}
+              usage={presentation.usage}
+              messageCount={foldableActivities.length > 0 ? foldableActivities.length : presentation.activities.length}
+              collapsible={canToggleActivities}
+              expanded={expanded}
+              onToggle={handleToggle}
+              running={statusLineRunning}
+              labelOverride={liveStatusLabel}
+            >
+              {foldedDetailActivities.length > 0 && (
+                <AgentTurnActivityList
+                  items={foldedDetailActivities}
+                  renderItem={(item) =>
+                    renderTopLevelBlock(item.block, item.index, {
+                      activityRunning: item.running,
+                      activityItem: true,
+                    })
+                  }
+                />
+              )}
+            </AgentTurnActivityGroup>
+          )}
+          {/* 无真实活动的停止占位：只显示停止状态行（状态在上，不再挂正在思考） */}
+          {isStoppedWithoutContent && !isActivelyStreaming && !showTurnActivitySummary && (
+            <AgentTurnStatusLine
+              model={displayModel}
+              status="stopped"
+              durationMs={presentation.durationMs}
+            />
+          )}
+          {/* 状态行之下：运行中/停止收起态只露最新一行；停止无真实活动时不渲染占位思考 */}
+          {liveCollapsedActivities.length > 0
+            && !(isUserStoppedTurn && !presentation.hasRenderableActivity) && (
+            <div className="ml-7">
+              <AgentTurnActivityList
+                items={liveCollapsedActivities}
+                renderItem={(item) => {
+                  const priorActivities = item.block.type === 'thinking'
+                    ? collectPriorFoldableActivities(presentation.activities, item)
+                    : item.block.type === 'tool_use'
+                      ? collectPriorToolActivities(presentation.activities, item)
+                      : undefined
+                  return renderTopLevelBlock(item.block, item.index, {
+                    // 停止后强制非 running，文案从「正在思考」变为已完成态
+                    activityRunning: isUserStoppedTurn ? false : item.running,
+                    activityItem: true,
+                    priorActivities,
+                  })
+                }}
+              />
+            </div>
+          )}
+          {/* 兜底：流式中仍无 visibleActivities 时，强制挂「正在思考」占位（无折叠箭头） */}
+          {isActivelyStreaming
+            && !isUserStoppedTurn
+            && presentation.finalItems.length === 0
+            && !hideFinalItems
+            && liveCollapsedActivities.length === 0
+            && !expanded && (
+            <div className="ml-7">
+              {renderTopLevelBlock(
+                { type: 'thinking', thinking: '' } as SDKContentBlock,
+                -1,
+                { activityRunning: true, activityItem: true },
+              )}
+            </div>
+          )}
+         {!hideFinalItems && presentation.finalItems.length > 0 && (
+            <div className={cn(
+              'grid grid-cols-[20px_minmax(0,1fr)] gap-x-2',
+              // 仅当活动摘要行仍展示时，正文缩进到 logo 列右侧；正常结束后活动行消失，正文恢复 logo+内容
+              showTurnActivitySummary && 'ml-7 grid-cols-1',
+            )}>
+              {!showTurnActivitySummary && (
+                <AgentModelLogo model={displayModel} className="mt-0.5" />
+              )}
+              <div className="min-w-0 space-y-2">
+                {presentation.finalItems.map((item) => {
+                  if (item.kind === 'plan') {
+                    const rawBlock = item.block as Record<string, unknown>
+                    const content = item.block.type === 'text'
+                      ? (item.block as { text: string }).text
+                      : typeof rawBlock.content === 'string'
+                        ? rawBlock.content
+                        : typeof rawBlock.text === 'string'
+                          ? rawBlock.text
+                          : ''
+                   return content
+                     ? <ProposedPlanCard key={item.index} content={content} sessionId={sessionId} streaming={!!isStreaming} />
+                     : null
+                  }
+                  return renderTopLevelBlock(item.block, item.index)
+                })}
+              </div>
+            </div>
+          )}
         </div>
         {/* 如果有错误但也有内容块，在末尾以 tail 形式挂错误横幅附错误提示 + 重试按钮，保留正文本身的 markdown 排版 */}
         {hasError && errorContent && topLevelBlocks.length > 0 && (
@@ -565,9 +955,9 @@ export function AssistantTurnRenderer({ turn, allMessages, basePath, onFork, onR
       )}
       {/* 操作栏：流式输出完成后显示操作按钮 */}
       {!isStreaming && (() => {
-        const textContent = displayBlocks
-          .filter((b) => b.type === 'text' && 'text' in b)
-          .map((b) => (b as { text: string }).text)
+        const textContent = presentation.finalItems
+          .filter((item) => item.kind === 'answer' && item.block.type === 'text')
+          .map((item) => (item.block as { text: string }).text)
           .join('\n\n')
         // 仅取主线 assistant 消息的 uuid 作为 fork/rewind 截断点。
         // SDK forkSession 内部会过滤掉 sidechain（parent_tool_use_id 非空的子代理消息），
@@ -577,11 +967,9 @@ export function AssistantTurnRenderer({ turn, allMessages, basePath, onFork, onR
           ? mainlineAssistants[mainlineAssistants.length - 1]?.uuid
           : undefined
         const hasActions = !!(textContent || (onFork && lastUuid) || (onRewind && lastUuid))
-        const hasDuration = durationMs != null
-        if (!hasDuration && !hasActions && !showStoppedBadge) return null
+        if (!hasActions) return null
         return (
-          <MessageActions className="mt-0.5 min-h-[28px] justify-start">
-            {hasDuration && <DurationBadge durationMs={durationMs!} usage={usage} />}
+          <MessageActions className="ml-7 mt-0.5 min-h-[28px] justify-start">
             {textContent && <CopyButton content={textContent} />}
             {onFork && lastUuid && (
               <MessageAction tooltip="按当前模型从此处分叉" onClick={() => onFork(lastUuid)}>
@@ -592,11 +980,6 @@ export function AssistantTurnRenderer({ turn, allMessages, basePath, onFork, onR
               <MessageAction tooltip="回退到此处" onClick={() => onRewind(lastUuid)}>
                 <Undo2 className="size-3.5" />
               </MessageAction>
-            )}
-            {showStoppedBadge && (
-              <Badge variant="outline" className="text-xs text-muted-foreground/70 border-muted-foreground/30 shrink-0">
-                已被用户中断
-              </Badge>
             )}
           </MessageActions>
         )
@@ -615,7 +998,6 @@ export function SDKMessageRenderer({
   sessionModelId,
   sessionId,
 }: SDKMessageRendererProps): React.ReactElement | null {
-  const channels = useAtomValue(channelsAtom)
   const msgType = message.type
 
   // assistant 消息：遍历内容块渲染
@@ -651,8 +1033,6 @@ export function SDKMessageRenderer({
     }
 
     const model = aMsg._channelModelId || aMsg.message?.model || sessionModelId
-    const meta = extractMeta(message)
-
     // 检测是否有主要内容（text 块）
     const hasTextContent = blocks.some(
       (b) => b.type === 'text' && 'text' in b && !!(b as { text: string }).text
@@ -660,15 +1040,10 @@ export function SDKMessageRenderer({
 
     return (
       <Message from="assistant">
-        {showHeader && (
-          <MessageHeader
-            model={model ? resolveModelDisplayName(model, channels) : undefined}
-            time={meta.createdAt ? formatMessageTime(meta.createdAt) : undefined}
-            logo={<AssistantLogo model={model} />}
-          />
-        )}
-        <MessageContent>
-          <div className={cn('space-y-2')}>
+        <MessageContent className="pl-0">
+          <div className="grid grid-cols-[20px_minmax(0,1fr)] gap-x-2">
+            {showHeader && <AgentModelLogo model={model} className="mt-0.5" />}
+            <div className={cn('space-y-2', !showHeader && 'col-span-2')}>
             {blocks.map((block, i) => (
               <ContentBlock
                 key={i}
@@ -680,6 +1055,7 @@ export function SDKMessageRenderer({
                 sessionId={sessionId}
               />
             ))}
+            </div>
           </div>
           {/* Provider 已吐正文但收尾报错的混合消息：末尾挂错误横幅。 */}
           {aMsg.error && (
@@ -1255,23 +1631,12 @@ export function AssistantErrorTail({
 }
 
 function ErrorMessage({ message, onRetry, onRetryInNewSession, onCompact }: ErrorMessageProps): React.ReactElement {
-  const meta = extractMeta(message as unknown as SDKMessage)
-
   // Do not copy assistant content carried by an error record.
   const copyText = message.error?.message ?? 'Unknown error'
 
   return (
     <Message from="assistant">
-      <MessageHeader
-        model={undefined}
-        time={meta.createdAt ? formatMessageTime(meta.createdAt) : undefined}
-        logo={
-          <div className="flex size-6 items-center justify-center rounded-md bg-destructive/10">
-            <AlertTriangle size={14} className="text-destructive" />
-          </div>
-        }
-      />
-      <MessageContent>
+      <MessageContent className="pl-0">
         <AssistantErrorTail
           message={message}
           onRetry={onRetry}
@@ -1309,6 +1674,14 @@ export interface MessageGroupRendererProps {
   sessionModelId?: string
   /** Proma 会话 ID，用于关联 CCB 执行节点。 */
   sessionId?: string
+  /** 完整 transcript 模式强制展开整轮活动。 */
+  fullTranscript?: boolean
+  /** 仅渲染执行活动，最终正文由外层独立区域承载。 */
+  hideFinalItems?: boolean
+  isLatestAssistantTurn?: boolean
+  runningStartedAt?: number
+  /** 中断耗时兜底（meta/result 缺失时由列表层估算） */
+  fallbackDurationMs?: number
 }
 
 /**
@@ -1354,13 +1727,21 @@ export function getGroupId(group: MessageGroup): string {
     }
     return messageIdCache.get(first)!
   }
+  // 仅含 interrupted result 的停止占位 turn：用 result 时间戳/耗时稳定 key
+  const stopResult = group.turnMessages.find((message) => message.type === 'result')
+  if (stopResult) {
+    const raw = stopResult as Record<string, unknown>
+    const createdAt = typeof raw._createdAt === 'number' ? raw._createdAt : 'na'
+    const duration = typeof raw._durationMs === 'number' ? raw._durationMs : 'na'
+    return `turn-stopped-${createdAt}-${duration}`
+  }
   // 极端情况：空 turn
   return `turn-empty-${++fallbackIdCounter}`
 }
 
 // getGroupPreview 已迁移至 @proma/session-core（本文件从该包 import 并 re-export）
 
-export function MessageGroupRenderer({ group, allMessages, basePath, onFork, onRewind, onRetry, onRetryInNewSession, onCompact, isStreaming, stoppedByUser, sessionModelId, sessionId }: MessageGroupRendererProps): React.ReactElement | null {
+export function MessageGroupRenderer({ group, allMessages, basePath, onFork, onRewind, onRetry, onRetryInNewSession, onCompact, isStreaming, stoppedByUser, sessionModelId, sessionId, fullTranscript, hideFinalItems, isLatestAssistantTurn, runningStartedAt, fallbackDurationMs }: MessageGroupRendererProps): React.ReactElement | null {
   const groupId = getGroupId(group)
 
   if (group.type === 'user') {
@@ -1394,6 +1775,12 @@ export function MessageGroupRenderer({ group, allMessages, basePath, onFork, onR
         stoppedByUser={stoppedByUser}
         sessionModelId={sessionModelId}
         sessionId={sessionId}
+        turnId={groupId}
+        fullTranscript={fullTranscript}
+        hideFinalItems={hideFinalItems}
+        isLatestAssistantTurn={isLatestAssistantTurn}
+        runningStartedAt={runningStartedAt}
+        fallbackDurationMs={fallbackDurationMs}
       />
     </div>
   )

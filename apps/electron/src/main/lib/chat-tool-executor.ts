@@ -44,12 +44,23 @@ export async function executeToolCalls(
   context: ToolExecutionContext,
 ): Promise<ToolResult[]> {
   const results: ToolResult[] = []
+  // 同一轮并行 tool_calls 中限制 web_search 只真正执行一次，避免中英双搜浪费
+  let webSearchExecuted = false
 
   for (const tc of toolCalls) {
     let result: ToolResult
 
     if (isWebSearchToolCall(tc.name)) {
-      result = await executeWebSearchTool(tc)
+      if (webSearchExecuted) {
+        result = {
+          toolCallId: tc.id,
+          content: '本轮已执行过联网搜索，请直接基于已有搜索结果回答，不要重复搜索。',
+          isError: false,
+        }
+      } else {
+        webSearchExecuted = true
+        result = await executeWebSearchTool(tc)
+      }
     } else if (isAgentRecommendToolCall(tc.name)) {
       result = await executeAgentRecommendTool(tc)
     } else if (isNanoBananaToolCall(tc.name)) {

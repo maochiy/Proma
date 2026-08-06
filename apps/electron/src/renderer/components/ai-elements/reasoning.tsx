@@ -154,12 +154,12 @@ interface ReasoningTriggerProps extends ComponentProps<typeof CollapsibleTrigger
 /** 默认思考状态文案生成 */
 function defaultGetThinkingMessage(isStreaming: boolean, duration?: number): ReactNode {
   if (isStreaming || duration === 0) {
-    return <span className="animate-pulse">思考中...</span>
+    return <span className="agent-status-shimmer">正在思考</span>
   }
   if (duration === undefined) {
-    return <p>思考了几秒</p>
+    return <span>已完成思考</span>
   }
-  return <p>思考了 {duration} 秒</p>
+  return <span>已思考 {duration} 秒</span>
 }
 
 export const ReasoningTrigger = React.memo(function ReasoningTrigger({

@@ -103,6 +103,11 @@ export const sidebarCollapsedAtom = atomWithStorage<boolean>(
   false,
 )
 
+/** 侧栏收起后的悬停飞出（仅运行期，不持久化） */
+export const sidebarPeekingAtom = atom(false)
+
+
+
 /** Tab 迷你地图缓存（每个 Tab 的消息预览列表，在消息组件中填充） */
 export interface TabMinimapItem {
   id: string

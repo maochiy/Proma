@@ -64,6 +64,7 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { cn } from '@/lib/utils'
+import { hasUnpersistedLiveAssistantNarrative } from '@/lib/agent-live-message'
 import {
   buildAgentAppModelOptions,
   resolveAppAgentChannelId,
@@ -1028,6 +1029,13 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       next.delete(sessionId)
       return next
     })
+    // 同步清空上一轮暂停残留的 liveMessages，避免续聊时被拼到新用户消息之后
+    store.set(liveMessagesMapAtom, (prev) => {
+      if (!prev.has(sessionId)) return prev
+      const map = new Map(prev)
+      map.delete(sessionId)
+      return map
+    })
   }, [sessionId, store])
 
   const queueMessageIntoActiveAgent = React.useCallback(async (
@@ -1277,6 +1285,10 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
                 effectiveContextWindow: state.effectiveContextWindow,
                 model: state.model,
                 contextCompaction: state.contextCompaction,
+                // 用户中断后保留 startedAt，供「你在 N 秒后停止了」计算耗时
+                startedAt: store.get(stoppedByUserSessionsAtom).has(sessionId)
+                  ? state.startedAt
+                  : undefined,
               })
             } else if (state.backgroundWaiting || state.contextCompaction) {
               // 无 usage 数据但处于软空闲或有待展示的压缩终态时，保留必要状态。
@@ -1289,6 +1301,18 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
                 autoCompactEnabled: state.autoCompactEnabled,
                 autoCompactThreshold: state.autoCompactThreshold,
                 effectiveContextWindow: state.effectiveContextWindow,
+                startedAt: store.get(stoppedByUserSessionsAtom).has(sessionId)
+                  ? state.startedAt
+                  : undefined,
+              })
+            } else if (store.get(stoppedByUserSessionsAtom).has(sessionId) && state.startedAt != null) {
+              // 用户中断且无 usage：至少保留 startedAt 供停止文案使用
+              map.set(sessionId, {
+                running: false,
+                content: '',
+                toolActivities: [],
+                model: state.model,
+                startedAt: state.startedAt,
               })
             } else {
               map.delete(sessionId)
@@ -1300,6 +1324,14 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
             // 仍在运行中，不清除实时消息（与 streamingStates 保护逻辑一致）
             const streamingState = store.get(agentStreamingStatesAtom).get(sessionId)
             if (streamingState?.running) return prev
+            // 用户中断后：不能仅因 JSONL 里「有任意 assistant」就清 live。
+            // deepseek 场景下过程正文经常只存在于 live partial，而 JSONL 只有 thinking/tool。
+            // 若 live 仍有未落入 JSONL 的正文/思考，保留 live，避免暂停后内容蒸发。
+            const isStoppedByUser = store.get(stoppedByUserSessionsAtom).has(sessionId)
+            if (isStoppedByUser) {
+              const live = prev.get(sessionId) ?? []
+              if (hasUnpersistedLiveAssistantNarrative(live, sdkMsgs)) return prev
+            }
             const map = new Map(prev)
             map.delete(sessionId)
             return map
@@ -2300,6 +2332,14 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       return next
     })
 
+    // 开始新一轮前清空上一轮 liveMessages，防止暂停残留内容被拼到新用户消息之后
+    store.set(liveMessagesMapAtom, (prev) => {
+      if (!prev.has(sessionId)) return prev
+      const map = new Map(prev)
+      map.delete(sessionId)
+      return map
+    })
+
     // 取消 draft 标记，让会话出现在侧边栏
     setDraftSessionIds((prev: Set<string>) => {
       if (!prev.has(sessionId)) return prev
@@ -2965,6 +3005,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         runtimeModelsLoading={runtimeModelsLoading}
         useSharedOpenState
         textOnlyTrigger
+        showTriggerLogo
       />
       {thinkingEffortCapability && effectiveThinkingEffortLevel && (
         <AgentThinkingEffortControl
@@ -3028,10 +3069,15 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         {hasInteractionPanel && (
           <div
             className={cn(
-              inputAreaContainerClass,
-              'flex flex-col gap-2 transition-transform duration-200 motion-reduce:transition-none',
+            inputAreaContainerClass,
+              'relative z-10 flex flex-col gap-2',
+              'before:pointer-events-none before:absolute before:-inset-x-5 before:-top-8 before:-z-10 before:h-12 before:bg-gradient-to-t before:from-background before:via-background/85 before:to-transparent',
             )}
-            style={{ transform: `translateX(${floatingLayout.contentOffsetX}px)` }}
+            style={{
+            transform: floatingLayout.contentOffsetX
+              ? `translateX(${floatingLayout.contentOffsetX}px)`
+              : undefined,
+          }}
             data-agent-interaction-panel
           >
             {activeInteractionPanel === 'permission' && <PermissionBanner sessionId={sessionId} />}
@@ -3044,9 +3090,14 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         <div
           className={cn(
             inputAreaContainerClass,
-            'transition-transform duration-200 motion-reduce:transition-none',
+            'relative z-10',
+            'before:pointer-events-none before:absolute before:-inset-x-5 before:-top-8 before:-z-10 before:h-12 before:bg-gradient-to-t before:from-background before:via-background/85 before:to-transparent',
           )}
-          style={{ transform: `translateX(${floatingLayout.contentOffsetX}px)` }}
+          style={{
+            transform: floatingLayout.contentOffsetX
+              ? `translateX(${floatingLayout.contentOffsetX}px)`
+              : undefined,
+          }}
           data-input-mode="agent"
         >
           <AgentInputContextBar

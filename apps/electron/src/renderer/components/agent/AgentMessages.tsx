@@ -7,11 +7,10 @@
 
 import * as React from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
-import { Bot, RotateCw, AlertTriangle, ChevronDown, ChevronRight } from 'lucide-react'
+import { RotateCw, AlertTriangle, ChevronDown, ChevronRight, Loader2, CheckCircle2, CircleAlert } from 'lucide-react'
 import { WelcomeEmptyState } from '@/components/welcome/WelcomeEmptyState'
 import {
   Message,
-  MessageHeader,
   MessageContent,
   BasePathsProvider,
 } from '@/components/ai-elements/message'
@@ -23,25 +22,28 @@ import { ScrollMinimap } from '@/components/ai-elements/scroll-minimap'
 import type { MinimapItem } from '@/components/ai-elements/scroll-minimap'
 import { StickyUserMessage } from '@/components/ai-elements/sticky-user-message'
 import { useSmoothStream } from '@proma/ui'
-import { formatMessageTime } from '@/components/chat/ChatMessageItem'
-import { getModelLogo, resolveModelDisplayName, resolveModelProvider } from '@/lib/model-logo'
 import { userProfileAtom } from '@/atoms/user-profile'
 import { tabMinimapCacheAtom } from '@/atoms/tab-atoms'
-import { channelsAtom } from '@/atoms/chat-atoms'
 import { ScrollPositionManager } from '@/hooks/useScrollPositionMemory'
 import { cn } from '@/lib/utils'
-import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
-import { groupIntoTurns, MessageGroupRenderer, getGroupId, getGroupPreview, extractUserText, parseAttachedFiles as sdkParseAttachedFiles, isImageFile as sdkIsImageFile, type MessageGroup } from './SDKMessageRenderer'
+import { AssistantTurnRenderer, groupIntoTurns, MessageGroupRenderer, getGroupId, getGroupPreview, extractUserText, parseAttachedFiles as sdkParseAttachedFiles, isImageFile as sdkIsImageFile, type MessageGroup } from './SDKMessageRenderer'
 import { buildLiveGroupSet } from './live-group-set'
+import { mergePersistedAndLiveMessages } from '@/lib/agent-live-message'
 import { shouldSuppressAgentRunningIndicator } from '@/lib/agent-running-state'
+import { isTurnStoppedByUser } from '@/lib/agent-turn-presentation'
 import { AgentRunningIndicator } from './AgentRunningIndicator'
-import { ContentBlock } from './ContentBlock'
+import { AgentTurnStatusLine } from './AgentTurnStatusLine'
 import { parseThinkTagsFromText } from './thinking-tag-parser'
 import { AgentHistorySelectionLayer } from './AgentHistorySelectionLayer'
-import { TaskProgressOverlay, type ContextCompactionProgress } from './TaskProgressOverlay'
-import type { AgentEventUsage, RetryAttempt, SDKMessage, SDKSystemMessage } from '@proma/shared'
+import { AgentConversationScrollController } from './AgentConversationScrollController'
+import type {
+  RetryAttempt,
+  SDKAssistantMessage,
+  SDKMessage,
+  SDKSystemMessage,
+} from '@proma/shared'
 import { getSDKCompactStatus } from '@proma/shared'
-import type { AgentStreamState } from '@/atoms/agent-atoms'
+import { agentSessionsAtom, type AgentStreamState } from '@/atoms/agent-atoms'
 
 function stableStringify(value: unknown): string {
   if (value == null || typeof value !== 'object') return JSON.stringify(value) ?? String(value)
@@ -91,7 +93,7 @@ function getSDKMessageStableKey(message: SDKMessage): string {
 
 export function isCompactionControlHistoryGroup(group: MessageGroup): boolean {
   if (group.type === 'system') {
-    return getSDKCompactStatus(group.message) != null
+    return getSDKCompactStatus(group.message) === 'compacting'
       || group.message.subtype === 'context_compaction_config'
   }
   return group.type === 'user' && (extractUserText(group.message) ?? '').trim() === '/compact'
@@ -113,6 +115,15 @@ function getCompactionTokenDetail(
   return pre && post ? `上下文约 ${pre} → ${post} tokens。` : undefined
 }
 
+/** 上下文压缩进度状态（Codex 风格：在消息流末尾内联展示一行） */
+export interface ContextCompactionProgress {
+  status: 'running' | 'success' | 'noop' | 'failed'
+  label: string
+  detail?: string
+  /** 触发来源：区分「已压缩 / 已自动压缩」文案 */
+  trigger?: 'manual' | 'auto'
+}
+
 export function getContextCompactionProgress(
   messages: SDKMessage[],
   isCompacting: boolean | undefined,
@@ -121,24 +132,22 @@ export function getContextCompactionProgress(
   if (streamCompaction?.status === 'running') {
     return {
       status: 'running',
-      label: streamCompaction.trigger === 'auto' ? '正在自动整理上下文' : '正在整理上下文',
-      detail: 'CCB 正在生成会话摘要，完成后会继续当前任务。',
+      label: streamCompaction.trigger === 'auto' ? '正在自动压缩上下文' : '正在压缩上下文',
+      trigger: streamCompaction.trigger,
     }
   }
   if (streamCompaction?.status === 'success') {
     return {
       status: 'success',
       label: streamCompaction.trigger === 'auto' ? '上下文已自动压缩' : '上下文已压缩',
-      detail: getCompactionTokenDetail(streamCompaction.preTokens, streamCompaction.postTokens)
-        ?? '会话已整理，可以继续当前任务。',
-      summary: streamCompaction.summary,
+      detail: getCompactionTokenDetail(streamCompaction.preTokens, streamCompaction.postTokens),
+      trigger: streamCompaction.trigger,
     }
   }
   if (streamCompaction?.status === 'noop') {
     return {
       status: 'noop',
       label: '当前上下文无需压缩',
-      detail: streamCompaction.message ?? '当前上下文仍可用，可以继续当前任务。',
     }
   }
   if (streamCompaction?.status === 'failed') {
@@ -157,16 +166,14 @@ export function getContextCompactionProgress(
   if (status === 'success' && latestStatus) {
     return {
       status: 'success',
-      label: '上下文已压缩',
-      detail: '会话已整理，可以继续当前任务。',
-      summary: latestStatus.summary,
+      label: latestStatus.compactTrigger === 'auto' ? '上下文已自动压缩' : '上下文已压缩',
+      trigger: latestStatus.compactTrigger,
     }
   }
   if (status === 'noop' && latestStatus) {
     return {
       status: 'noop',
       label: '当前上下文无需压缩',
-      detail: latestStatus.message ?? '当前上下文仍可用，可以继续当前任务。',
     }
   }
   if (status === 'failed' && latestStatus) {
@@ -179,11 +186,34 @@ export function getContextCompactionProgress(
   if (status === 'compacting' || isCompacting) {
     return {
       status: 'running',
-      label: '正在整理上下文',
-      detail: '正在生成会话摘要，完成后可继续当前任务。',
+      label: '正在压缩上下文',
     }
   }
   return undefined
+}
+
+/**
+ * 上下文压缩内联状态行（Codex 风格）。
+ * 压缩进行中：spinner +「正在压缩上下文 / 正在自动压缩上下文」；
+ * 压缩完成：对勾 +「上下文已压缩 / 上下文已自动压缩」（附 token 变化明细）；
+ * 失败/无需压缩：对应图标与说明。
+ */
+export function CompactionInlineLine({ progress }: { progress: ContextCompactionProgress }): React.ReactElement {
+  const isRunning = progress.status === 'running'
+  const isSuccess = progress.status === 'success'
+  const isFailed = progress.status === 'failed'
+  return (
+    <div className="flex items-center gap-2 py-1.5 pl-7 text-[13px] text-muted-foreground">
+      <span className="flex size-4 shrink-0 items-center justify-center">
+        {isRunning && <Loader2 className="size-3.5 animate-spin text-blue-500" />}
+        {isSuccess && <CheckCircle2 className="size-3.5 text-green-500" />}
+        {progress.status === 'noop' && <CheckCircle2 className="size-3.5 text-muted-foreground" />}
+        {isFailed && <CircleAlert className="size-3.5 text-destructive" />}
+      </span>
+      <span className={cn(isFailed && 'text-destructive')}>{progress.label}</span>
+      {progress.detail && <span className="text-xs text-muted-foreground/70">{progress.detail}</span>}
+    </div>
+  )
 }
 
 /** AgentMessages 属性接口 */
@@ -217,24 +247,6 @@ interface AgentMessagesProps {
 /** 空状态引导 — 使用 WelcomeEmptyState */
 function EmptyState(): React.ReactElement {
   return <WelcomeEmptyState />
-}
-
-function AssistantLogo({ model }: { model?: string }): React.ReactElement {
-  const channels = useAtomValue(channelsAtom)
-  if (model) {
-    return (
-      <img
-        src={getModelLogo(model, resolveModelProvider(model, channels))}
-        alt={model}
-        className="size-6 rounded-md object-cover"
-      />
-    )
-  }
-  return (
-    <div className="flex size-6 items-center justify-center rounded-md bg-primary/8">
-      <Bot size={14} className="text-primary" />
-    </div>
-  )
 }
 
 /** 重试提示组件 - 折叠式 */
@@ -427,52 +439,22 @@ function RetryAttemptItem({
   )
 }
 
-/** 格式化耗时（毫秒 → 可读字符串） */
+/** 工具活动内部使用的紧凑耗时格式。 */
 export function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`
   const seconds = ms / 1000
   if (seconds < 60) return `${seconds.toFixed(1)}s`
-  const m = Math.floor(seconds / 60)
-  const s = seconds % 60
-  return `${m}m ${s.toFixed(0)}s`
-}
-
-/** 构建 usage tooltip 多行文本 */
-export function buildUsageTooltip(durationMs: number, usage?: AgentEventUsage): string {
-  const lines: string[] = []
-  lines.push(`耗时: ${formatDuration(durationMs)}`)
-
-  if (usage) {
-    const pureInput = (usage.inputTokens ?? 0) - (usage.cacheReadTokens ?? 0) - (usage.cacheCreationTokens ?? 0)
-    if (pureInput > 0) lines.push(`输入: ${pureInput.toLocaleString()}`)
-    if (usage.outputTokens) lines.push(`输出: ${usage.outputTokens.toLocaleString()}`)
-    if (usage.cacheCreationTokens) lines.push(`缓存写入: ${usage.cacheCreationTokens.toLocaleString()}`)
-    if (usage.cacheReadTokens) lines.push(`缓存读取: ${usage.cacheReadTokens.toLocaleString()}`)
-  }
-
-  return lines.join('\n')
-}
-
-/** 耗时徽章 — 悬浮显示 token 用量明细 */
-export function DurationBadge({ durationMs, usage }: { durationMs: number; usage?: AgentEventUsage }): React.ReactElement {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span className="text-[15px] tabular-nums font-light cursor-default">
-          {formatDuration(durationMs)}
-        </span>
-      </TooltipTrigger>
-      <TooltipContent side="top">
-        <p className="whitespace-pre-line text-left">{buildUsageTooltip(durationMs, usage)}</p>
-      </TooltipContent>
-    </Tooltip>
-  )
+  const minutes = Math.floor(seconds / 60)
+  const remainingSeconds = seconds % 60
+  return `${minutes}m ${remainingSeconds.toFixed(0)}s`
 }
 
 export function AgentMessages({ sessionId, contentOffsetX = 0, sessionModelId, messagesLoaded, persistedSDKMessages, streaming, streamState, liveMessages, sessionPath, attachedDirs, stoppedByUser, onRetry, onRetryInNewSession, onFork, onRewind, onCompact }: AgentMessagesProps): React.ReactElement {
   const userProfile = useAtomValue(userProfileAtom)
   const setMinimapCache = useSetAtom(tabMinimapCacheAtom)
-  const channels = useAtomValue(channelsAtom)
+  const sessions = useAtomValue(agentSessionsAtom)
+  const currentSessionMeta = sessions.find((session) => session.id === sessionId)
+  const lastStopDurationMs = currentSessionMeta?.lastStopDurationMs
   const historySelectionRootRef = React.useRef<HTMLDivElement>(null)
   /** 淡入控制：切换会话时先隐藏，等布局完成后再显示。 */
   const [ready, setReady] = React.useState(false)
@@ -515,7 +497,6 @@ export function AgentMessages({ sessionId, contentOffsetX = 0, sessionModelId, m
   // 从 streamState 属性中计算派生值
   const streamingContent = streamState?.content ?? ''
   const streamingModelId = streamState?.model || sessionModelId
-  const agentStreamingModel = streamingModelId ? resolveModelDisplayName(streamingModelId, channels) : undefined
   const retrying = streamState?.retrying
   const startedAt = streamState?.startedAt
 
@@ -533,7 +514,25 @@ export function AgentMessages({ sessionId, contentOffsetX = 0, sessionModelId, m
     if (!smoothContent) return []
     return parseThinkTagsFromText(smoothContent)
   }, [smoothContent])
-  const hasSmoothTextContent = smoothContentBlocks.some((block) => block.type === 'text')
+  const smoothFallbackTurn = React.useMemo(() => {
+    if (smoothContentBlocks.length === 0) return undefined
+    const assistantMessage: SDKAssistantMessage = {
+      type: 'assistant',
+      uuid: `${sessionId}:streaming-fallback-message`,
+      parent_tool_use_id: null,
+      message: {
+        content: smoothContentBlocks,
+        model: streamingModelId,
+      },
+      _channelModelId: streamingModelId,
+    }
+    return {
+      type: 'assistant-turn' as const,
+      assistantMessages: [assistantMessage],
+      turnMessages: [assistantMessage],
+      model: streamingModelId,
+    }
+  }, [sessionId, smoothContentBlocks, streamingModelId])
 
   /**
    * 流式完成过渡：streaming 结束到持久化消息加载完成之间，
@@ -576,41 +575,30 @@ export function AgentMessages({ sessionId, contentOffsetX = 0, sessionModelId, m
       ;(message as Record<string, unknown>)._promaStableKey = key
       return message
     }
-    const keyOf = (message: SDKMessage): string =>
-      (message as Record<string, unknown>)._promaStableKey as string
-
-    const persistedWithKeys = persisted.map(stampStableKey)
-    const liveWithKeys = live.map(stampStableKey)
-    if (streaming || liveWithKeys.length === 0 || persistedWithKeys.length === 0) {
-      return [...persistedWithKeys, ...liveWithKeys]
-    }
-
-    // 流式结束后的刷新中，持久化消息尾部可能已经包含 live 序列。
-    // 只替换有序尾部重叠，避免按内容全局去重误删历史中的相同问答。
-    let overlap = Math.min(persistedWithKeys.length, liveWithKeys.length)
-    for (; overlap > 0; overlap--) {
-      const persistedStart = persistedWithKeys.length - overlap
-      const liveStart = liveWithKeys.length - overlap
-      let matches = true
-      for (let i = 0; i < overlap; i++) {
-        if (keyOf(persistedWithKeys[persistedStart + i]!) !== keyOf(liveWithKeys[liveStart + i]!)) {
-          matches = false
-          break
+    const identityOf = (message: SDKMessage): string => {
+      const record = message as Record<string, unknown>
+      if (typeof record.uuid === 'string' && record.uuid.length > 0) {
+        return `${message.type}:uuid:${record.uuid}`
+      }
+      if (message.type === 'assistant') {
+        const inner = record.message as { id?: unknown } | undefined
+        if (inner && typeof inner.id === 'string' && inner.id.length > 0) {
+          return `assistant:model:${inner.id}`
         }
       }
-      if (matches) break
+      return getSDKMessageStableKey(message)
     }
+    return mergePersistedAndLiveMessages(
+      persisted.map(stampStableKey),
+      live.map(stampStableKey),
+      { identityOf },
+    )
+  }, [persistedSDKMessages, liveMessages])
 
-    if (overlap === 0) return [...persistedWithKeys, ...liveWithKeys]
-    return [
-      ...persistedWithKeys.slice(0, persistedWithKeys.length - overlap),
-      ...liveWithKeys,
-    ]
-  }, [persistedSDKMessages, liveMessages, streaming])
   const hasContent = allSDKMessages.length > 0
 
-  // 压缩真正进行时由底部 Progress Overlay 展示专用状态；
-  // 压缩完成后若 Agent 继续工作，立即恢复普通运行指示器。
+  // 压缩状态在消息流末尾内联展示（Codex 风格）；
+  // 压缩期间抑制普通运行指示器，避免两行状态并存。
   const suppressAgentRunning = shouldSuppressAgentRunningIndicator(streamState)
   const contextCompaction = React.useMemo(
     () => getContextCompactionProgress(liveMessages ?? [], streamState?.isCompacting, streamState?.contextCompaction),
@@ -684,14 +672,72 @@ export function AgentMessages({ sessionId, contentOffsetX = 0, sessionModelId, m
     ? allGroups.some((g) => g.type === 'assistant-turn' && liveGroupSet.has(g))
     : (liveMessages != null && liveMessages.some((m) => (m as { type: string }).type === 'assistant'))
 
+  // 用户在模型尚未返回任何内容时暂停：没有 assistant-turn，需要在用户消息后单独补一行停止状态
+  // prop 与会话 meta 双通道，避免 atom 尚未同步时历史中断会话漏显示
+  const isStoppedByUser = !!stoppedByUser || !!currentSessionMeta?.stoppedByUser
+  const lastUserGroupIndex = visibleGroups.findLastIndex((group) => group.type === 'user')
+  const lastAssistantGroupIndex = visibleGroups.findLastIndex((group) => group.type === 'assistant-turn')
+  const showStoppedWithoutAssistant = !streaming
+    && isStoppedByUser
+    && lastUserGroupIndex >= 0
+    && lastAssistantGroupIndex < lastUserGroupIndex
+  const stoppedDurationMs = React.useMemo(() => {
+    if (lastStopDurationMs != null && lastStopDurationMs > 0) return lastStopDurationMs
+    // 仅在本轮仍保留流式 startedAt 且尚未完全收尾时用它估算；
+    // 不直接 Date.now()-startedAt 作为最终值反复增长，避免停止后耗时跳动。
+    // 历史中断会话：从消息时间戳或会话 updatedAt 估算耗时
+    const timestamps: number[] = []
+    for (const message of allSDKMessages) {
+      const createdAt = (message as Record<string, unknown>)._createdAt
+      if (typeof createdAt === 'number') timestamps.push(createdAt)
+      const duration = (message as Record<string, unknown>)._durationMs
+      if (
+        message.type === 'result'
+        && typeof duration === 'number'
+        && duration > 0
+      ) {
+        return duration
+      }
+    }
+    if (timestamps.length >= 2) {
+      const estimated = Math.max(...timestamps) - Math.min(...timestamps)
+      if (estimated > 0) return estimated
+    }
+    if (
+      isStoppedByUser
+      && typeof currentSessionMeta?.updatedAt === 'number'
+      && timestamps.length >= 1
+    ) {
+      const estimated = currentSessionMeta.updatedAt - Math.min(...timestamps)
+      if (estimated > 0) return estimated
+    }
+    if (
+      isStoppedByUser
+      && typeof currentSessionMeta?.createdAt === 'number'
+      && typeof currentSessionMeta?.updatedAt === 'number'
+    ) {
+      const estimated = currentSessionMeta.updatedAt - currentSessionMeta.createdAt
+      if (estimated > 0) return estimated
+    }
+    if (streaming && startedAt != null) {
+      return Math.max(0, Date.now() - startedAt)
+    }
+    if (!streaming && startedAt != null && isStoppedByUser) {
+      // 流刚结束、meta 尚未带回 lastStopDurationMs 时的瞬时兜底
+      return Math.max(0, Date.now() - startedAt)
+    }
+    return undefined
+  }, [allSDKMessages, currentSessionMeta, isStoppedByUser, lastStopDurationMs, startedAt, streaming])
+
   return (
     <BasePathsProvider basePaths={attachedDirs}>
     <div ref={historySelectionRootRef} className="relative flex min-h-0 flex-1 flex-col">
       <Conversation resize={ready && !transitioning ? 'smooth' : 'instant'} className={ready ? (skipFadeIn ? 'opacity-100' : 'opacity-100 transition-opacity duration-200') : 'opacity-0'}>
+        <AgentConversationScrollController />
         <ScrollPositionManager id={sessionId} ready={ready} />
+        {/* contentOffsetX 无 CSS transition：只跟随真实容器宽度，与 Chat/侧栏 CSS 同帧 */}
         <ConversationContent
-          className="transition-transform duration-200 motion-reduce:transition-none"
-          style={{ transform: `translateX(${contentOffsetX}px)` }}
+          style={{ transform: contentOffsetX ? `translateX(${contentOffsetX}px)` : undefined }}
         >
           {!hasContent && !streaming ? (
             <EmptyState />
@@ -700,13 +746,37 @@ export function AgentMessages({ sessionId, contentOffsetX = 0, sessionModelId, m
               {/* 统一消息渲染（持久化 + 实时合并为一个列表，确保 system 消息位置正确） */}
               {visibleGroups.map((group, idx) => {
                 const isLive = liveGroupSet.has(group)
+                const isLatestAssistantTurn = group.type === 'assistant-turn'
+                  && idx === visibleGroups.findLastIndex(
+                    (candidate) => candidate.type === 'assistant-turn',
+                  )
                 const isErrorGroup = group.type === 'assistant-turn'
                   && group.assistantMessages.some((m) => !!m.error)
                 const shouldDisableActions = isLive && !isErrorGroup
-                // 仅在最后一个 assistant-turn 上显示"已被用户中断" badge
-                const isLastAssistantTurn = !streaming && stoppedByUser
+                // 会话级中断：最后一轮；轮次级 interrupted result：历史轮在续聊后仍保留停止文案
+                const isLastAssistantTurn = !streaming && isStoppedByUser
                   && group.type === 'assistant-turn'
                   && idx === visibleGroups.findLastIndex((g) => g.type === 'assistant-turn')
+                const turnStoppedByUser = group.type === 'assistant-turn'
+                  && (
+                    isLastAssistantTurn
+                    || isTurnStoppedByUser(group.turnMessages)
+                  )
+                let turnStopDurationMs: number | undefined
+                if (turnStoppedByUser && group.type === 'assistant-turn') {
+                  for (let i = group.turnMessages.length - 1; i >= 0; i -= 1) {
+                    const message = group.turnMessages[i]
+                    if (message?.type !== 'result') continue
+                    const duration = (message as Record<string, unknown>)._durationMs
+                    if (typeof duration === 'number' && duration >= 0) {
+                      turnStopDurationMs = duration
+                      break
+                    }
+                  }
+                  if (turnStopDurationMs == null && isLastAssistantTurn) {
+                    turnStopDurationMs = stoppedDurationMs
+                  }
+                }
                 return (
                   <MessageGroupRenderer
                     key={getGroupId(group)}
@@ -719,71 +789,91 @@ export function AgentMessages({ sessionId, contentOffsetX = 0, sessionModelId, m
                     onRetryInNewSession={shouldDisableActions ? undefined : onRetryInNewSession}
                     onCompact={shouldDisableActions ? undefined : onCompact}
                     isStreaming={isLive || undefined}
-                    stoppedByUser={isLastAssistantTurn || undefined}
+                    stoppedByUser={turnStoppedByUser || undefined}
                     sessionModelId={sessionModelId}
                     sessionId={sessionId}
+                    isLatestAssistantTurn={isLatestAssistantTurn}
+                    // 中断后 isLive=false，但仍需 startedAt / duration 才能显示「你在 N 秒后停止了」
+                    runningStartedAt={
+                      isLive || turnStoppedByUser
+                        ? (startedAt ?? (
+                          turnStoppedByUser && turnStopDurationMs != null && turnStopDurationMs >= 0
+                            ? Date.now() - Math.max(turnStopDurationMs, 1)
+                            : undefined
+                        ))
+                        : undefined
+                    }
+                    fallbackDurationMs={turnStoppedByUser ? turnStopDurationMs : undefined}
                   />
                 )
               })}
 
-              {/* 有实时助手内容时：显示运行指示器或占位（防止 streaming 结束到 Actions Bar 出现之间的高度跳动） */}
-              {/* 不使用 mt：ConversationContent 的 gap-1(4px) 已提供间距，
-                  匹配内部 MessageActions 的 gap-0.5(2px)+mt-0.5(2px)=4px 间距 */}
-              {hasLiveAssistantContent && !suppressAgentRunning && (
-                <div className="min-h-[28px] pl-8">
-                  {retrying && <RetryingNotice retrying={retrying} />}
-                  {streaming && <AgentRunningIndicator startedAt={startedAt} />}
+              {/* 模型尚未返回内容就被暂停：显示「你在 N 秒后停止了」 */}
+              {showStoppedWithoutAssistant && (
+                <div className="pl-0">
+                  <AgentTurnStatusLine
+                    model={sessionModelId}
+                    status="stopped"
+                    durationMs={stoppedDurationMs}
+                  />
                 </div>
               )}
 
-              {/* 无实时助手内容时：显示完整气泡（含头像/名称/时间） */}
-              {/* 注意：工具活动已通过 SDK 渲染路径（liveGroups）展示 */}
+              {/* 压缩进行中：钉在列表末尾显示 spinner。
+                  完成态必须走消息流中的 compact_boundary 位置渲染，
+                  否则会出现「模型正文 → 已自动压缩」的倒置顺序。 */}
+              {contextCompaction?.status === 'running' && (
+                <CompactionInlineLine progress={contextCompaction} />
+              )}
+
+              {/* 有实时助手内容时：显示运行指示器或占位（防止 streaming 结束到 Actions Bar 出现之间的高度跳动） */}
+              {/* 不使用 mt：ConversationContent 的 gap-1(4px) 已提供间距，
+                  匹配内部 MessageActions 的 gap-0.5(2px)+mt-0.5(2px)=4px 间距 */}
+              {hasLiveAssistantContent && retrying && (
+                <div className="min-h-[28px] pl-7">
+                  <RetryingNotice retrying={retrying} />
+                </div>
+              )}
+
+              {/* 无实时 Assistant Turn 时使用相同的单行 Logo/状态或 Logo/正文兜底。 */}
               {!hasLiveAssistantContent && !suppressAgentRunning && (streaming || smoothContent || retrying) && (
-                <Message from="assistant">
-                  <MessageHeader
-                    model={agentStreamingModel}
-                    time={formatMessageTime(Date.now())}
-                    logo={<AssistantLogo model={streamingModelId} />}
-                  />
-                  <MessageContent>
-                    {retrying && <RetryingNotice retrying={retrying} />}
-                    {smoothContent ? (
-                      <>
-                        <div className={cn('space-y-2')}>
-                          {smoothContentBlocks.map((block, index) => (
-                            <ContentBlock
-                              key={index}
-                              block={block}
-                              allMessages={allSDKMessages}
-                              basePath={sessionPath || undefined}
-                              basePaths={attachedDirs}
-                              index={index}
-                              dimmed={hasSmoothTextContent && block.type !== 'text'}
-                              isStreaming={streaming}
-                              sessionId={sessionId}
-                            />
-                          ))}
-                        </div>
-                        {streaming && <AgentRunningIndicator startedAt={startedAt} />}
-                      </>
-                    ) : (
-                      streaming && <AgentRunningIndicator startedAt={startedAt} />
-                    )}
-                  </MessageContent>
-                </Message>
+                <>
+                  {retrying && (
+                    <div className="pl-7">
+                      <RetryingNotice retrying={retrying} />
+                    </div>
+                  )}
+                  {smoothFallbackTurn ? (
+                    <AssistantTurnRenderer
+                      turn={smoothFallbackTurn}
+                      allMessages={allSDKMessages}
+                      basePath={sessionPath || undefined}
+                      isStreaming
+                      sessionModelId={streamingModelId}
+                      sessionId={sessionId}
+                      turnId={`${sessionId}:streaming-fallback`}
+                      isLatestAssistantTurn
+                      runningStartedAt={startedAt}
+                    />
+                  ) : (
+                    <Message from="assistant">
+                      <MessageContent className="pl-0">
+                        {streaming && (
+                          <AgentRunningIndicator
+                            startedAt={startedAt}
+                            model={streamingModelId}
+                          />
+                        )}
+                      </MessageContent>
+                    </Message>
+                  )}
+                </>
               )}
 
             </>
           )}
         </ConversationContent>
         <ScrollMinimap items={minimapItems} rightOffset={Math.max(0, -contentOffsetX)} />
-        <TaskProgressOverlay
-          key={sessionId}
-          activities={[]}
-          streaming={streaming}
-          contextCompaction={contextCompaction}
-          contentOffsetX={contentOffsetX}
-        />
         {allUserMessagesData.length > 0 && (
           <StickyUserMessage
             userMessages={allUserMessagesData}

@@ -51,6 +51,39 @@ function createBlock(
   index: number,
   rawBlock: Record<string, unknown>,
 ): PartialAssistantBlock | undefined {
+  if (rawBlock.type === 'tool_use') {
+    const id = typeof rawBlock.id === 'string' ? rawBlock.id : ''
+    const name = typeof rawBlock.name === 'string' ? rawBlock.name : ''
+    if (!id || !name) return undefined
+
+    let input: Record<string, unknown> = {}
+    let inputJson: string | undefined
+    if (typeof rawBlock.input === 'string') {
+      inputJson = rawBlock.input
+      try {
+        const parsed = JSON.parse(rawBlock.input) as unknown
+        if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+          input = parsed as Record<string, unknown>
+        }
+      } catch {
+        // 流式 JSON 尚未完整
+      }
+    } else if (typeof rawBlock.input === 'object' && rawBlock.input !== null) {
+      input = rawBlock.input as Record<string, unknown>
+    }
+
+    return {
+      index,
+      content: {
+        type: 'tool_use',
+        id,
+        name,
+        input,
+        ...(inputJson !== undefined ? { _inputJson: inputJson } : {}),
+      } as SDKContentBlock,
+    }
+  }
+
   if (rawBlock.type === 'thinking') {
     return {
       index,
@@ -140,6 +173,49 @@ function appendBlockDelta(
     }
   }
 
+  if (
+    block.content.type === 'tool_use'
+    && delta.type === 'input_json_delta'
+    && typeof delta.partial_json === 'string'
+  ) {
+    const current = block.content as {
+      input?: unknown
+      _inputJson?: unknown
+      id: string
+      name: string
+      type: 'tool_use'
+    }
+    const previousJson = typeof current._inputJson === 'string'
+      ? current._inputJson
+      : typeof current.input === 'string'
+        ? current.input
+        : ''
+    const nextJson = previousJson + delta.partial_json
+    let parsedInput: Record<string, unknown> = (
+      typeof current.input === 'object' && current.input !== null && !Array.isArray(current.input)
+        ? current.input as Record<string, unknown>
+        : {}
+    )
+    try {
+      const parsed = JSON.parse(nextJson) as unknown
+      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+        parsedInput = parsed as Record<string, unknown>
+      }
+    } catch {
+      // 流式 JSON 尚未完整，保留已解析部分
+    }
+    return {
+      ...block,
+      content: {
+        type: 'tool_use',
+        id: current.id,
+        name: current.name,
+        input: parsedInput,
+        _inputJson: nextJson,
+      } as SDKContentBlock,
+    }
+  }
+
   return block
 }
 
@@ -185,7 +261,25 @@ function hasVisibleContent(block: SDKContentBlock): boolean {
   ) {
     return block.text.length > 0
   }
+  if (block.type === 'tool_use') {
+    const tool = block as { id?: unknown; name?: unknown }
+    return typeof tool.id === 'string'
+      && tool.id.length > 0
+      && typeof tool.name === 'string'
+      && tool.name.length > 0
+  }
   return false
+}
+
+/** 落盘 / 推给上层前清理流式内部字段 */
+function sanitizeContentBlock(block: SDKContentBlock): SDKContentBlock {
+  if (block.type !== 'tool_use') return block
+  const record = { ...(block as Record<string, unknown>) }
+  delete record._inputJson
+  if (typeof record.input !== 'object' || record.input === null || Array.isArray(record.input)) {
+    record.input = {}
+  }
+  return record as SDKContentBlock
 }
 
 function createPartialMessage(
@@ -200,7 +294,7 @@ function createPartialMessage(
       id: state.messageId,
       type: 'message',
       role: 'assistant',
-      content: [block.content],
+      content: [sanitizeContentBlock(block.content)],
       ...(state.model ? { model: state.model } : {}),
       stop_reason: null,
       stop_sequence: null,
@@ -228,6 +322,15 @@ function blocksMatch(
     return streamedBlock.text === finalBlock.text
   }
 
+  if (streamedBlock.type === 'tool_use' && finalBlock.type === 'tool_use') {
+    const left = streamedBlock as { id?: unknown }
+    const right = finalBlock as { id?: unknown }
+    return typeof left.id === 'string'
+      && typeof right.id === 'string'
+      && left.id.length > 0
+      && left.id === right.id
+  }
+
   return false
 }
 
@@ -235,8 +338,10 @@ function blocksHaveCompatibleKind(
   streamedBlock: SDKContentBlock,
   finalBlock: SDKContentBlock,
 ): boolean {
-  return streamedBlock.type === finalBlock.type
-    && (streamedBlock.type === 'thinking' || streamedBlock.type === 'text')
+  if (streamedBlock.type !== finalBlock.type) return false
+  return streamedBlock.type === 'thinking'
+    || streamedBlock.type === 'text'
+    || streamedBlock.type === 'tool_use'
 }
 
 function getAssistantMessageId(message: SDKMessage): string | undefined {
@@ -346,6 +451,52 @@ export function annotateCcbFinalAssistantMessage(
 }
 
 /**
+ * 将 Turn 结束（尤其用户中断）时仍停留在 partial 状态的流式内容块，
+ * 固化为一条可持久化的最终 assistant 消息。
+ *
+ * CCB 中断路径不会再补发完整 assistant 消息，编排器只会把收到的
+ * 非 partial 消息落盘；若不在此固化，暂停瞬间尚未完成的过程正文/思考
+ * 会直接从 JSONL 缺失，前端重建后正文整体丢失。
+ */
+export function finalizeCcbPartialAssistantMessage(
+  previous: CcbPartialAssistantState,
+): CcbPartialAssistantUpdate {
+  const visibleBlocks = [...previous.blocks.values()]
+    .filter((block) => hasVisibleContent(block.content))
+    .sort((left, right) => left.index - right.index)
+
+  if (!previous.messageId || visibleBlocks.length === 0) {
+    return { state: previous }
+  }
+
+  const message: SDKMessage = {
+    type: 'assistant',
+    message: {
+      id: previous.messageId,
+      type: 'message',
+      role: 'assistant',
+      content: visibleBlocks.map((block) => sanitizeContentBlock(block.content)),
+      ...(previous.model ? { model: previous.model } : {}),
+      stop_reason: null,
+      stop_sequence: null,
+    },
+    parent_tool_use_id: previous.parentToolUseId ?? null,
+    ...(previous.sessionId ? { session_id: previous.sessionId } : {}),
+    uuid: `ccb-finalized:${previous.messageId}`,
+    ...(previous.createdAt ? { _createdAt: previous.createdAt } : {}),
+  } as unknown as SDKMessage
+
+  return {
+    state: {
+      ...previous,
+      blocks: new Map(),
+      completedBlockIndexes: new Set(),
+    },
+    message: normalizeCcbAssistantMessage(message),
+  }
+}
+
+/**
  * 将 CCB Runtime 的原始 stream_event 累积为前端可直接渲染的 assistant 快照。
  * 每个 content block 使用稳定 UUID，后续 delta 会覆盖同一条实时消息。
  */
@@ -361,6 +512,11 @@ export function applyCcbPartialAssistantEvent(
 
   if (event.type === 'message_start') {
     const startedMessage = readRecord(event.message)
+    // deepseek 等 Provider 常把「过程正文」和后续 tool_use 拆成多条 assistant 消息。
+    // 若下一条 message_start 直接重置 blocks，上一条尚未收到 final 的流式正文会从
+    // adapter 状态里蒸发；用户暂停后编排器只能落盘 tool_use，UI 重建就丢了过程正文。
+    // 因此在开启新消息前，先把仍可见的 partial 块固化为可落盘的最终消息。
+    const finalizedPrevious = finalizeCcbPartialAssistantMessage(previous)
     return {
       state: {
         messageId: typeof startedMessage?.id === 'string'
@@ -375,6 +531,7 @@ export function applyCcbPartialAssistantEvent(
         blocks: new Map(),
         completedBlockIndexes: new Set(),
       },
+      ...(finalizedPrevious.message ? { message: finalizedPrevious.message } : {}),
     }
   }
 

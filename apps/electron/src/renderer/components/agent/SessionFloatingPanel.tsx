@@ -2,20 +2,22 @@ import * as React from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
 import { useAgentRuntimeExecutionGraphRefresh } from '@/hooks/useAgentRuntimeExecutionGraphRefresh'
 import {
+  ChevronDown,
+  ChevronRight,
   FileDiff,
   GitBranch,
+  Upload,
 } from 'lucide-react'
-import type {
-  AgentRuntimeTodoItem,
-} from '@proma/shared'
+import { toast } from 'sonner'
 import {
   agentAttachedDirectoriesMapAtom,
   agentAttachedFilesMapAtom,
+  agentChannelIdAtom,
   agentDiffRefreshVersionAtom,
   agentFloatingPanelExecutionNodeStatesAtom,
-  agentFloatingPanelPlanStatesAtom,
+  agentFloatingSubagentsExpandedAtom,
+  agentModelIdAtom,
   agentRuntimeExecutionGraphAtomFamily,
-  agentRuntimePlanLifecycleAtom,
   agentSessionsAtom,
   agentSessionGitSummaryAtom,
   agentSessionStreamingStateAtomFamily,
@@ -31,20 +33,14 @@ import {
 import { cn } from '@/lib/utils'
 import {
   buildSessionExecutionNodes,
+  isSubagentExecutionNode,
   isSessionExecutionNodeActivelyRunning,
 } from '@/lib/session-execution-nodes'
-import {
-  createFloatingPlanSignature,
-  isFloatingExecutionNodeTerminal,
-} from '@/lib/session-floating-runtime-lifecycle'
-import { getVisibleRuntimePlanTodos } from '@/lib/runtime-plan-lifecycle'
-import {
-  completedTodoCount,
-  sortRuntimeTodos,
-} from './RuntimeTodoHoverProgress'
-import { selectRuntimePlanVisibleItems } from './runtime-plan-visible-window'
-import { RuntimePlanList } from './RuntimePlanList'
+import { isFloatingExecutionNodeTerminal } from '@/lib/session-floating-runtime-lifecycle'
 import { RuntimeExecutionNodeList } from './RuntimeExecutionNodeList'
+import { canStopSubagentNode } from '@/lib/subagent-presentation'
+import { SessionGitBranchMenu } from './SessionGitBranchMenu'
+import { GitCommitPushDialog } from './GitCommitPushDialog'
 
 interface SessionFloatingPanelProps {
   sessionId: string
@@ -52,7 +48,6 @@ interface SessionFloatingPanelProps {
 }
 
 const EMPTY_PATHS: string[] = []
-const EMPTY_TODOS: AgentRuntimeTodoItem[] = []
 export const FLOATING_PLAN_MAX_VISIBLE_ITEMS = 5
 export const FLOATING_SUBAGENT_MAX_VISIBLE_ITEMS = 4
 
@@ -83,29 +78,9 @@ export function SessionFloatingPanel({
   sessionPath,
 }: SessionFloatingPanelProps): React.ReactElement {
   const openSidePanelTab = useSetAtom(openAgentSidePanelTabAtom)
+  const subagentsExpandedMap = useAtomValue(agentFloatingSubagentsExpandedAtom)
+  const setSubagentsExpandedMap = useSetAtom(agentFloatingSubagentsExpandedAtom)
   const graph = useAtomValue(agentRuntimeExecutionGraphAtomFamily(sessionId))
-  const graphTodos = graph?.todos ?? EMPTY_TODOS
-  const planLifecycle = useAtomValue(agentRuntimePlanLifecycleAtom).get(sessionId)
-  const planState = useAtomValue(agentFloatingPanelPlanStatesAtom).get(sessionId)
-  // 生命周期尚未初始化时保留旧签名屏蔽作为启动期兜底；
-  // 一旦生命周期存在，三个入口只服从统一生命周期状态。
-  const planSuppressed = (
-    planLifecycle == null
-    && graphTodos.length > 0
-    && planState?.suppressedCompletedPlanSignature != null
-    && createFloatingPlanSignature(graphTodos)
-      === planState.suppressedCompletedPlanSignature
-  )
-  const visibleLifecycleTodos = getVisibleRuntimePlanTodos(
-    planLifecycle,
-    graphTodos,
-  )
-  const todos = React.useMemo(
-    () => sortRuntimeTodos(
-      planSuppressed ? EMPTY_TODOS : visibleLifecycleTodos,
-    ),
-    [planSuppressed, visibleLifecycleTodos],
-  )
   const sessions = useAtomValue(agentSessionsAtom)
   const streamingStates = useAtomValue(agentStreamingStatesAtom)
   // 活跃节点只信任实时执行图 + Collaboration 投影。
@@ -116,7 +91,7 @@ export function SessionFloatingPanel({
       sessionId,
       runtimeGraph: graph,
       sessions,
-    }),
+    }).filter(isSubagentExecutionNode),
     [graph, sessionId, sessions],
   )
   const streamState = useAtomValue(agentSessionStreamingStateAtomFamily(sessionId))
@@ -135,7 +110,14 @@ export function SessionFloatingPanel({
       }
     }
     for (const lifecycle of executionNodeStates?.values() ?? []) {
-      if (lifecycle.expiresAt > now) {
+      if (
+        lifecycle.expiresAt > now
+        && isSubagentExecutionNode(lifecycle.node)
+        && (
+          !visible.has(lifecycle.node.id)
+          || isFloatingExecutionNodeTerminal(lifecycle.node)
+        )
+      ) {
         visible.set(lifecycle.node.id, lifecycle.node)
       }
     }
@@ -156,7 +138,48 @@ export function SessionFloatingPanel({
   const filesVersion = useAtomValue(workspaceFilesVersionAtom)
   const gitSummaryMap = useAtomValue(agentSessionGitSummaryAtom)
   const setGitSummaryMap = useSetAtom(agentSessionGitSummaryAtom)
+  const setDiffRefreshVersion = useSetAtom(agentDiffRefreshVersionAtom)
   const gitSummary = gitSummaryMap.get(sessionId)
+  const agentChannelId = useAtomValue(agentChannelIdAtom)
+  const agentModelId = useAtomValue(agentModelIdAtom)
+  const [commitDialogOpen, setCommitDialogOpen] = React.useState(false)
+
+  const sessionMeta = React.useMemo(
+    () => sessions.find((session) => session.id === sessionId) ?? null,
+    [sessionId, sessions],
+  )
+  const channelId = sessionMeta?.channelId || agentChannelId
+  const modelId = sessionMeta?.modelId || agentModelId
+
+  const refreshGitSummary = React.useCallback(() => {
+    setDiffRefreshVersion((previous) => {
+      const next = new Map(previous)
+      next.set(sessionId, (previous.get(sessionId) ?? 0) + 1)
+      return next
+    })
+  }, [sessionId, setDiffRefreshVersion])
+
+  const handleBranchChanged = React.useCallback((branch: string) => {
+    setGitSummaryMap((previous) => {
+      const current = previous.get(sessionId)
+      if (!current) return previous
+      const next = new Map(previous)
+      next.set(sessionId, {
+        ...current,
+        repoStatus: current.repoStatus
+          ? { ...current.repoStatus, branch }
+          : {
+              isRepo: true,
+              branch,
+              hasChanges: current.filesChanged > 0,
+              remoteUrl: null,
+            },
+        updatedAt: Date.now(),
+      })
+      return next
+    })
+    refreshGitSummary()
+  }, [refreshGitSummary, sessionId, setGitSummaryMap])
 
   const activeRuntimeNodeExists = React.useMemo(() => (
     (graph?.nodes ?? []).some((node) => (
@@ -256,22 +279,17 @@ export function SessionFloatingPanel({
     workspaceSlug,
   ])
 
-  const completedCount = completedTodoCount(todos)
-  const allocation = allocateFloatingRuntimeListRows(todos.length, nodes.length)
-  const visibleTodos = selectRuntimePlanVisibleItems(
-    todos,
-    allocation.visiblePlanItems,
-  )
+  const allocation = allocateFloatingRuntimeListRows(0, nodes.length)
   const visibleNodes = nodes.slice(0, allocation.visibleSubagentItems)
-  const hasMoreTodos = visibleTodos.length < todos.length
   const hasMoreNodes = visibleNodes.length < nodes.length
+  const subagentsExpanded = subagentsExpandedMap.get(sessionId) ?? true
+  const activeNodes = nodes.filter((node) => (
+    node.status === 'queued' || node.status === 'running'
+  ))
+  const canStopAll = activeNodes.length > 0 && activeNodes.every(canStopSubagentNode)
 
   const openChanges = React.useCallback(() => {
     openSidePanelTab({ sessionId, tab: 'changes' })
-  }, [openSidePanelTab, sessionId])
-
-  const openAllPlans = React.useCallback(() => {
-    openSidePanelTab({ sessionId, tab: 'plan' })
   }, [openSidePanelTab, sessionId])
 
   const openAllSubagents = React.useCallback(() => {
@@ -292,6 +310,28 @@ export function SessionFloatingPanel({
       },
     })
   }, [graph?.runtimeSessionId, nodes, openSidePanelTab, sessionId])
+
+  const toggleSubagents = React.useCallback(() => {
+    setSubagentsExpandedMap((previous) => {
+      const next = new Map(previous)
+      next.set(sessionId, !(previous.get(sessionId) ?? true))
+      return next
+    })
+  }, [sessionId, setSubagentsExpandedMap])
+
+  const stopAllSubagents = React.useCallback(async (): Promise<void> => {
+    const results = await Promise.allSettled(
+      activeNodes.flatMap((node) =>
+        node.transcriptSessionId
+          ? [window.electronAPI.stopAgent(node.transcriptSessionId)]
+          : [],
+      ),
+    )
+    const failedCount = results.filter((result) => result.status === 'rejected').length
+    if (failedCount > 0) {
+      toast.error(`${failedCount} 个子智能体停止失败，请重试`)
+    }
+  }, [activeNodes])
 
   return (
     <aside
@@ -324,84 +364,128 @@ export function SessionFloatingPanel({
         </button>
 
         <div className="flex items-center gap-2 rounded-lg px-2 py-1.5">
-          <GitBranch className="size-3.5 text-muted-foreground" />
+          <GitBranch className="size-3.5 shrink-0 text-muted-foreground" />
           <span className="flex-1 text-xs">分支</span>
-          <span className="max-w-[160px] truncate text-[11px] text-muted-foreground">
-            {gitSummary?.repoStatus?.isRepo
-              ? (gitSummary.repoStatus.branch ?? 'HEAD')
-              : '非 Git 仓库'}
-          </span>
+          {gitSummary?.repoStatus?.isRepo && sessionPath ? (
+            <SessionGitBranchMenu
+              dirPath={sessionPath}
+              sessionId={sessionId}
+              currentBranch={gitSummary.repoStatus.branch}
+              onBranchChanged={handleBranchChanged}
+              triggerClassName="-mr-1"
+            />
+          ) : (
+            <span className="max-w-[160px] truncate text-[11px] text-muted-foreground">
+              {gitSummary?.repoStatus?.isRepo
+                ? (gitSummary.repoStatus.branch ?? 'HEAD')
+                : '非 Git 仓库'}
+            </span>
+          )}
         </div>
+
+        {gitSummary?.repoStatus?.isRepo && sessionPath && (
+          <button
+            type="button"
+            className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-accent/55"
+            onClick={() => setCommitDialogOpen(true)}
+          >
+            <Upload className="size-3.5 text-muted-foreground" />
+            <span className="flex-1 text-xs">提交或推送</span>
+            {(gitSummary.filesChanged > 0 || gitSummary.additions > 0 || gitSummary.deletions > 0) && (
+              <span className="text-[11px] tabular-nums text-muted-foreground">
+                {(gitSummary.additions > 0 || gitSummary.deletions > 0) ? (
+                  <>
+                    {gitSummary.additions > 0 && (
+                      <span className="text-emerald-500">+{gitSummary.additions.toLocaleString()}</span>
+                    )}
+                    {gitSummary.additions > 0 && gitSummary.deletions > 0 && ' '}
+                    {gitSummary.deletions > 0 && (
+                      <span className="text-red-500">-{gitSummary.deletions.toLocaleString()}</span>
+                    )}
+                  </>
+                ) : (
+                  `${gitSummary.filesChanged} 个文件`
+                )}
+              </span>
+            )}
+          </button>
+        )}
 
       </div>
 
-      {(todos.length > 0 || nodes.length > 0) && (
+      {gitSummary?.repoStatus?.isRepo && sessionPath && (
+        <GitCommitPushDialog
+          open={commitDialogOpen}
+          onOpenChange={setCommitDialogOpen}
+          dirPath={sessionPath}
+          sessionId={sessionId}
+          currentBranch={gitSummary.repoStatus.branch}
+          additions={gitSummary.additions}
+          deletions={gitSummary.deletions}
+          filesChanged={gitSummary.filesChanged}
+          channelId={channelId}
+          modelId={modelId}
+          onCompleted={refreshGitSummary}
+          onBranchChanged={handleBranchChanged}
+        />
+      )}
+
+      {nodes.length > 0 && (
         <div
           className="min-h-0 overflow-y-auto overscroll-contain scrollbar-none"
           data-session-floating-runtime-region
         >
-          {todos.length > 0 && (
-            <section
-              className="mt-2 border-t border-border/55 pt-2"
-              data-session-plan-progress="readonly"
-            >
-              <div className="flex items-center justify-between px-2 py-1.5">
-                <span className="text-[11px] font-medium text-muted-foreground">计划</span>
-                <span className="text-[11px] tabular-nums text-muted-foreground">
-                  {completedCount} / {todos.length}
-                </span>
-              </div>
-              <RuntimePlanList
-                todos={visibleTodos}
-                running={running}
-                planActive={
-                  planLifecycle == null
-                  || planLifecycle.current?.status === 'active'
-                }
-                compact
-              />
-              {hasMoreTodos && (
-                <button
-                  type="button"
-                  className="flex w-full items-center justify-center rounded-lg px-2 py-1.5 text-[11px] text-muted-foreground hover:bg-accent/55 hover:text-foreground"
-                  onClick={openAllPlans}
-                  data-session-plan-view-all
-                >
-                  查看全部
-                </button>
-              )}
-            </section>
-          )}
-
           {nodes.length > 0 && (
             <section className="mt-2 border-t border-border/55 pt-2">
-              <div className="flex items-center justify-between px-2 py-1.5">
-                <h3 className="text-[11px] font-medium text-muted-foreground">
-                  子智能体 · {nodes.length}
+              <button
+                type="button"
+                className="flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-left hover:bg-accent/55"
+                onClick={toggleSubagents}
+                aria-expanded={subagentsExpanded}
+              >
+                {subagentsExpanded
+                  ? <ChevronDown className="size-3.5 text-muted-foreground" />
+                  : <ChevronRight className="size-3.5 text-muted-foreground" />}
+                <h3 className="flex-1 text-[11px] font-medium text-muted-foreground">
+                  {nodes.length} 个后台智能体
                 </h3>
-              </div>
-              <RuntimeExecutionNodeList
-                nodes={visibleNodes}
-                isNodeRunning={(node) => (
-                  isSessionExecutionNodeActivelyRunning(
-                    node,
-                    running,
-                    node.transcriptSessionId
-                      ? streamingStates.get(node.transcriptSessionId)?.running
-                      : undefined,
-                  )
-                )}
-                onOpenNode={openExecutionNode}
-              />
-              {hasMoreNodes && (
-                <button
-                  type="button"
-                  className="flex w-full items-center justify-center rounded-lg px-2 py-1.5 text-[11px] text-muted-foreground hover:bg-accent/55 hover:text-foreground"
-                  onClick={openAllSubagents}
-                  data-session-subagent-view-all
-                >
-                  查看全部
-                </button>
+              </button>
+              {subagentsExpanded && (
+                <>
+                  <RuntimeExecutionNodeList
+                    nodes={visibleNodes}
+                    isNodeRunning={(node) => (
+                      isSessionExecutionNodeActivelyRunning(
+                        node,
+                        running,
+                        node.transcriptSessionId
+                          ? streamingStates.get(node.transcriptSessionId)?.running
+                          : undefined,
+                      )
+                    )}
+                    onOpenNode={openExecutionNode}
+                  />
+                  {hasMoreNodes && (
+                    <button
+                      type="button"
+                      className="flex w-full items-center justify-center rounded-lg px-2 py-1.5 text-[11px] text-muted-foreground hover:bg-accent/55 hover:text-foreground"
+                      onClick={openAllSubagents}
+                      data-session-subagent-view-all
+                    >
+                      查看全部
+                    </button>
+                  )}
+                  {canStopAll && (
+                    <button
+                      type="button"
+                      className="mt-1 flex w-full items-center justify-center rounded-lg px-2 py-1.5 text-[11px] text-destructive hover:bg-destructive/10"
+                      onClick={() => void stopAllSubagents()}
+                      title="停止此聊天中的所有子智能体"
+                    >
+                      全部停止
+                    </button>
+                  )}
+                </>
               )}
             </section>
           )}

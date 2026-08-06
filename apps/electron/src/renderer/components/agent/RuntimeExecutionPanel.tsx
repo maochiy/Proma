@@ -17,6 +17,7 @@ import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import {
   buildSessionExecutionNodes,
+  isSubagentExecutionNode,
   isSessionExecutionNodeActivelyRunning,
 } from '@/lib/session-execution-nodes'
 import type { SessionExecutionNode } from '@/lib/session-execution-nodes'
@@ -56,7 +57,7 @@ export function RuntimeExecutionPanel({
       liveRuntimeNodeIds: new Set(
         (graph?.nodes ?? []).map((node) => node.id),
       ),
-    }),
+    }).filter(isSubagentExecutionNode),
     [effectiveGraph, graph?.nodes, sessionId, sessions],
   )
   const sessionRunning = useAtomValue(agentSessionStreamingStateAtomFamily(sessionId))?.running === true

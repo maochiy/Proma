@@ -45,6 +45,7 @@ import { normalizeAnthropicBaseUrlForSdk, getPromaUserAgent } from '@proma/core'
 import pkg from '../../../package.json' with { type: 'json' }
 import { getEffectiveProxyUrl } from './proxy-settings-service'
 import { appendSDKMessages, updateAgentSessionMeta, getAgentSessionMeta, getAgentSessionMessages, truncateSDKMessages, removeSDKErrorMessage, createForkedAgentSessionProjection } from './agent-session-manager'
+import { syncCcbSessionTranscript } from './ccb-runtime/session-catalog-service'
 import { getAgentWorkspace, getWorkspaceMcpConfig, ensurePluginManifest, getWorkspaceAttachedDirectories, getWorkspaceAttachedFiles } from './agent-workspace-manager'
 import { getWorkspaceFilesDir, getWorkspaceSkillsDir } from './config-paths'
 import { getRuntimeStatus } from './runtime-init'
@@ -66,6 +67,16 @@ import { getAgentSdkMaxOutputTokens } from './agent-sdk-output-limits'
 import { startAgentTurnChangeTracking } from './agent-turn-change-tracker'
 import { createFallbackTitle } from './title-generation'
 import {
+  backfillMissingToolUsesForUserMessage,
+  collectKnownToolUseIds,
+} from './tool-use-backfill'
+import {
+  clearMatchedPartialAssistants,
+  flushPartialAssistantsToAccumulated,
+  getAssistantPartialKey,
+  isPartialSDKMessage,
+} from './agent-partial-flush'
+import {
   buildCcbProviderConfiguration,
   buildCcbNativeProviderConfiguration,
   buildCcbProviderEnvironment,
@@ -83,7 +94,7 @@ export interface SessionCallbacks {
   /** 发送流式错误 */
   onError: (error: string) => void
   /** 发送流式完成（携带已持久化的消息列表） */
-  onComplete: (messages?: AgentMessage[], opts?: { stoppedByUser?: boolean; startedAt?: number; resultSubtype?: string; resultErrors?: string[]; backgroundTasksPending?: boolean }) => void
+  onComplete: (messages?: AgentMessage[], opts?: { stoppedByUser?: boolean; startedAt?: number; resultSubtype?: string; resultErrors?: string[]; backgroundTasksPending?: boolean; lastStopDurationMs?: number }) => void
   /** 发送标题更新 */
   onTitleUpdated: (title: string) => void
   /** 用户消息已持久化，外部入口可据此通知前端切到实时会话 */
@@ -111,9 +122,6 @@ function isMissingActiveQueueChannelError(error: unknown): boolean {
   return errorMessageOf(error).includes('无活跃消息通道可注入队列消息')
 }
 
-function isPartialSDKMessage(message: SDKMessage): boolean {
-  return (message as Record<string, unknown>)._partial === true
-}
 
 /**
  * 从 stderr 中提取 API 错误信息
@@ -609,9 +617,11 @@ export class AgentOrchestrator {
   private persistSDKMessages(
     sessionId: string,
     accumulatedMessages: SDKMessage[],
-    durationMs?: number,
+    options?: number | { durationMs?: number; stoppedByUser?: boolean },
   ): void {
-    if (accumulatedMessages.length === 0) return
+    // 兼容旧调用：第三个参数可以是 durationMs 数字
+    const durationMs = typeof options === 'number' ? options : options?.durationMs
+    const stoppedByUser = typeof options === 'number' ? false : options?.stoppedByUser === true
 
     const hasCompactBoundary = accumulatedMessages.some((m) => {
       return m.type === 'system' && (m as SDKSystemMessage).subtype === 'compact_boundary'
@@ -637,13 +647,28 @@ export class AgentOrchestrator {
       return true
     })
 
-    if (toPersist.length === 0) return
-
-    // 为没有 _createdAt 的消息补上时间戳（assistant 消息来自 SDK 原始输出，不含时间）
     const now = Date.now()
+    // 用户中断时即使 SDK 已给出 result，也要标记 interrupted，避免续聊后历史轮次退化成「已完成」。
+    const effectiveStopDurationMs = stoppedByUser
+      ? Math.max(0, durationMs ?? 0)
+      : durationMs
     const withTimestamps = toPersist.map((m) => {
       const msg = m as Record<string, unknown>
-      if (typeof msg._createdAt === 'number') return m
+      if (m.type === 'result' && stoppedByUser) {
+        return {
+          ...m,
+          subtype: 'interrupted',
+          _createdAt: typeof msg._createdAt === 'number' ? msg._createdAt : now,
+          _durationMs: typeof msg._durationMs === 'number' ? msg._durationMs : effectiveStopDurationMs,
+          _stoppedByUser: true,
+        } as unknown as SDKMessage
+      }
+      if (typeof msg._createdAt === 'number') {
+        if (m.type === 'result' && durationMs != null && typeof msg._durationMs !== 'number') {
+          return { ...m, _durationMs: durationMs } as unknown as SDKMessage
+        }
+        return m
+      }
       // 为 result 消息附加 _durationMs
       if (m.type === 'result' && durationMs != null) {
         return { ...m, _createdAt: now, _durationMs: durationMs } as unknown as SDKMessage
@@ -651,7 +676,51 @@ export class AgentOrchestrator {
       return { ...m, _createdAt: now } as unknown as SDKMessage
     })
 
-    appendSDKMessages(sessionId, withTimestamps)
+    if (withTimestamps.length > 0) {
+      appendSDKMessages(sessionId, withTimestamps)
+    }
+
+    // 用户中断时 SDK 通常不会产出 result。即使本轮没有任何可持久化内容
+    //（例如仅有用户消息就暂停），也要补 interrupted result，让前端能显示
+    // 「你在 N 秒后停止了」（规则文档第 8 / 14 节）。
+    if (
+      stoppedByUser
+      && effectiveStopDurationMs != null
+      && effectiveStopDurationMs >= 0
+      && !withTimestamps.some((message) => message.type === 'result')
+    ) {
+      appendSDKMessages(sessionId, [{
+        type: 'result',
+        subtype: 'interrupted',
+        usage: {
+          input_tokens: 0,
+          output_tokens: 0,
+        },
+        _createdAt: now,
+        _durationMs: effectiveStopDurationMs,
+        _stoppedByUser: true,
+      } as unknown as SDKMessage])
+    }
+  }
+
+
+  /**
+   * Turn 结束/用户停止后，强制把 CCB Transcript 合并进本地 JSONL。
+   * 流式落盘顺序可能把完整 assistant 聚成一团、tool_result 堆在后面；
+   * 完成后以 Runtime Transcript 为顺序真源，避免刷新后过程正文错位/看起来像只剩一条。
+   */
+  private async syncTranscriptProjectionAfterTurn(sessionId: string): Promise<void> {
+    try {
+      const result = await syncCcbSessionTranscript(sessionId, true)
+      if (result.synchronized && result.changed) {
+        console.log(`[Agent 编排] 已强制同步 CCB Transcript 投影: session=${sessionId}`)
+      }
+    } catch (error) {
+      console.warn(
+        `[Agent 编排] 强制同步 CCB Transcript 失败，继续使用本地投影: session=${sessionId}`,
+        error,
+      )
+    }
   }
 
   private persistUserMessage(sessionId: string, userMessage: string, createdAt = Date.now()): void {
@@ -917,7 +986,7 @@ export class AgentOrchestrator {
     }
     const completeRun = (
       messages?: AgentMessage[],
-      opts?: { stoppedByUser?: boolean; startedAt?: number; resultSubtype?: string; resultErrors?: string[] },
+      opts?: { stoppedByUser?: boolean; startedAt?: number; resultSubtype?: string; resultErrors?: string[]; lastStopDurationMs?: number },
     ): void => {
       releaseActiveRun()
       callbacks.onComplete(messages, opts)
@@ -935,7 +1004,7 @@ export class AgentOrchestrator {
     const failRun = (
       error: string,
       messages?: AgentMessage[],
-      opts?: { stoppedByUser?: boolean; startedAt?: number; resultSubtype?: string; resultErrors?: string[] },
+      opts?: { stoppedByUser?: boolean; startedAt?: number; resultSubtype?: string; resultErrors?: string[]; lastStopDurationMs?: number },
     ): void => {
       releaseActiveRun()
       callbacks.onError(error)
@@ -1155,6 +1224,7 @@ export class AgentOrchestrator {
       // Plan 模式下允许的只读工具（不包含 Write/Edit/Bash 等写操作）
       const PLAN_MODE_ALLOWED_TOOLS = new Set([
         'Read', 'Glob', 'Grep', 'WebSearch', 'WebFetch',
+        'mcp__web_search__WebSearch', 'mcp__web_search__WebFetch',
         'TodoRead', 'TodoWrite', 'TaskOutput',
         'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet',
         'ListMcpResourcesTool', 'ReadMcpResourceTool',
@@ -1198,6 +1268,15 @@ export class AgentOrchestrator {
         if (validationFailure) {
           console.warn(`[Agent 工具验证] 参数缺失: tool=${toolName}, mode=${currentMode}`)
           return validationFailure
+        }
+
+        // 禁用 CCB 原生联网工具，强制走 OpenSwitch 内置 MCP（web_search）
+        if (toolName === 'WebSearch' || toolName === 'WebFetch') {
+          return {
+            behavior: 'deny' as const,
+            message:
+              '原生 WebSearch/WebFetch 已禁用。请改用 mcp__web_search__WebSearch 或 mcp__web_search__WebFetch（OpenSwitch 联网搜索）。',
+          }
         }
 
         // ── Write 大文件 token 截断防护 ──
@@ -1444,6 +1523,11 @@ export class AgentOrchestrator {
         !!(existingRuntimeSessionId || capturedRuntimeSessionId || queryOptions.resumeSessionId)
 
       const queryStartedAt = Date.now()
+      // 流式 partial assistant 不会进入 accumulatedMessages；用户中断时需要把最新预览帧固化落盘，
+      // 否则前端只能靠 liveMessages 显示，继续对话时会被拼到下一轮用户消息后面。
+      const latestPartialAssistants = new Map<string, SDKMessage>()
+      // 已见 tool_use id：用于 tool_result 到达但缺失对应 assistant(tool_use) 时回填
+      const knownToolUseIds = collectKnownToolUseIds(accumulatedMessages)
 
       for (let attempt = 1; attempt <= MAX_AUTO_RETRIES + 1; attempt++) {
         // 非首次尝试：等待 + 发送重试事件到 UI
@@ -1487,9 +1571,24 @@ export class AgentOrchestrator {
             // 等待期间如果会话被中止，退出
             if (!this.activeSessions.has(sessionId)) {
               const wasStoppedByUser = this.consumeStoppedByUser(sessionId)
-              this.persistSDKMessages(sessionId, accumulatedMessages, Date.now() - queryStartedAt)
-              try { updateAgentSessionMeta(sessionId, { stoppedByUser: wasStoppedByUser }) } catch { /* 会话可能已删除 */ }
-              completeRun(getAgentSessionMessages(sessionId), { stoppedByUser: wasStoppedByUser, startedAt: streamStartedAt })
+              flushPartialAssistantsToAccumulated(latestPartialAssistants, accumulatedMessages, knownToolUseIds)
+              const stopDurationMs = Math.max(0, Date.now() - streamStartedAt)
+              this.persistSDKMessages(sessionId, accumulatedMessages, {
+                durationMs: stopDurationMs,
+                stoppedByUser: wasStoppedByUser,
+              })
+              try {
+                updateAgentSessionMeta(sessionId, wasStoppedByUser
+                  ? { stoppedByUser: true, lastStopDurationMs: stopDurationMs }
+                  : { stoppedByUser: false })
+              } catch { /* 会话可能已删除 */ }
+              /* sync-before-complete:retry-wait-stop */
+              await this.syncTranscriptProjectionAfterTurn(sessionId)
+              completeRun(getAgentSessionMessages(sessionId), {
+                stoppedByUser: wasStoppedByUser,
+                startedAt: streamStartedAt,
+                lastStopDurationMs: wasStoppedByUser ? stopDurationMs : undefined,
+              })
               return
             }
           }
@@ -1550,6 +1649,17 @@ export class AgentOrchestrator {
             pendingNext = null
             const msg = iterResult.value
             const isPartialMessage = isPartialSDKMessage(msg)
+            if (msg.type === 'assistant') {
+              const partialKey = getAssistantPartialKey(msg)
+              if (isPartialMessage) {
+                latestPartialAssistants.set(partialKey, msg)
+              } else {
+                latestPartialAssistants.delete(partialKey)
+                // 终态消息用 CCB uuid，与 ccb-partial:{messageId}:{blockIndex} 不同。
+                // 按 messageId + block 索引清掉已覆盖的 partial，保留尚未终态化的过程正文。
+                clearMatchedPartialAssistants(latestPartialAssistants, msg)
+              }
+            }
             // isVisibleRunMessage 已抽到独立模块，不含 partial 判断；
             // 运行时的流式 partial 消息不应计入可见消息数，故在此显式排除。
             if (!isPartialMessage && isVisibleRunMessage(msg)) {
@@ -1734,6 +1844,14 @@ export class AgentOrchestrator {
                   const content = (msg as { message?: { content?: Array<{ type: string }> } }).message?.content
                   const hasToolResult = Array.isArray(content) && content.some((b) => b.type === 'tool_result')
                   if (hasToolResult) {
+                    // CCB 某些 Provider 会先/只推 tool_result，缺失 tool_use 会导致暂停后活动轨迹塌缩。
+                    const backfilled = backfillMissingToolUsesForUserMessage(msg, knownToolUseIds)
+                    if (backfilled.length > 0) {
+                      accumulatedMessages.push(...backfilled)
+                      for (const synthetic of backfilled) {
+                        this.eventBus.emit(sessionId, { kind: 'sdk_message', message: synthetic })
+                      }
+                    }
                     accumulatedMessages.push(msg)
                   }
                 } else {
@@ -1750,6 +1868,9 @@ export class AgentOrchestrator {
                       (msg as Record<string, unknown>)._channelModelId = modelId
                     }
                     ;(msg as Record<string, unknown>)._channelProvider = channel?.provider ?? 'custom'
+                    for (const id of collectKnownToolUseIds([msg])) {
+                      knownToolUseIds.add(id)
+                    }
                   }
                   accumulatedMessages.push(msg)
                 }
@@ -1770,6 +1891,9 @@ export class AgentOrchestrator {
               capturedResultErrors = Array.isArray(rawResultErrors)
                 ? rawResultErrors.filter((e): e is string => typeof e === 'string' && e.trim().length > 0)
                 : undefined
+              // result 到达前先把尚未终态的 partial（尤其过程正文）并入累积，
+              // 避免只落盘 tool_use / tool_result 后清空，暂停重建丢正文。
+              flushPartialAssistantsToAccumulated(latestPartialAssistants, accumulatedMessages, knownToolUseIds)
               this.persistSDKMessages(sessionId, accumulatedMessages, Date.now() - queryStartedAt)
               accumulatedMessages.length = 0
               // 软中断 / 延迟工具 / hook 暂停等场景下，adapter 保留 channel
@@ -1869,10 +1993,19 @@ export class AgentOrchestrator {
           }
           retrySucceeded = true
 
-          // 15. 持久化 assistant 消息
-          this.persistSDKMessages(sessionId, accumulatedMessages, Date.now() - queryStartedAt)
+          // 15. 持久化 assistant 消息（始终冲刷 residual partial，防止过程正文仅存在于流式快照）
+          flushPartialAssistantsToAccumulated(latestPartialAssistants, accumulatedMessages, knownToolUseIds)
+          const stopDurationMs = Math.max(0, Date.now() - streamStartedAt)
+          this.persistSDKMessages(sessionId, accumulatedMessages, {
+            durationMs: stopDurationMs,
+            stoppedByUser: wasStoppedByUser,
+          })
 
-          try { updateAgentSessionMeta(sessionId, wasStoppedByUser ? { stoppedByUser: true } : {}) } catch { /* 忽略 */ }
+          try {
+            updateAgentSessionMeta(sessionId, wasStoppedByUser
+              ? { stoppedByUser: true, lastStopDurationMs: stopDurationMs }
+              : {})
+          } catch { /* 忽略 */ }
 
           if (!wasStoppedByUser && visibleRunMessageCount === 0) {
             const errorContent = this.persistEmptyResponseError(sessionId, capturedResultSubtype, capturedResultErrors)
@@ -1893,8 +2026,16 @@ export class AgentOrchestrator {
             console.log(`[Agent 编排] Plan 模式：已注入计划确认建议`)
           }
 
-          // 发送完成信号
-          completeRun(getAgentSessionMessages(sessionId), { stoppedByUser: wasStoppedByUser, startedAt: streamStartedAt, resultSubtype: capturedResultSubtype, resultErrors: capturedResultErrors })
+          // 发送完成信号前强制同步 Transcript，保证刷新后顺序/正文与 Runtime 一致
+          /* sync-before-complete:normal */
+          await this.syncTranscriptProjectionAfterTurn(sessionId)
+          completeRun(getAgentSessionMessages(sessionId), {
+            stoppedByUser: wasStoppedByUser,
+            startedAt: streamStartedAt,
+            resultSubtype: capturedResultSubtype,
+            resultErrors: capturedResultErrors,
+            lastStopDurationMs: wasStoppedByUser ? stopDurationMs : undefined,
+          })
 
           break  // 成功完成，退出重试循环
 
@@ -1908,14 +2049,29 @@ export class AgentOrchestrator {
             console.error(`[Agent 编排] stderr 为空`)
           }
 
-          // 用户主动中止
-          if (!this.activeSessions.has(sessionId)) {
+          // 用户主动中止：stop() 会先写入 stoppedBySessions，activeSessions 可能尚未释放
+          if (this.stoppedBySessions.has(sessionId) || !this.activeSessions.has(sessionId)) {
             const wasStoppedByUser = this.consumeStoppedByUser(sessionId)
             console.log(`[Agent 编排] 会话 ${sessionId} 已被用户中止`)
-            this.persistSDKMessages(sessionId, accumulatedMessages, Date.now() - queryStartedAt)
+            flushPartialAssistantsToAccumulated(latestPartialAssistants, accumulatedMessages, knownToolUseIds)
+            const stopDurationMs = Math.max(0, Date.now() - streamStartedAt)
+            this.persistSDKMessages(sessionId, accumulatedMessages, {
+              durationMs: stopDurationMs,
+              stoppedByUser: wasStoppedByUser,
+            })
             // 持久化中断状态到会话 meta
-            try { updateAgentSessionMeta(sessionId, { stoppedByUser: wasStoppedByUser }) } catch { /* 会话可能已删除 */ }
-            completeRun(getAgentSessionMessages(sessionId), { stoppedByUser: wasStoppedByUser, startedAt: streamStartedAt })
+            try {
+              updateAgentSessionMeta(sessionId, wasStoppedByUser
+                ? { stoppedByUser: true, lastStopDurationMs: stopDurationMs }
+                : { stoppedByUser: false })
+            } catch { /* 会话可能已删除 */ }
+            /* sync-before-complete:catch-user-abort */
+            await this.syncTranscriptProjectionAfterTurn(sessionId)
+            completeRun(getAgentSessionMessages(sessionId), {
+              stoppedByUser: wasStoppedByUser,
+              startedAt: streamStartedAt,
+              lastStopDurationMs: wasStoppedByUser ? stopDurationMs : undefined,
+            })
             return
           }
 

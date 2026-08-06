@@ -4,6 +4,7 @@ import {
   annotateCcbFinalAssistantMessage,
   applyCcbPartialAssistantEvent,
   createCcbPartialAssistantState,
+  finalizeCcbPartialAssistantMessage,
 } from './ccb-partial-assistant'
 
 function streamEvent(event: Record<string, unknown>): SDKMessage {
@@ -241,6 +242,164 @@ describe('CCB 思考过程增量快照', () => {
 
     expect(first.message).toMatchObject({ _partialBlockIndex: 0 })
     expect(second.message).toMatchObject({ _partialBlockIndex: 2 })
+  })
+
+  test('Given 用户中断且仍有未完成正文 When Turn 结束固化 Then 过程正文按序保留可落盘', () => {
+    // 复现暂停丢正文场景：两条过程正文仍在 partial 中，CCB 不再补发最终消息
+    let state = createCcbPartialAssistantState()
+    for (const event of [
+      { type: 'message_start', message: { id: 'msg-stop', model: 'deepseek-v4-flash' } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: '我来直接探索代码库分析登录流程。' } },
+      { type: 'content_block_stop', index: 0 },
+      { type: 'content_block_delta', index: 1, delta: { type: 'text_delta', text: '登录逻辑集中在 lib/features/auth/。' } },
+      // 注意：index 1 未收到 content_block_stop（暂停瞬间仍在流式输出）
+    ]) {
+      state = applyCcbPartialAssistantEvent(state, streamEvent(event)).state
+    }
+
+    const update = finalizeCcbPartialAssistantMessage(state)
+
+    expect(update.message).toBeDefined()
+    expect(update.message).toMatchObject({
+      type: 'assistant',
+      uuid: 'ccb-finalized:msg-stop',
+    })
+    // 不带 _partial：编排器必须把它当最终消息落盘
+    expect((update.message as Record<string, unknown>)?._partial).toBeUndefined()
+    const content = (update.message as { message?: { content?: Array<Record<string, unknown>> } })
+      ?.message?.content ?? []
+    expect(content).toEqual([
+      { type: 'text', text: '我来直接探索代码库分析登录流程。' },
+      { type: 'text', text: '登录逻辑集中在 lib/features/auth/。' },
+    ])
+    // 固化后清空，避免重复推送
+    expect(update.state.blocks.size).toBe(0)
+  })
+
+
+  test('Given 过程正文仍在 partial When 下一条 message_start 到达 Then 先固化旧正文再重置', () => {
+    // 复现 deepseek 拆消息：正文流式后直接开 tool_use 新消息，旧正文不得蒸发
+    let state = createCcbPartialAssistantState()
+    state = applyCcbPartialAssistantEvent(state, streamEvent({
+      type: 'message_start',
+      message: { id: 'msg-text', model: 'deepseek-v4-flash' },
+    })).state
+    state = applyCcbPartialAssistantEvent(state, streamEvent({
+      type: 'content_block_delta',
+      index: 0,
+      delta: { type: 'text_delta', text: '我来直接分析登录流程的代码。先看看项目结构' },
+    })).state
+
+    const update = applyCcbPartialAssistantEvent(state, streamEvent({
+      type: 'message_start',
+      message: { id: 'msg-tool', model: 'deepseek-v4-flash' },
+    }))
+
+    expect(update.message).toBeDefined()
+    expect((update.message as Record<string, unknown>)?._partial).toBeUndefined()
+    expect(update.message).toMatchObject({
+      type: 'assistant',
+      uuid: 'ccb-finalized:msg-text',
+    })
+    const content = (update.message as { message?: { content?: Array<Record<string, unknown>> } })
+      ?.message?.content ?? []
+    expect(content).toEqual([
+      { type: 'text', text: '我来直接分析登录流程的代码。先看看项目结构' },
+    ])
+    // 新消息状态已重置，旧 blocks 不残留
+    expect(update.state.messageId).toBe('msg-tool')
+    expect(update.state.blocks.size).toBe(0)
+  })
+
+  test('Given 无 messageId 或无可见内容 When Turn 结束固化 Then 不伪造消息', () => {
+    // 空状态（暂停时模型还没产出任何内容）
+    expect(finalizeCcbPartialAssistantMessage(createCcbPartialAssistantState()).message)
+      .toBeUndefined()
+
+    // 只有空 thinking block（无可见内容）
+    let state = createCcbPartialAssistantState()
+    for (const event of [
+      { type: 'message_start', message: { id: 'msg-empty', model: 'deepseek-v4-flash' } },
+      { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } },
+    ]) {
+      state = applyCcbPartialAssistantEvent(state, streamEvent(event)).state
+    }
+    expect(finalizeCcbPartialAssistantMessage(state).message).toBeUndefined()
+  })
+
+  test('Given tool_use 流式块 When 增量输入 JSON Then 生成可渲染的工具快照', () => {
+    let state = createCcbPartialAssistantState()
+    let message: SDKMessage | undefined
+    for (const event of [
+      { type: 'message_start', message: { id: 'msg-tool', model: 'deepseek-v4-flash' } },
+      {
+        type: 'content_block_start',
+        index: 1,
+        content_block: { type: 'tool_use', id: 'call_read_1', name: 'Read', input: {} },
+      },
+      {
+        type: 'content_block_delta',
+        index: 1,
+        delta: { type: 'input_json_delta', partial_json: '{"file_path":"' },
+      },
+      {
+        type: 'content_block_delta',
+        index: 1,
+        delta: { type: 'input_json_delta', partial_json: '/tmp/a.dart"}' },
+      },
+    ]) {
+      const update = applyCcbPartialAssistantEvent(state, streamEvent(event))
+      state = update.state
+      if (update.message) message = update.message
+    }
+
+    expect(message).toMatchObject({
+      type: 'assistant',
+      _partial: true,
+      message: {
+        content: [{
+          type: 'tool_use',
+          id: 'call_read_1',
+          name: 'Read',
+          input: { file_path: '/tmp/a.dart' },
+        }],
+      },
+    })
+    // 内部累积字段不应泄漏到消息 content
+    expect((message as any).message.content[0]._inputJson).toBeUndefined()
+  })
+
+  test('Given tool_use 仍在 partial When Turn 结束固化 Then 保留工具调用块', () => {
+    let state = createCcbPartialAssistantState()
+    for (const event of [
+      { type: 'message_start', message: { id: 'msg-tool-stop', model: 'deepseek-v4-flash' } },
+      {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'tool_use', id: 'call_glob_1', name: 'Glob', input: {} },
+      },
+      {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'input_json_delta', partial_json: '{"pattern":"**/*.dart"}' },
+      },
+    ]) {
+      state = applyCcbPartialAssistantEvent(state, streamEvent(event)).state
+    }
+
+    const update = finalizeCcbPartialAssistantMessage(state)
+    expect(update.message).toMatchObject({
+      type: 'assistant',
+      message: {
+        id: 'msg-tool-stop',
+        content: [{
+          type: 'tool_use',
+          id: 'call_glob_1',
+          name: 'Glob',
+          input: { pattern: '**/*.dart' },
+        }],
+      },
+    })
   })
 })
 

@@ -3,6 +3,9 @@ import { Check, Circle, CircleAlert, Loader2 } from 'lucide-react'
 import { useAtomValue, useSetAtom } from 'jotai'
 import type { AgentRuntimeTodoItem, AgentTurnChangeStats, AgentTurnChangedFile } from '@proma/shared'
 import {
+  allPendingAskUserRequestsAtom,
+  allPendingExitPlanRequestsAtom,
+  allPendingPermissionRequestsAtom,
   agentDiffRefreshVersionAtom,
   agentRuntimeExecutionGraphAtomFamily,
   agentRuntimePlanLifecycleAtom,
@@ -140,11 +143,12 @@ export function shouldShowRuntimeTodoProgress(
       status: 'running' | 'success' | 'noop' | 'failed'
     }
   },
-  interruptedPlanVisible: boolean = false,
+  hasBlockingRequest: boolean = false,
 ): boolean {
   if (!hasActiveRuntimeTodos(todos)) return false
-  if (streamState?.running !== true && !interruptedPlanVisible) return false
+  if (streamState?.running !== true) return false
   if (shouldSuppressAgentRunningIndicator(streamState)) return false
+  if (hasBlockingRequest) return false
   return true
 }
 
@@ -278,6 +282,14 @@ export function RuntimeTodoHoverProgress({
   const planPanelWindowed = todos.length > PLAN_PANEL_MAX_VISIBLE_ITEMS
   const previousPlanScrollWindowRef = React.useRef<RuntimePlanScrollWindowState | null>(null)
   const streamingState = useAtomValue(agentSessionStreamingStateAtomFamily(sessionId))
+  const pendingPermissionRequests = useAtomValue(allPendingPermissionRequestsAtom)
+  const pendingAskUserRequests = useAtomValue(allPendingAskUserRequestsAtom)
+  const pendingExitPlanRequests = useAtomValue(allPendingExitPlanRequestsAtom)
+  const hasBlockingRequest = (
+    (pendingPermissionRequests.get(sessionId)?.length ?? 0) > 0
+    || (pendingAskUserRequests.get(sessionId)?.length ?? 0) > 0
+    || (pendingExitPlanRequests.get(sessionId)?.length ?? 0) > 0
+  )
   const currentRunStartedAt = streamingState?.startedAt
   const isStreaming = streamingState?.running === true
   const planActivelyRunning = (
@@ -381,8 +393,7 @@ export function RuntimeTodoHoverProgress({
   const showRuntimeTodoProgress = shouldShowRuntimeTodoProgress(
     todos,
     streamingState,
-    planLifecycle?.current?.status === 'interrupted'
-      && planLifecycle.current.visible,
+    hasBlockingRequest,
   )
 
   React.useEffect(() => {

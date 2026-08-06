@@ -6,7 +6,7 @@
 
 import * as React from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
-import { PanelRightClose, Plus, X } from 'lucide-react'
+import { PanelRightClose, Plus, Terminal, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { WINDOW_CONTROLS_INSET_RIGHT } from '@/lib/platform'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
@@ -14,6 +14,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import {
   agentDiffUnseenChangesAtom,
   isAgentExecutionNodeTab,
+  isAgentTerminalTab,
   currentAgentSessionIdAtom,
 } from '@/atoms/agent-atoms'
 import type {
@@ -21,14 +22,15 @@ import type {
   AgentSidePanelTab,
 } from '@/atoms/agent-atoms'
 import { interfaceVariantAtom } from '@/atoms/theme'
+import type { AgentSidePanelAddTab } from '@/lib/agent-side-panel-tabs'
 
 interface DiffPanelTabBarProps {
   activeTab: AgentSidePanelTab
   openTabs: AgentSidePanelTab[]
-  availableTabs: AgentSidePanelStaticTab[]
+  availableTabs: AgentSidePanelAddTab[]
   onTabChange: (tab: AgentSidePanelTab) => void
   onTabClose: (tab: AgentSidePanelTab) => void
-  onTabAdd: (tab: AgentSidePanelStaticTab) => void
+  onTabAdd: (tab: AgentSidePanelAddTab) => void
   onTabReorder: (source: AgentSidePanelTab, target: AgentSidePanelTab) => void
   getTabLabel?: (tab: AgentSidePanelTab) => string | undefined
   onClose?: () => void
@@ -47,6 +49,11 @@ export const AGENT_SIDE_PANEL_TAB_LABELS: Record<AgentSidePanelStaticTab, string
   plan: '计划',
   execution: '子智能体',
   chat: '问答',
+}
+
+const AGENT_SIDE_PANEL_ADD_TAB_LABELS: Record<AgentSidePanelAddTab, string> = {
+  ...AGENT_SIDE_PANEL_TAB_LABELS,
+  terminal: '终端',
 }
 
 export function DiffPanelTabBar({
@@ -102,9 +109,8 @@ export function DiffPanelTabBar({
     onTabChange(tab)
   }, [clearUnseen, onTabChange])
   const resolveTabLabel = React.useCallback((tab: AgentSidePanelTab): string => {
-    if (isAgentExecutionNodeTab(tab)) {
-      return getTabLabel?.(tab) ?? '执行节点'
-    }
+    if (isAgentExecutionNodeTab(tab)) return getTabLabel?.(tab) ?? '执行节点'
+    if (isAgentTerminalTab(tab)) return getTabLabel?.(tab) ?? '终端'
     return AGENT_SIDE_PANEL_TAB_LABELS[tab]
   }, [getTabLabel])
 
@@ -146,6 +152,7 @@ export function DiffPanelTabBar({
                   onClick={() => handleTabChange(tab)}
                 >
                   <span className="flex items-center justify-center gap-1 truncate">
+                    {isAgentTerminalTab(tab) && <Terminal className="size-3 shrink-0" />}
                     {tab === 'changes' && unseenChanges && activeTab !== 'changes' && (
                       <span className="size-2 shrink-0 rounded-full bg-primary ring-1 ring-background" />
                     )}
@@ -188,7 +195,7 @@ export function DiffPanelTabBar({
                   setAddMenuOpen(false)
                 }}
               >
-                {AGENT_SIDE_PANEL_TAB_LABELS[tab]}
+                {AGENT_SIDE_PANEL_ADD_TAB_LABELS[tab]}
               </button>
             ))}
           </PopoverContent>

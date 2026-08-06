@@ -521,7 +521,7 @@ describe('会话悬浮面板运行时生命周期', () => {
 
 describe('finalizeOrphanedRuntimeExecutionNodes 历史孤儿节点收敛', () => {
   test('Given 历史节点仍 running 且权威实时图已不再包含它 When 收敛 Then 标记为 stopped', () => {
-    const previous = [{
+    const previous: AgentRuntimeExecutionNode[] = [{
       id: 'ghost-subagent',
       kind: 'subagent' as const,
       name: '已消失的子智能体',
@@ -544,7 +544,7 @@ describe('finalizeOrphanedRuntimeExecutionNodes 历史孤儿节点收敛', () =>
       },
     )
     expect(next).toEqual([{
-      ...previous[0],
+      ...previous[0]!,
       status: 'stopped',
       completedAt: 1234,
       summary: '执行节点已从 Runtime 消失（可能已结束或异常退出）',

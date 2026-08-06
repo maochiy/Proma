@@ -565,7 +565,7 @@ export async function getGitTreeChangeStats(
 }
 
 /** 查找 Git 仓库根目录，先向上后向下搜索，失败返回 null */
-async function findGitRoot(baseDir: string): Promise<string | null> {
+export async function findGitRoot(baseDir: string): Promise<string | null> {
   const roots = await findAllGitRoots(baseDir)
   return roots[0] ?? null
 }

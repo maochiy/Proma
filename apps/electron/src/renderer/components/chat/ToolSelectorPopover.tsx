@@ -2,7 +2,8 @@
  * ToolSelectorPopover - 工具选择器弹出层
  *
  * 在 ChatInput footer 中显示工具开关列表。
- * 用户可以快速启用/禁用工具（记忆、联网搜索等）。
+ * 用户可以快速启用/禁用工具（联网搜索、记忆、生图等）。
+ * 联网搜索默认开启；可用性依赖 OpenSwitch 登录，无需配置 API Key。
  * 类似 ContextSettingsPopover 的交互方式。
  */
 
@@ -123,7 +124,7 @@ export function ToolSelectorPopover(): React.ReactElement {
                       </span>
                       {!canToggle && (
                         <span className="text-[10px] text-muted-foreground shrink-0">
-                          需配置
+                          {tool.meta.id === 'web-search' ? '需登录' : '需配置'}
                         </span>
                       )}
                     </div>

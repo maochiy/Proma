@@ -122,8 +122,12 @@ export function getEnabledTools(enabledToolIds?: string[]): EnabledToolsResult {
     const toolId = entry.meta.id
     const state = config.toolStates[toolId]
 
-    // 检查工具是否启用（前端开关 + 配置开关）
-    const isEnabledByUser = enabledToolIds ? enabledToolIds.includes(toolId) : (state?.enabled ?? false)
+    // 配置开关（对话工具面板写入 chat-tools.json）
+    const configEnabled = state?.enabled ?? toolId === 'web-search'
+    // 前端传入的启用列表与配置取交集：关闭开关后即使模型侧残留也不会注入
+    const isEnabledByUser = enabledToolIds
+      ? enabledToolIds.includes(toolId) && configEnabled
+      : configEnabled
     if (!isEnabledByUser) continue
 
     // 检查工具是否可用（凭据已配置）
@@ -176,7 +180,8 @@ export function getAllToolInfos(): ChatToolInfo[] {
 
     infos.push({
       meta: entry.meta,
-      enabled: state?.enabled ?? false,
+      // 联网搜索默认开启；其余工具缺省关闭
+      enabled: state?.enabled ?? (toolId === 'web-search'),
       available: entry.checkAvailable(),
     })
   }

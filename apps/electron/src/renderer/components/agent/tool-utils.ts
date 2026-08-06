@@ -52,6 +52,8 @@ export const TOOL_ICONS: Record<string, LucideIcon> = {
   Task: GitBranch,
   WebFetch: Download,
   WebSearch: Globe,
+  'mcp__web_search__WebFetch': Download,
+  'mcp__web_search__WebSearch': Globe,
   NotebookEdit: BookOpen,
   Skill: Zap,
   TodoWrite: ListChecks,
@@ -105,6 +107,8 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   Task: '任务工具',
   WebFetch: '抓取网页',
   WebSearch: '搜索网页',
+  'mcp__web_search__WebFetch': '抓取网页',
+  'mcp__web_search__WebSearch': '搜索网页',
   NotebookEdit: '编辑笔记本',
   Skill: '使用技能',
   TodoWrite: '更新待办',
@@ -184,7 +188,8 @@ export function getInputSummary(
       return null
     }
 
-    case 'WebFetch': {
+    case 'WebFetch':
+    case 'mcp__web_search__WebFetch': {
       const url = input.url
       if (typeof url === 'string') {
         return url.length > 60 ? url.slice(0, 60) + '…' : url
@@ -192,7 +197,8 @@ export function getInputSummary(
       return null
     }
 
-    case 'WebSearch': {
+    case 'WebSearch':
+    case 'mcp__web_search__WebSearch': {
       const query = input.query
       if (typeof query === 'string') {
         return query.length > 60 ? query.slice(0, 60) + '…' : query

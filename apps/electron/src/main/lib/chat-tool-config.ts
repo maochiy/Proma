@@ -15,7 +15,8 @@ const DEFAULT_CONFIG: ChatToolsFileConfig = {
   toolStates: {
     memory: { enabled: true },
     'agent-mode-recommend': { enabled: true },
-    'web-search': { enabled: false },
+    // 对话工具面板可开关；登录 OpenSwitch 后可用，默认开启
+    'web-search': { enabled: true },
     'nano-banana': { enabled: false },
   },
   toolCredentials: {},
@@ -34,12 +35,44 @@ export function getChatToolsConfig(): ChatToolsFileConfig {
 
   try {
     const raw = readFileSync(filePath, 'utf-8')
-    const data = JSON.parse(raw) as Partial<ChatToolsFileConfig>
-    return {
-      toolStates: { ...DEFAULT_CONFIG.toolStates, ...data.toolStates },
-      toolCredentials: data.toolCredentials ?? {},
+    const data = JSON.parse(raw) as Partial<ChatToolsFileConfig> & {
+      /** 是否已从 Tavily 配置模型迁移到 OpenSwitch 默认开启 */
+      openswitchWebSearchMigrated?: boolean
+    }
+    const toolStates = { ...DEFAULT_CONFIG.toolStates, ...data.toolStates }
+    const toolCredentials = { ...(data.toolCredentials ?? {}) }
+    let needsSave = false
+
+    // 清理历史 Tavily API Key（不再需要手动配置）
+    if (toolCredentials['web-search']) {
+      delete toolCredentials['web-search']
+      needsSave = true
+    }
+
+    // 一次性迁移：旧版默认关闭 / 缺失 → 新默认开启；之后尊重用户在对话工具面板的开关
+    if (!data.openswitchWebSearchMigrated) {
+      toolStates['web-search'] = { enabled: true }
+      needsSave = true
+    } else if (!toolStates['web-search']) {
+      toolStates['web-search'] = { enabled: true }
+    }
+
+    const config: ChatToolsFileConfig = {
+      toolStates,
+      toolCredentials,
       customTools: data.customTools ?? [],
     }
+
+    if (needsSave) {
+      // 额外写入迁移标记，避免每次启动覆盖用户关闭态
+      writeFileSync(
+        filePath,
+        JSON.stringify({ ...config, openswitchWebSearchMigrated: true }, null, 2),
+        'utf-8',
+      )
+    }
+
+    return config
   } catch (error) {
     console.error('[Chat 工具配置] 读取失败:', error)
     return structuredClone(DEFAULT_CONFIG)
@@ -52,7 +85,12 @@ export function getChatToolsConfig(): ChatToolsFileConfig {
 export function saveChatToolsConfig(config: ChatToolsFileConfig): void {
   const filePath = getChatToolsConfigPath()
   try {
-    writeFileSync(filePath, JSON.stringify(config, null, 2), 'utf-8')
+    // 始终带上迁移标记，避免用户关闭开关后下次启动被重置
+    writeFileSync(
+      filePath,
+      JSON.stringify({ ...config, openswitchWebSearchMigrated: true }, null, 2),
+      'utf-8',
+    )
     console.log('[Chat 工具配置] 已保存')
   } catch (error) {
     console.error('[Chat 工具配置] 保存失败:', error)

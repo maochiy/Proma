@@ -659,8 +659,8 @@ describe('RuntimeTodoHoverProgress 计划进度卡片', () => {
       running: false,
     })).toBe(false)
     expect(shouldShowRuntimeTodoProgress(todos, {
-      running: false,
-    }, true)).toBe(true)
+      running: true,
+    }, true)).toBe(false)
     expect(shouldShowRuntimeTodoProgress(todos, {
       running: true,
       isCompacting: true,
