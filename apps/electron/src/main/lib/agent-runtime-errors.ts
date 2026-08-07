@@ -66,7 +66,7 @@ function extractHttpStatusFromErrorText(...messages: string[]): number | null {
   const patterns = [
     /API Error:\s*(\d{3})/i,
     /API error[^:]*:\s+(\d{3})/i,
-    /\b(?:HTTP|status|statusCode)\s*[:=]?\s*(\d{3})\b/i,
+    /\b(?:HTTP|status|statusCode|status[_ ]?code)\s*[:=]?\s*(\d{3})\b/i,
     /\b(\d{3})\s+\{[^}]*"error"/is,
   ]
 
@@ -77,6 +77,46 @@ function extractHttpStatusFromErrorText(...messages: string[]): number | null {
   }
 
   return null
+}
+
+/**
+ * 从 Runtime/API 文本中提取真正的上游错误。
+ *
+ * 不同版本的 CCB 可能分别返回：
+ * - `API Error: 400 {"error":{"message":"..."}}`
+ * - `status_code=400, ...`
+ * - 已经被网关展开的普通文本。
+ * 统一处理后，用户在会话里能看到具体原因，而不是只有泛化的执行失败。
+ */
+function parseProviderErrorText(text: string): string {
+  const normalized = text.trim()
+  if (!normalized) return '未知错误'
+
+  const jsonStart = normalized.indexOf('{')
+  const jsonEnd = normalized.lastIndexOf('}')
+  if (jsonStart >= 0 && jsonEnd > jsonStart) {
+    try {
+      const payload = JSON.parse(normalized.slice(jsonStart, jsonEnd + 1)) as {
+        error?: { message?: unknown }
+        message?: unknown
+      }
+      if (typeof payload.error?.message === 'string' && payload.error.message.trim()) {
+        return payload.error.message.trim()
+      }
+      if (typeof payload.message === 'string' && payload.message.trim()) {
+        return payload.message.trim()
+      }
+    } catch {
+      // 响应体不是完整 JSON 时，继续使用下方的文本规则。
+    }
+  }
+
+  const statusCodeMessage = normalized.match(
+    /\bstatus[_ ]?code\s*[:=]\s*\d{3}\s*[,：:\-]?\s*(.+)$/is,
+  )
+  if (statusCodeMessage?.[1]?.trim()) return statusCodeMessage[1].trim()
+
+  return normalized
 }
 
 export function mapSDKErrorToTypedError(
@@ -213,6 +253,27 @@ export function mapSDKErrorToTypedError(
   }
 
   const httpStatus = extractHttpStatusFromErrorText(detailedMessage, originalError)
+  // 4xx（除认证类状态码外）是请求协议/参数或模型配置问题，不应进入自动重试。
+  // 例如 OpenAI 兼容网关返回的：
+  // `status_code=400, Input required: specify "prompt" or "messages"`。
+  if (httpStatus != null && httpStatus >= 400 && httpStatus < 500) {
+    const isAuthenticationError = httpStatus === 401 || httpStatus === 403
+    return {
+      code: isAuthenticationError ? 'invalid_api_key' : 'invalid_request',
+      title: isAuthenticationError ? '认证失败' : '请求无效',
+      message: detailedMessage || `API 请求被拒绝 (${httpStatus})`,
+      actions: [
+        {
+          key: isAuthenticationError ? 's' : 'm',
+          label: isAuthenticationError ? '打开渠道设置' : '重新选择模型',
+          action: isAuthenticationError ? 'settings' : 'select_model',
+        },
+      ],
+      canRetry: false,
+      originalError,
+    }
+  }
+
   if (httpStatus != null && (httpStatus === 429 || httpStatus >= 500)) {
     const isRateLimited = httpStatus === 429
     const isUnavailable = httpStatus === 503
@@ -273,8 +334,8 @@ export function extractErrorDetails(msg: {
   error?: { message: string }
   message?: { content?: Array<Record<string, unknown>> }
 }): { detailedMessage: string; originalError: string } {
-  let detailedMessage = msg.error?.message ?? '未知错误'
   let originalError = msg.error?.message ?? '未知错误'
+  let detailedMessage = parseProviderErrorText(originalError)
 
   try {
     const content = msg.message?.content
@@ -283,21 +344,7 @@ export function extractErrorDetails(msg: {
       if (textBlock && 'text' in textBlock && typeof textBlock.text === 'string') {
         const fullText = textBlock.text
         originalError = fullText
-        const apiErrorMatch = fullText.match(/API Error:\s*\d+\s*(\{.*\})/s)
-        if (apiErrorMatch?.[1]) {
-          try {
-            const apiErrorObj = JSON.parse(apiErrorMatch[1]) as {
-              error?: { message?: unknown }
-            }
-            detailedMessage = typeof apiErrorObj.error?.message === 'string'
-              ? apiErrorObj.error.message
-              : fullText
-          } catch {
-            detailedMessage = fullText
-          }
-        } else {
-          detailedMessage = fullText
-        }
+        detailedMessage = parseProviderErrorText(fullText)
       }
     }
   } catch {

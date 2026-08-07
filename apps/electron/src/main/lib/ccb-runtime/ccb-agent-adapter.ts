@@ -597,7 +597,7 @@ export class CcbDesktopRuntimeAdapter implements AgentProviderAdapter {
     }
 
     console.log(
-      `[CCB Runtime] 打开 Session 配置: session=${options.sessionId}, model=${options.model ?? 'CCB 默认'}, effort=${options.effortLevel ?? 'CCB 默认'}`,
+      `[CCB Runtime] 打开 Session 配置: session=${options.sessionId}, model=${options.model ?? 'CCB 默认'}, effort=${options.effortLevel ?? 'CCB 默认'}, runtime=${ccbDesktopRuntimeClient.getRuntimeInfo()?.runtimeVersion ?? 'unknown'}`,
     )
     const openResult = await ccbDesktopRuntimeClient.request<{
       runtimeSessionId: string

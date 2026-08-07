@@ -211,6 +211,63 @@ describe('SDK 压缩状态分组', () => {
   })
 })
 
+describe('结构化错误独立展示', () => {
+  test('Given 已产生思考、工具和正文 When 执行错误追加 Then 错误单独成为下一行且前置内容保留', () => {
+    const raw = jsonl([
+      { type: 'user', message: { content: [{ type: 'text', text: '执行任务' }] }, parent_tool_use_id: null },
+      {
+        type: 'assistant',
+        message: {
+          id: 'a1',
+          content: [
+            { type: 'thinking', thinking: '先分析一下' },
+            { type: 'text', text: '已完成前置处理' },
+            { type: 'tool_use', id: 'tool-1', name: 'Read', input: { file_path: '/tmp/a' } },
+          ],
+        },
+        parent_tool_use_id: null,
+        _channelModelId: 'gpt-luna',
+      },
+      {
+        type: 'user',
+        message: { content: [{ type: 'tool_result', tool_use_id: 'tool-1', content: '读取完成' }] },
+        parent_tool_use_id: null,
+      },
+      {
+        type: 'assistant',
+        message: { id: 'a2', content: [{ type: 'text', text: '正在继续处理' }] },
+        parent_tool_use_id: null,
+        _channelModelId: 'gpt-luna',
+      },
+      {
+        type: 'assistant',
+        message: { content: [{ type: 'text', text: '请求无效：Input required: specify "prompt" or "messages"' }] },
+        parent_tool_use_id: null,
+        uuid: 'error-1',
+        error: { message: 'Input required: specify "prompt" or "messages"', errorType: 'invalid_request' },
+        _errorCode: 'invalid_request',
+        _errorTitle: '请求无效',
+        _channelModelId: 'gpt-luna',
+      },
+    ])
+
+    const groups = groupIntoTurns(readSessionMessagesFromString(raw))
+
+    expect(groups.map((group) => group.type)).toEqual(['user', 'assistant-turn', 'assistant-turn'])
+    expect(groups[1]).toMatchObject({
+      type: 'assistant-turn',
+      assistantMessages: [
+        { message: { id: 'a1' } },
+        { message: { id: 'a2' } },
+      ],
+    })
+    expect(groups[2]).toMatchObject({
+      type: 'assistant-turn',
+      assistantMessages: [{ uuid: 'error-1', _errorCode: 'invalid_request' }],
+    })
+  })
+})
+
 describe('旧扁平格式（格式 A）归一', () => {
   const raw = jsonl([
     { id: '1', role: 'user', content: '你好', createdAt: 1 },

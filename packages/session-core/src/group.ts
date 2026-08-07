@@ -91,6 +91,23 @@ export interface AssistantTurn {
   startsAfterWake?: boolean
 }
 
+/**
+ * 编排层生成的结构化错误消息必须成为独立的一行。
+ *
+ * 错误消息可能追加在已经包含思考、正文和工具调用的 assistant turn 后面，
+ * 不能被当作同一条 assistant 气泡继续合并，否则完成事件刷新后用户只能看到
+ * 一闪而过的错误，或者错误会被正文渲染逻辑吞掉。
+ */
+function isStandaloneErrorAssistant(message: SDKMessage): boolean {
+  if (message.type !== 'assistant') return false
+  const record = message as Record<string, unknown>
+  return typeof record._errorCode === 'string' && record._errorCode.length > 0
+}
+
+function isErrorTurn(turn: AssistantTurn): boolean {
+  return turn.assistantMessages.some(isStandaloneErrorAssistant)
+}
+
 export type MessageGroup =
   | { type: 'user'; message: SDKUserMessage }
   | {
@@ -153,6 +170,23 @@ export function groupIntoTurns(messages: SDKMessage[], sessionModelId?: string):
       const aMsg = msg as SDKAssistantMessage
       // 跳过重放消息
       if (aMsg.isReplay) continue
+
+      // 结构化错误是本轮执行结束后的新消息，必须先结束前面的过程 turn，
+      // 再单独创建并立即 flush；这样思考、正文、工具调用和错误都会按顺序保留。
+      if (isStandaloneErrorAssistant(aMsg)) {
+        flushTurn()
+        const meta = extractMeta(msg)
+        currentTurn = {
+          type: 'assistant-turn',
+          assistantMessages: [aMsg],
+          turnMessages: [msg],
+          model: aMsg._channelModelId || aMsg.message?.model || sessionModelId,
+          createdAt: meta.createdAt,
+        }
+        flushTurn()
+        pendingWakeBoundary = false
+        continue
+      }
 
       if (!currentTurn) {
         // 开始新 turn
@@ -278,6 +312,13 @@ function mergeAdjacentSameModelTurns(groups: MessageGroup[]): MessageGroup[] {
       continue
     }
 
+    // 错误消息已经在主分组阶段被拆成独立 turn，不能在后处理中又和前后的
+    // 同模型 assistant turn 合并回去。
+    if (isErrorTurn(group)) {
+      result.push(group)
+      continue
+    }
+
     // 向前查找可合并的同模型 assistant-turn（跳过非 user-input 的中间 group）
     let mergeTargetIdx = -1
     for (let i = result.length - 1; i >= 0; i--) {
@@ -285,6 +326,7 @@ function mergeAdjacentSameModelTurns(groups: MessageGroup[]): MessageGroup[] {
       if (prev.type === 'user') break // 真正的用户输入阻断合并
       if (prev.type === 'system' && isPersistableSDKSystemMessage(prev.message as SDKSystemMessage)) break
       if (prev.type === 'assistant-turn') {
+        if (isErrorTurn(prev)) break
         if (prev.model === group.model) {
           mergeTargetIdx = i
         }

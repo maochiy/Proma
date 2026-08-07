@@ -395,6 +395,22 @@ export class AgentOrchestrator {
         })
       : {}
 
+    // 只记录路由信息，不记录 API Key；排查兼容网关时需要确认实际协议和端点。
+    const logBaseUrl = (value: string | undefined): string => {
+      if (!value) return '默认端点'
+      try {
+        const url = new URL(value)
+        return `${url.origin}${url.pathname}`
+      } catch {
+        return '[无效 Base URL]'
+      }
+    }
+    console.log(
+      `[Agent 编排] CCB Provider 路由: provider=${provider ?? 'native'}, model=${modelId ?? '默认'}, `
+      + `modelType=${providerEnvironment.CLAUDE_CODE_USE_OPENAI === '1' ? 'openai-chat-completions' : providerEnvironment.CLAUDE_CODE_USE_GEMINI === '1' ? 'gemini' : 'anthropic'}, `
+      + `baseUrl=${logBaseUrl(providerEnvironment.OPENAI_BASE_URL ?? providerEnvironment.ANTHROPIC_BASE_URL ?? providerEnvironment.GEMINI_BASE_URL)}`,
+    )
+
     const ccbEnv: Record<string, string | undefined> = {
       ...cleanEnv,
       ...providerEnvironment,
@@ -742,8 +758,15 @@ export class AgentOrchestrator {
   ): string {
     const detail = resultErrors?.find((error) => error.trim().length > 0)?.trim()
     const subtype = resultSubtype ?? 'unknown'
+    const typedError = detail
+      ? mapSDKErrorToTypedError(
+          'unknown_error',
+          extractErrorDetails({ error: { message: detail } }).detailedMessage,
+          detail,
+        )
+      : undefined
     const errorContent = detail
-      ? `Agent 本轮结束了，但没有返回任何可展示内容。错误详情：${detail}`
+      ? `${typedError?.title ? `${typedError.title}：` : ''}${typedError?.message ?? detail}`
       : resultSubtype === 'success'
         ? 'Agent 本轮结束了，但没有返回任何可展示内容。你的消息已保留，可以直接重试或切换模型。'
         : `Agent 本轮异常结束（${subtype}），但没有返回任何可展示内容。你的消息已保留，可以直接重试或切换模型。`
@@ -754,19 +777,52 @@ export class AgentOrchestrator {
       },
       parent_tool_use_id: null,
       uuid: randomUUID(),
-      error: { message: errorContent, errorType: EMPTY_RESPONSE_RESULT_SUBTYPE },
+      error: { message: typedError?.message ?? errorContent, errorType: typedError?.code ?? EMPTY_RESPONSE_RESULT_SUBTYPE },
       _createdAt: Date.now(),
-      _errorCode: 'unknown_error',
-      _errorTitle: '没有收到模型回复',
-      _errorCanRetry: true,
-      _errorActions: [
+      _errorCode: typedError?.code ?? 'unknown_error',
+      _errorTitle: typedError?.title || '没有收到模型回复',
+      _errorDetails: typedError && typedError.originalError !== typedError.message
+        ? [typedError.originalError ?? detail ?? '']
+        : undefined,
+      _errorCanRetry: typedError?.canRetry ?? true,
+      _errorActions: typedError?.actions ?? [
         { key: 'r', label: '重试', action: 'retry' },
         { key: 'm', label: '重新选择模型', action: 'select_model' },
       ],
     } as unknown as SDKMessage
     appendSDKMessages(sessionId, [errorSDKMsg])
-    console.warn(`[Agent 编排] 本轮没有收到可展示内容: sessionId=${sessionId}, resultSubtype=${subtype}`)
+    console.warn(`[Agent 编排] 本轮没有收到可展示内容: sessionId=${sessionId}, resultSubtype=${subtype}, detail=${detail ?? '无'}`)
     return errorContent
+  }
+
+  /** result.errors[] 可能在已有正文之后才出现，不能只发 Toast。 */
+  private persistResultError(
+    sessionId: string,
+    resultSubtype: string | undefined,
+    resultErrors: string[] | undefined,
+  ): void {
+    if (resultSubtype !== 'error_during_execution') return
+    const detail = resultErrors?.find((error) => error.trim().length > 0)?.trim()
+    if (!detail) return
+
+    const extracted = extractErrorDetails({ error: { message: detail } })
+    const typedError = mapSDKErrorToTypedError('unknown_error', extracted.detailedMessage, extracted.originalError)
+    const errorSDKMsg: SDKMessage = {
+      type: 'assistant',
+      message: { content: [{ type: 'text', text: `${typedError.title ? `${typedError.title}：` : ''}${typedError.message}` }] },
+      parent_tool_use_id: null,
+      uuid: randomUUID(),
+      error: { message: typedError.message, errorType: typedError.code },
+      _createdAt: Date.now(),
+      _errorCode: typedError.code,
+      _errorTitle: typedError.title,
+      _errorDetails: typedError.originalError !== typedError.message ? [typedError.originalError ?? detail] : undefined,
+      _errorCanRetry: typedError.canRetry,
+      _errorActions: typedError.actions,
+    } as unknown as SDKMessage
+    appendSDKMessages(sessionId, [errorSDKMsg])
+    this.eventBus.emit(sessionId, { kind: 'sdk_message', message: errorSDKMsg })
+    console.warn(`[Agent 编排] 已持久化 result.errors[]: subtype=${resultSubtype}, detail=${detail}`)
   }
 
   /**
@@ -1777,6 +1833,9 @@ export class AgentOrchestrator {
                     ? `${typedError.title}: ${typedError.message}`
                     : typedError.message
                   console.log(`[Agent 编排] 可重试错误 (assistant error): ${typedError.code} - ${lastRetryableError}`)
+                  // partial 只存在于实时预览中，重试/失败前先固化，避免前面已经显示的
+                  // 思考、正文和工具过程在完成事件刷新后消失。
+                  flushPartialAssistantsToAccumulated(latestPartialAssistants, accumulatedMessages, knownToolUseIds)
                   this.persistSDKMessages(sessionId, accumulatedMessages, Date.now() - queryStartedAt)
                   accumulatedMessages.length = 0
                   // 与 catch 路径（isAutoRetryableCatchError）和思考签名回填路径保持一致：
@@ -1787,6 +1846,7 @@ export class AgentOrchestrator {
                 }
 
                 // 不可重试 → 终止
+                flushPartialAssistantsToAccumulated(latestPartialAssistants, accumulatedMessages, knownToolUseIds)
                 this.persistSDKMessages(sessionId, accumulatedMessages, Date.now() - queryStartedAt)
                 accumulatedMessages.length = 0
                 if (typedError.code === 'prompt_too_long') {
@@ -1944,6 +2004,11 @@ export class AgentOrchestrator {
                 stderrChunks.length = 0
                 shouldRetryFromError = true
                 break
+              }
+              // 有正文后才收到 result.errors[] 时，不能只依赖完成 Toast；将真实原因作为
+              // 独立的 TypedError 消息落盘并推送，刷新会话后仍然可见。
+              if (visibleRunMessageCount > 0) {
+                this.persistResultError(sessionId, capturedResultSubtype, capturedResultErrors)
               }
               if (keptOpenForTasks) {
                 // 轻量完成：UI 置空闲可输入，但 host 保持运行态（不 releaseActiveRun、不 break、不启动 drain 超时），
@@ -2152,6 +2217,9 @@ export class AgentOrchestrator {
               : (error instanceof Error ? error.message : '未知错误')
             console.log(`[Agent 编排] 可重试错误 (catch, attempt ${attempt}/${MAX_AUTO_RETRIES}): ${lastRetryableError}`)
             // 保存部分内容
+            // partial 只存在于实时预览中；进入下一次重试前先固化，避免重试期间
+            // 完成事件/刷新把已经显示的思考和正文清掉。
+            flushPartialAssistantsToAccumulated(latestPartialAssistants, accumulatedMessages, knownToolUseIds)
             this.persistSDKMessages(sessionId, accumulatedMessages, Date.now() - queryStartedAt)
             accumulatedMessages.length = 0
             stderrChunks.length = 0
@@ -2163,6 +2231,9 @@ export class AgentOrchestrator {
           console.error(`[Agent 编排] 执行失败:`, error)
 
           // 保存已累积的部分内容
+          // catch 可能发生在最后一条 assistant partial 之后，必须先将实时 partial
+          // 转成终态消息，再写入 JSONL；否则 UI 刷新后前面的过程内容会蒸发。
+          flushPartialAssistantsToAccumulated(latestPartialAssistants, accumulatedMessages, knownToolUseIds)
           if (accumulatedMessages.length > 0) {
             try {
               this.persistSDKMessages(sessionId, accumulatedMessages, Date.now() - queryStartedAt)
