@@ -20,8 +20,8 @@ import {
 import {
   agentExecutionNodeTranscriptCacheAtom,
   agentSDKMessagesCacheAtom,
-  agentStreamingStatesAtom,
-  liveMessagesMapAtom,
+  agentSessionLiveMessagesAtomFamily,
+  agentSessionStreamingStateAtomFamily,
 } from '@/atoms/agent-atoms'
 import type { SessionExecutionNode } from '@/lib/session-execution-nodes'
 import {
@@ -51,6 +51,8 @@ interface TopLevelTurnBlocks {
   blocks: SDKContentBlock[]
   forcedActivityIndexes: Set<number>
 }
+
+const EMPTY_SDK_MESSAGES: SDKMessage[] = []
 
 function collectTopLevelBlocks(turn: AssistantTurn): TopLevelTurnBlocks {
   const enriched: Array<{
@@ -275,10 +277,15 @@ export function RuntimeExecutionNodePanel({
   const resolvedCacheKey = cacheKey ?? `${sessionId}:${node.id}`
   const transcriptCache = useAtomValue(agentExecutionNodeTranscriptCacheAtom)
   const sdkMessagesCache = useAtomValue(agentSDKMessagesCacheAtom)
-  const liveMessagesMap = useAtomValue(liveMessagesMapAtom)
-  const streamingStates = useAtomValue(agentStreamingStatesAtom)
   const setTranscriptCache = useSetAtom(agentExecutionNodeTranscriptCacheAtom)
   const childSessionId = node.transcriptSessionId
+  const childSessionKey = childSessionId ?? ''
+  const childLiveMessages = useAtomValue(
+    agentSessionLiveMessagesAtomFamily(childSessionKey),
+  )
+  const childStreamState = useAtomValue(
+    agentSessionStreamingStateAtomFamily(childSessionKey),
+  )
   const cachedSessionMessages = childSessionId
     ? sdkMessagesCache.get(childSessionId)
     : undefined
@@ -377,14 +384,11 @@ export function RuntimeExecutionNodePanel({
     }
   }, [canQueryTranscript, loadTranscript, running])
 
-  const childStreamState = childSessionId
-    ? streamingStates.get(childSessionId)
-    : undefined
   const effectiveRunning = running || childStreamState?.running === true
   const presentation = buildSubagentPresentation(node, effectiveRunning)
   const liveMessages = childSessionId
-    ? liveMessagesMap.get(childSessionId) ?? []
-    : []
+    ? childLiveMessages ?? EMPTY_SDK_MESSAGES
+    : EMPTY_SDK_MESSAGES
   const transcriptMessages = React.useMemo(() => {
     const persistedMessages = transcript?.messages ?? []
     if (!effectiveRunning || liveMessages.length === 0) {

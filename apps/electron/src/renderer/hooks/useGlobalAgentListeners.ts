@@ -65,7 +65,7 @@ import { channelsAtom } from '@/atoms/chat-atoms'
 import { previewFileMapAtom } from '@/atoms/preview-atoms'
 import type { NotificationSoundType } from '@/types/settings'
 import { toast } from 'sonner'
-import type { AgentStreamEvent, AgentStreamCompletePayload, AgentEvent, AgentStreamPayload, SDKAssistantMessage, SDKUserMessage, SDKSystemMessage, SDKContentBlock, SDKUserContentBlock, PromaEvent, AgentSessionMeta, AgentRuntimeExecutionGraph, ProviderType } from '@proma/shared'
+import type { AgentStreamEvent, AgentStreamCompletePayload, AgentEvent, AgentStreamPayload, SDKAssistantMessage, SDKUserMessage, SDKSystemMessage, SDKContentBlock, SDKUserContentBlock, SDKMessage, PromaEvent, AgentSessionMeta, AgentRuntimeExecutionGraph, ProviderType } from '@proma/shared'
 import { pickRuntimeReportedContextWindow } from '@proma/shared'
 import { buildExternalAgentRunActivation } from '@/lib/external-agent-run'
 import {
@@ -79,7 +79,7 @@ import {
   notifyAgentCompletion,
 } from '@/lib/agent-completion-presence'
 import { getPlanModeChangeFromToolName, updatePlanModeSessionSet } from '@/lib/agent-plan-mode'
-import { upsertAgentLiveMessage } from '@/lib/agent-live-message'
+import { mergeAgentLiveMessages } from '@/lib/agent-live-message'
 import {
   getExplicitRuntimePlanActivationTodoId,
   runtimePlanStatesFromPersistedStore,
@@ -422,6 +422,51 @@ export function useGlobalAgentListeners(): void {
     const pendingWriteTools = new Map<string, { path: string; sessionId: string }>()
     /** 正在执行的 Shell 工具：toolUseId → sessionId（完成后刷新改动统计和 Diff）。 */
     const pendingShellTools = new Map<string, string>()
+    /** 待合帧的实时 SDK 消息，按 session 隔离，确保后台会话不会阻塞当前会话。 */
+    const pendingLiveMessages = new Map<string, SDKMessage[]>()
+    const liveMessageFlushTimers = new Map<string, number>()
+
+    /**
+     * 将一个 session 的实时消息一次性写入 atom。
+     * 合帧只延迟渲染，不改变消息到达顺序；完成/错误/卸载前会主动 flush。
+     */
+    const flushLiveMessages = (sessionId: string): void => {
+      const timer = liveMessageFlushTimers.get(sessionId)
+      if (timer !== undefined) {
+        window.clearTimeout(timer)
+        liveMessageFlushTimers.delete(sessionId)
+      }
+
+      const pending = pendingLiveMessages.get(sessionId)
+      if (!pending || pending.length === 0) return
+      pendingLiveMessages.delete(sessionId)
+
+      store.set(liveMessagesMapAtom, (prev) => {
+        const current = prev.get(sessionId) ?? []
+        const next = mergeAgentLiveMessages(current, pending)
+        if (next === current) return prev
+        const map = new Map(prev)
+        map.set(sessionId, next)
+        return map
+      })
+    }
+
+    const scheduleLiveMessageFlush = (sessionId: string): void => {
+      if (liveMessageFlushTimers.has(sessionId)) return
+      const timer = window.setTimeout(() => {
+        liveMessageFlushTimers.delete(sessionId)
+        unstable_batchedUpdates(() => {
+          flushLiveMessages(sessionId)
+        })
+      }, 32)
+      liveMessageFlushTimers.set(sessionId, timer)
+    }
+
+    const flushAllLiveMessages = (): void => {
+      for (const sessionId of pendingLiveMessages.keys()) {
+        flushLiveMessages(sessionId)
+      }
+    }
     let runtimePlanStoreLoaded = false
     let runtimePlanSaveTimer: ReturnType<typeof setTimeout> | undefined
     const persistRuntimePlanStore = (): void => {
@@ -804,14 +849,10 @@ export function useGlobalAgentListeners(): void {
               }
             }
 
-            store.set(liveMessagesMapAtom, (prev) => {
-              const map = new Map(prev)
-              const current = map.get(sessionId) ?? []
-              const next = upsertAgentLiveMessage(current, payload.message)
-              if (next === current) return prev
-              map.set(sessionId, next)
-              return map
-            })
+            const pending = pendingLiveMessages.get(sessionId) ?? []
+            pending.push(payload.message)
+            pendingLiveMessages.set(sessionId, pending)
+            scheduleLiveMessageFlush(sessionId)
           }
         }
 
@@ -1090,6 +1131,8 @@ export function useGlobalAgentListeners(): void {
       (data: AgentStreamCompletePayload) => {
         console.log(`[FLASH-DEBUG] STREAM_COMPLETE for session=${data.sessionId.slice(0, 8)}, stoppedByUser=${data.stoppedByUser}, resultSubtype=${data.resultSubtype}`)
         unstable_batchedUpdates(() => {
+        // 完成事件可能早于最后一个 32ms 合帧定时器，先收尾实时消息再刷新持久化投影。
+        flushLiveMessages(data.sessionId)
         // 后台任务等待态：turn 主体结束但仍有后台任务在飞行，UI 进入"空闲可输入"。
         // 不发"任务已完成"通知（任务并未真正完成）、不清后台任务列表、不重载消息——
         // 等后台任务完成时 Agent 会自动唤醒续轮。
@@ -1317,6 +1360,8 @@ export function useGlobalAgentListeners(): void {
     const cleanupError = window.electronAPI.onAgentStreamError(
       (data: { sessionId: string; error: string }) => {
         unstable_batchedUpdates(() => {
+        // 错误路径同样不能遗失定时器中的最后一批思考/正文。
+        flushLiveMessages(data.sessionId)
         console.error('[GlobalAgentListeners] 流式错误:', data.error)
 
         // 存储错误消息
@@ -1433,6 +1478,11 @@ export function useGlobalAgentListeners(): void {
     window.addEventListener('focus', onWindowFocus)
 
     return () => {
+      flushAllLiveMessages()
+      for (const timer of liveMessageFlushTimers.values()) {
+        window.clearTimeout(timer)
+      }
+      liveMessageFlushTimers.clear()
       cleanupEvent()
       cleanupComplete()
       cleanupError()

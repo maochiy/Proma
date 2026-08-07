@@ -7,6 +7,7 @@ import {
   agentRuntimeExecutionGraphAtomFamily,
   agentRuntimeExecutionGraphsAtom,
   agentRuntimeExecutionNodeByToolUseIdAtomFamily,
+  agentSessionLiveMessagesAtomFamily,
   agentSessionsAtom,
   agentSidePanelTabsAtom,
   applyAgentEvent,
@@ -16,10 +17,11 @@ import {
   markAgentFileModifiedAtom,
   mergeAgentRuntimeExecutionGraphAtom,
   recentlyModifiedPathsAtom,
+  liveMessagesMapAtom,
   stabilizeAgentRuntimeExecutionGraph,
   type AgentStreamState,
 } from './agent-atoms'
-import type { AgentSessionMeta } from '@proma/shared'
+import type { AgentSessionMeta, SDKMessage } from '@proma/shared'
 
 function createStreamState(overrides: Partial<AgentStreamState> = {}): AgentStreamState {
   return {
@@ -142,6 +144,35 @@ describe('Agent 上下文压缩状态', () => {
       inputTokens: 180_000,
     })
     expect(result.contextUsageIsEstimated).toBeUndefined()
+  })
+})
+
+describe('Agent 实时消息按会话切片', () => {
+  test('Given 当前会话已订阅实时消息 When 后台会话更新 Then 当前会话派生值保持原引用', () => {
+    const store = createStore()
+    const sessionA = 'session-a'
+    const sessionB = 'session-b'
+    const messagesA: SDKMessage[] = [{
+      type: 'system',
+      subtype: 'init',
+      _createdAt: 1,
+    } as SDKMessage]
+
+    store.set(liveMessagesMapAtom, new Map([[sessionA, messagesA]]))
+    const selectedBefore = store.get(agentSessionLiveMessagesAtomFamily(sessionA))
+
+    store.set(liveMessagesMapAtom, (previous) => {
+      const next = new Map(previous)
+      next.set(sessionB, [{
+        type: 'system',
+        subtype: 'init',
+        _createdAt: 2,
+      } as SDKMessage])
+      return next
+    })
+
+    expect(store.get(agentSessionLiveMessagesAtomFamily(sessionA))).toBe(selectedBefore)
+    expect(store.get(agentSessionLiveMessagesAtomFamily(sessionA))).toBe(messagesA)
   })
 })
 

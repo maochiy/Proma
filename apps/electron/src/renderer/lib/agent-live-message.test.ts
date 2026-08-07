@@ -3,6 +3,7 @@ import type { SDKMessage } from '@proma/shared'
 import {
   getAssistantModelMessageId,
   hasUnpersistedLiveAssistantNarrative,
+  mergeAgentLiveMessages,
   mergePersistedAndLiveMessages,
   upsertAgentLiveMessage,
 } from './agent-live-message'
@@ -26,6 +27,33 @@ function assistant(
 }
 
 describe('Agent 实时消息合并', () => {
+  test('Given 一帧内收到多条不同消息 When 批量刷新 Then 保持 IPC 到达顺序且不丢消息', () => {
+    const merged = mergeAgentLiveMessages(
+      [],
+      [
+        assistant('first', 'msg-1', { type: 'text', text: '先处理文件' }),
+        assistant('second', 'msg-2', { type: 'text', text: '再运行测试' }),
+      ],
+    )
+
+    expect(merged.map((message) => (message as { uuid?: string }).uuid))
+      .toEqual(['first', 'second'])
+  })
+
+  test('Given 一帧内先收到 partial 后收到 final When 批量刷新 Then 只保留最终快照', () => {
+    const merged = mergeAgentLiveMessages(
+      [],
+      [
+        assistant('same', 'msg-1', { type: 'thinking', thinking: '正在思考' }, true),
+        assistant('same-final', 'msg-1', { type: 'thinking', thinking: '完成回答' }),
+      ],
+    )
+
+    expect(merged).toHaveLength(1)
+    expect(JSON.stringify(merged)).toContain('完成回答')
+    expect(JSON.stringify(merged)).not.toContain('正在思考')
+  })
+
   test('Given 已有 thinking partial When 同 UUID 新快照到达 Then 原位替换为累计内容', () => {
     const before = [
       assistant('ccb-partial:msg-1:0', 'msg-1', {

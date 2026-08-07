@@ -150,6 +150,22 @@ export function upsertAgentLiveMessage(
   return [...base, incoming]
 }
 
+/**
+ * 按 IPC 到达顺序合并一批实时消息。
+ *
+ * 渲染层会在短时间窗口内合帧，批量更新不能直接使用最后一条消息覆盖，
+ * 必须逐条应用 upsert 规则，才能同时保留不同消息并正确处理 partial/final。
+ */
+export function mergeAgentLiveMessages(
+  current: SDKMessage[],
+  incoming: SDKMessage[],
+): SDKMessage[] {
+  return incoming.reduce(
+    (messages, message) => upsertAgentLiveMessage(messages, message),
+    current,
+  )
+}
+
 
 /**
  * 合并持久化消息与 liveMessages。

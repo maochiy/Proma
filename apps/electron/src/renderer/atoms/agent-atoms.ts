@@ -287,6 +287,16 @@ export const agentSessionStreamingStateAtomFamily = atomFamily((sessionId: strin
  */
 export const liveMessagesMapAtom = atom<Map<string, SDKMessage[]>>(new Map())
 
+/**
+ * 单个 session 的实时消息派生 atom — 按 sessionId 切片订阅。
+ *
+ * 实时消息以 Map 形式集中写入，但展示组件不应订阅整个 Map。
+ * 否则后台会话每收到一个 SDK 增量，所有打开的 AgentView 都会重渲染。
+ */
+export const agentSessionLiveMessagesAtomFamily = atomFamily((sessionId: string) =>
+  atom((get) => get(liveMessagesMapAtom).get(sessionId)),
+)
+
 export const agentPendingPromptAtom = atom<AgentPendingPrompt | null>(null)
 
 /**
