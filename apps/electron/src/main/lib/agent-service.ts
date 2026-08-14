@@ -35,12 +35,13 @@ import type {
   AgentRuntimeSubagentTranscript,
   AgentTurnChangeStats,
 } from '@proma/shared'
-import { CcbDesktopRuntimeAdapter } from './ccb-runtime/ccb-agent-adapter'
+import { RuntimeAdapterRouter } from './runtime/runtime-adapters'
 import { ccbDesktopRuntimeClient } from './ccb-runtime/runtime-client'
 import { AgentEventBus } from './agent-event-bus'
 import { AgentOrchestrator } from './agent-orchestrator'
 import { getAgentSessionAttachmentsDir, getWorkspaceFilesDir } from './config-paths'
 import { getAgentSessionMeta, updateAgentSessionMeta } from './agent-session-manager'
+import { syncSessionToTask } from './taskboard/taskboard-session-sync'
 import { setAgentStopper, setHeadlessAgentRunner } from './agent-headless-runner-registry'
 import { sendAgentStreamComplete } from './agent-completion-payload'
 import {
@@ -51,7 +52,7 @@ import {
 // ===== 实例创建 =====
 
 const eventBus = new AgentEventBus()
-const adapter = new CcbDesktopRuntimeAdapter()
+const adapter = new RuntimeAdapterRouter()
 const orchestrator = new AgentOrchestrator(adapter, eventBus)
 
 /** 导出 EventBus 供飞书 Bridge 等外部服务订阅事件 */
@@ -167,6 +168,25 @@ export async function runAgent(
             sessionId: input.sessionId,
             error,
           })
+        }
+      },
+      onRunStarted: () => {
+        // 草稿会话发送首条消息时转为正式会话
+        const session = getAgentSessionMeta(input.sessionId)
+        if (session?.draft) {
+          updateAgentSessionMeta(input.sessionId, { draft: false })
+        }
+        // 发送成功开始运行 → 绑定任务 threadId（任务→会话方向已通过 taskboardTaskId 关联）。
+        // 即使中途暂停/停止，任务也已绑定会话，任务详情可查看对话。
+        // 注意：draft 已在上方置 false，需重新读取会话（旧快照仍为 draft=true，
+        // 会导致 syncSessionToTask 的 shouldAutoCreateTask 提前返回而不绑定）。
+        const activeSession = getAgentSessionMeta(input.sessionId)
+        if (activeSession) {
+          try {
+            syncSessionToTask(activeSession)
+          } catch (error) {
+            console.error('[任务看板] 发送时绑定任务失败:', error)
+          }
         }
       },
       onComplete: (messages, opts) => {
@@ -379,6 +399,7 @@ export function stopAllAgents(): void {
  * 退出前关闭 CCB Desktop Runtime Host 及其 Session Worker 进程树。
  */
 export function shutdownAgentRuntime(): void {
+  adapter.dispose()
   void ccbDesktopRuntimeClient.shutdown()
 }
 
@@ -389,6 +410,11 @@ export function shutdownAgentRuntime(): void {
  */
 export async function updateAgentPermissionMode(sessionId: string, mode: PromaPermissionMode): Promise<void> {
   await orchestrator.updateSessionPermissionMode(sessionId, mode)
+}
+
+/** 清除当前进程内该会话的“计划已就绪”标记。 */
+export function clearAgentPlanReady(sessionId: string): void {
+  orchestrator.clearPlanReady(sessionId)
 }
 
 /** 实时更新已打开的 CCB Session；未打开时返回 false，由下次 turn 使用持久化设置。 */

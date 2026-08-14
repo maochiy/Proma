@@ -19,6 +19,45 @@ export interface AgentQueuedMessage {
   additionalDirectories?: string[]
 }
 
+export interface AgentMessageRuntimeState {
+  streaming: boolean
+  stopping: boolean
+  messagesRefreshing: boolean
+}
+
+/**
+ * 判断用户消息是否应先由 Proma 托管，等待当前 Runtime 进入可启动状态。
+ *
+ * 用户点击暂停后，Runtime 停止确认与消息投影刷新都可能晚于 UI。此时不能直接
+ * 启动新一轮，也不能阻止用户发送；消息先进入内存队列，待旧回合完全收尾后续跑。
+ */
+export function shouldDeferAgentMessage(
+  state: AgentMessageRuntimeState,
+): boolean {
+  return state.streaming
+    || state.stopping
+    || state.messagesRefreshing
+}
+
+export interface AgentQueuedAutoSendState {
+  queueLength: number
+  canSendNow: boolean
+  streaming: boolean
+  stopping: boolean
+  messagesRefreshing: boolean
+}
+
+/** 只有旧 Runtime 已完成收尾且消息投影稳定后，才自动启动队首消息。 */
+export function canAutoSendQueuedAgentMessage(
+  state: AgentQueuedAutoSendState,
+): boolean {
+  return state.queueLength > 0
+    && state.canSendNow
+    && !state.streaming
+    && !state.stopping
+    && !state.messagesRefreshing
+}
+
 export function createAgentQueuedMessage(
   text: string,
   id: string,

@@ -18,6 +18,7 @@ import type {
   SystemPromptCreateInput,
   SystemPromptUpdateInput,
 } from '@proma/shared'
+import { getUserProfile } from './user-profile-service'
 
 /** 默认配置 */
 function getDefaultConfig(): SystemPromptConfig {
@@ -77,6 +78,39 @@ function writeConfig(config: SystemPromptConfig): void {
  */
 export function getSystemPromptConfig(): SystemPromptConfig {
   return readConfig()
+}
+
+/**
+ * 获取 Runtime 使用的最终系统提示词。
+ *
+ * Chat 和 Agent 共用同一份 Proma 提示词配置。Runtime 不读取 Renderer
+ * 的 localStorage，因此这里在主进程重新解析默认提示词并追加用户配置的
+ * 日期/用户名上下文，确保 Pi、Hermes、Codex 和 Claude Code 使用同一份策略。
+ */
+export function getEffectiveSystemPrompt(promptId?: string): string {
+  const config = readConfig()
+  const prompt = config.prompts.find((item) => item.id === promptId)
+    || config.prompts.find((item) => item.id === config.defaultPromptId)
+    || config.prompts.find((item) => item.id === BUILTIN_DEFAULT_ID)
+
+  if (!prompt) return ''
+
+  let content = prompt.content.trim()
+  if (config.appendDateTimeAndUserName) {
+    const profile = getUserProfile()
+    const now = new Date()
+    const dateTime = now.toLocaleString('zh-CN', {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      weekday: 'long',
+    })
+    content += `\n\n---\n当前时间: ${dateTime}\n用户名: ${profile.userName}`
+  }
+
+  return content
 }
 
 /**

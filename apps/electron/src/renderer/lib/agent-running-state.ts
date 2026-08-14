@@ -35,12 +35,26 @@ export function reconcileAgentRunActivity(
   state: AgentStreamState,
   event: AgentEvent,
 ): AgentStreamState {
-  if (state.running || !RUN_ACTIVITY_EVENT_TYPES.has(event.type)) return state
+  if (state.running || state.stopping || !RUN_ACTIVITY_EVENT_TYPES.has(event.type)) return state
   return {
     ...state,
     running: true,
     backgroundWaiting: false,
   }
+}
+
+/**
+ * 用户暂停产生的 Runtime 收尾错误不应展示给用户。
+ *
+ * 会话进入新一轮后 running 会恢复为 true，且发送路径会清除 stoppedByUser，
+ * 因此不会吞掉后续真实运行错误。
+ */
+export function shouldSuppressAgentStreamError(
+  state: AgentStreamState | undefined,
+  stoppedByUser: boolean,
+): boolean {
+  return state?.stopping === true
+    || (stoppedByUser && state?.running !== true)
 }
 
 interface AgentRunningIndicatorState {

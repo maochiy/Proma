@@ -11,7 +11,7 @@
 import * as React from 'react'
 import { useAtom, useSetAtom, useAtomValue, useStore } from 'jotai'
 import { toast } from 'sonner'
-import { Pin, PinOff, Star, Settings, Plus, Trash2, Pencil, ArrowRightLeft, Search, Archive, ArchiveRestore, ArrowLeft, MoreHorizontal, FolderOpen, GripVertical, Clock, AlarmClock, ChevronRight, Blocks, GitBranch, Download, Loader2, RotateCw, Copy } from 'lucide-react'
+import { Pin, PinOff, Star, Settings, Plus, Trash2, Pencil, ArrowRightLeft, Search, Archive, ArchiveRestore, ArrowLeft, MoreHorizontal, FolderOpen, GripVertical, Clock, AlarmClock, ChevronRight, Blocks, GitBranch, Download, Loader2, RotateCw, Copy, KanbanSquare, MessageSquareText, ChevronsUpDown } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { ModeSwitcher } from './ModeSwitcher'
@@ -89,6 +89,7 @@ import { useCreateSession } from '@/hooks/useCreateSession'
 import { useOpenSession } from '@/hooks/useOpenSession'
 import { useSyncActiveTabSideEffects } from '@/hooks/useSyncActiveTabSideEffects'
 import { MoveSessionDialog } from '@/components/agent/MoveSessionDialog'
+import { FeedbackDialog } from '@/components/feedback/FeedbackDialog'
 import {
   SessionMiniMapPopover,
   useSessionMiniMapHover,
@@ -128,7 +129,13 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu'
-import type { ConversationMeta, AgentSessionMeta, AgentWorkspace, WorkspaceCapabilities } from '@proma/shared'
+import type {
+  AgentSessionMeta,
+  AgentWorkspace,
+  ConversationMeta,
+  FeedbackSessionType,
+  WorkspaceCapabilities,
+} from '@proma/shared'
 
 function formatAutomationCount(count: number): string {
   return count > 99 ? '99+' : String(count)
@@ -148,6 +155,12 @@ function getSidebarUpdateLabel(status: string, version?: string): string {
     default:
       return '软件更新'
   }
+}
+
+interface FeedbackTarget {
+  id: string
+  type: FeedbackSessionType
+  title: string
 }
 
 function getSidebarUpdateButtonText(status: string): string {
@@ -270,6 +283,34 @@ function AutomationSidebarEntry({ count, active, onClick }: AutomationSidebarEnt
         )}
       >
         {formatAutomationCount(count)}
+      </span>
+    </button>
+  )
+}
+
+interface TaskboardSidebarEntryProps {
+  active: boolean
+  onClick: () => void
+}
+
+function TaskboardSidebarEntry({ active, onClick }: TaskboardSidebarEntryProps): React.ReactElement {
+  return (
+    <button
+      type="button"
+      aria-label="任务看板"
+      onClick={onClick}
+      className={cn(
+        'group w-full flex items-center justify-between px-2 py-1.5 rounded-md text-[13px] transition-colors duration-100 titlebar-no-drag',
+        active
+          ? 'bg-foreground/[0.075] text-foreground'
+          : 'text-foreground/65 hover:bg-foreground/[0.045] hover:text-foreground',
+      )}
+    >
+      <span className="flex items-center gap-2 min-w-0">
+        <span className={cn('flex-shrink-0 w-[18px] h-[18px]', active ? 'text-accent-foreground' : 'text-foreground/45')}>
+          <KanbanSquare size={16} className="block" />
+        </span>
+        <span className="truncate">任务看板</span>
       </span>
     </button>
   )
@@ -670,6 +711,8 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
   const [addingProject, setAddingProject] = React.useState(false)
   const [relativeTimeNow, setRelativeTimeNow] = React.useState(() => Date.now())
   const [userProfile, setUserProfile] = useAtom(userProfileAtom)
+  const [feedbackOpen, setFeedbackOpen] = React.useState(false)
+  const [feedbackTarget, setFeedbackTarget] = React.useState<FeedbackTarget | null>(null)
   const streamingIds = useAtomValue(streamingConversationIdsAtom)
   const mode = useAtomValue(appModeAtom)
   const isMac = React.useMemo(() => detectIsMac(), [])
@@ -735,6 +778,11 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
   const handleOpenSettings = React.useCallback((): void => {
     setSettingsOpen(true)
   }, [setSettingsOpen])
+
+  const handleOpenFeedback = React.useCallback((target?: FeedbackTarget): void => {
+    setFeedbackTarget(target ?? null)
+    setFeedbackOpen(true)
+  }, [])
 
   const handleUpdateButtonClick = React.useCallback((): void => {
     if (updateStatus.status === 'downloaded') {
@@ -1025,6 +1073,13 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
     }
     setActiveView('agent-skills')
   }, [activeView, setActiveView])
+
+  /** 打开/关闭任务看板视图 */
+  const handleOpenTaskboard = React.useCallback((): void => {
+    // 任务看板与 Code（Agent）模式的工作区/会话强绑定，打开时自动切到 Agent 模式。
+    setMode('agent')
+    setActiveView(activeView === 'taskboard' ? 'conversations' : 'taskboard')
+  }, [activeView, setActiveView, setMode])
 
   /** 打开当前工作区的 MCP 管理页 */
   const handleOpenMcpManagement = React.useCallback((): void => {
@@ -2245,6 +2300,16 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
         />
       </div>
 
+      {/* 任务看板入口：仅 Code（Agent）模式可见，与任务↔Agent 会话绑定语义一致 */}
+      {mode === 'agent' && (
+        <div className="px-3 pb-0.5">
+          <TaskboardSidebarEntry
+            active={activeView === 'taskboard'}
+            onClick={handleOpenTaskboard}
+          />
+        </div>
+      )}
+
       {/* Agent 技能入口：Skills / MCP 能力中心，仅 Agent 模式可见 */}
       {mode === 'agent' && (
         <div className="px-3 pb-0.5">
@@ -2284,6 +2349,7 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
                         onRename={handleRename}
                         onTogglePin={handleTogglePin}
                         onToggleArchive={handleToggleArchive}
+                        onFeedback={handleOpenFeedback}
                       />
                     ))}
                   </div>
@@ -2339,6 +2405,7 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
                       onRename={handleRename}
                       onTogglePin={handleTogglePin}
                       onToggleArchive={handleToggleArchive}
+                      onFeedback={handleOpenFeedback}
                     />
                   ))}
                 </div>
@@ -2392,6 +2459,7 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
                             onTogglePin={handleTogglePinAgent}
                             onToggleStar={handleToggleStarAgent}
                             onToggleArchive={handleToggleArchiveAgent}
+                            onFeedback={handleOpenFeedback}
                           />
 
                           {childCount > 0 && expandedChildren && (
@@ -2411,6 +2479,7 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
                                   onTogglePin={handleTogglePinAgent}
                                   onToggleStar={handleToggleStarAgent}
                                   onToggleArchive={handleToggleArchiveAgent}
+                                  onFeedback={handleOpenFeedback}
                                 />
                               ))}
                             </div>
@@ -2489,6 +2558,7 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
                     onToggleStar={handleToggleStarAgent}
                     onToggleArchive={handleToggleArchiveAgent}
                     onToggleDelegationParent={handleToggleDelegationParent}
+                    onFeedback={handleOpenFeedback}
                   />
                 )
               })}
@@ -2529,6 +2599,7 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
                         onRename={handleRename}
                         onTogglePin={handleTogglePin}
                         onToggleArchive={handleToggleArchive}
+                        onFeedback={handleOpenFeedback}
                       />
                     ))}
                   </div>
@@ -2575,6 +2646,7 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
                             onTogglePin={handleTogglePinAgent}
                             onToggleStar={handleToggleStarAgent}
                             onToggleArchive={handleToggleArchiveAgent}
+                            onFeedback={handleOpenFeedback}
                           />
 
                           {childCount > 0 && expandedChildren && (
@@ -2594,6 +2666,7 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
                                   onTogglePin={handleTogglePinAgent}
                                   onToggleStar={handleToggleStarAgent}
                                   onToggleArchive={handleToggleArchiveAgent}
+                                  onFeedback={handleOpenFeedback}
                                 />
                               ))}
                             </div>
@@ -2643,16 +2716,45 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
         )}
       </div>
 
-      {/* 底部：用户资料 + 设置入口 */}
+      {/* 底部：用户资料菜单 + 更新入口 */}
       <div className="border-t border-border/45 px-3 py-2">
         <div className="flex items-center gap-2 rounded-md px-2 py-1.5 text-foreground/70 transition-colors titlebar-no-drag hover:bg-foreground/[0.045] hover:text-foreground">
-          <button
-            onClick={handleOpenSettings}
-            className="min-w-0 flex flex-1 items-center gap-2.5 text-left"
-          >
-            <UserAvatar avatar={userProfile.avatar} size={28} />
-            <span className="flex-1 text-[13px] truncate text-left">{userProfile.userName}</span>
-          </button>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                aria-label="打开用户菜单"
+                className="min-w-0 flex flex-1 items-center gap-2.5 rounded-md text-left outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
+              >
+                <UserAvatar avatar={userProfile.avatar} size={28} />
+                <span className="flex-1 truncate text-left text-[13px]">{userProfile.userName}</span>
+                <ChevronsUpDown size={14} className="shrink-0 text-foreground/35" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="start"
+              side="top"
+              sideOffset={8}
+              className="w-[220px] border-border/40 p-1.5 shadow-xl"
+            >
+              <div className="flex items-center gap-2.5 px-2 py-2">
+                <UserAvatar avatar={userProfile.avatar} size={30} />
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-medium">{userProfile.userName}</div>
+                  <div className="text-[11px] text-muted-foreground">Proma 用户</div>
+                </div>
+              </div>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onSelect={handleOpenSettings}>
+                <Settings size={15} />
+                <span>设置</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem onSelect={() => handleOpenFeedback()}>
+                <MessageSquareText size={15} />
+                <span>反馈</span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           {hasUpdate && (
             <SidebarUpdateButton
               status={updateStatus}
@@ -2664,25 +2766,30 @@ export function LeftSidebar({ width, noTransition }: LeftSidebarProps): React.Re
               hideIcon
             />
           )}
-          <button
-            type="button"
-            aria-label="打开设置"
-            onClick={handleOpenSettings}
-            className="relative flex size-7 flex-shrink-0 items-center justify-center rounded-[8px] text-foreground/40 transition-colors hover:bg-foreground/[0.05] hover:text-foreground/70"
-          >
-            <div className="relative flex-shrink-0 text-foreground/40">
+          {hasEnvironmentIssues && (
+            <button
+              type="button"
+              aria-label="打开设置查看环境问题"
+              onClick={handleOpenSettings}
+              className="relative flex size-7 flex-shrink-0 items-center justify-center rounded-[8px] text-foreground/40 transition-colors hover:bg-foreground/[0.05] hover:text-foreground/70"
+            >
               <Settings size={16} />
-              {hasEnvironmentIssues && (
-                <span className="absolute -top-0.5 -right-0.5 w-2 h-2 rounded-full bg-red-500" />
-              )}
-            </div>
-          </button>
+              <span className="absolute right-1 top-1 size-2 rounded-full bg-red-500" />
+            </button>
+          )}
         </div>
       </div>
 
       {deleteDialog}
       {projectDeleteDialog}
       {moveDialog}
+      <FeedbackDialog
+        open={feedbackOpen}
+        onOpenChange={setFeedbackOpen}
+        initialSessionId={feedbackTarget?.id}
+        initialSessionType={feedbackTarget?.type}
+        initialSessionTitle={feedbackTarget?.title}
+      />
       <SearchDialog />
     </div>
   )
@@ -2930,6 +3037,7 @@ interface ConversationItemProps {
   onRename: (id: string, newTitle: string) => Promise<void>
   onTogglePin: (id: string) => Promise<void>
   onToggleArchive: (id: string) => Promise<void>
+  onFeedback: (target: FeedbackTarget) => void
 }
 
 const ConversationItem = React.memo(function ConversationItem({
@@ -2943,6 +3051,7 @@ const ConversationItem = React.memo(function ConversationItem({
   onRename,
   onTogglePin,
   onToggleArchive,
+  onFeedback,
 }: ConversationItemProps): React.ReactElement {
   const [editing, setEditing] = React.useState(false)
   const [editTitle, setEditTitle] = React.useState('')
@@ -3008,6 +3117,17 @@ const ConversationItem = React.memo(function ConversationItem({
       <MenuItem className="text-xs py-1 [&>svg]:size-3.5" onSelect={() => onToggleArchive(conversation.id)}>
         {conversation.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
         {conversation.archived ? '取消归档' : '归档'}
+      </MenuItem>
+      <MenuItem
+        className="text-xs py-1 [&>svg]:size-3.5"
+        onSelect={() => onFeedback({
+          id: conversation.id,
+          type: 'chat',
+          title: conversation.title,
+        })}
+      >
+        <MessageSquareText size={14} />
+        反馈
       </MenuItem>
       <MenuSeparator className="my-0.5" />
       <MenuItem className="text-xs py-1 [&>svg]:size-3.5 text-destructive" onSelect={() => onRequestDelete(conversation.id)}>
@@ -3169,6 +3289,7 @@ interface AgentSessionItemProps {
   onTogglePin: (id: string, cascade: boolean) => Promise<void>
   onToggleStar: (id: string) => Promise<void>
   onToggleArchive: (id: string) => Promise<void>
+  onFeedback: (target: FeedbackTarget) => void
 }
 
 const AgentSessionItem = React.memo(function AgentSessionItem({
@@ -3188,6 +3309,7 @@ const AgentSessionItem = React.memo(function AgentSessionItem({
   onTogglePin,
   onToggleStar,
   onToggleArchive,
+  onFeedback,
 }: AgentSessionItemProps): React.ReactElement {
   const [editing, setEditing] = React.useState(false)
   const [editTitle, setEditTitle] = React.useState('')
@@ -3291,6 +3413,17 @@ const AgentSessionItem = React.memo(function AgentSessionItem({
       <MenuItem className="text-xs py-1 [&>svg]:size-3.5" onSelect={() => onToggleArchive(session.id)}>
         {session.archived ? <ArchiveRestore size={14} /> : <Archive size={14} />}
         {session.archived ? '取消归档' : '归档'}
+      </MenuItem>
+      <MenuItem
+        className="text-xs py-1 [&>svg]:size-3.5"
+        onSelect={() => onFeedback({
+          id: session.id,
+          type: 'agent',
+          title: session.title,
+        })}
+      >
+        <MessageSquareText size={14} />
+        反馈
       </MenuItem>
       <MenuSeparator className="my-0.5" />
       <MenuItem className="text-xs py-1 [&>svg]:size-3.5 text-destructive" onSelect={() => onRequestDelete(session.id)}>
@@ -3496,6 +3629,7 @@ interface DelegatedChildSessionItemProps {
   onTogglePin: (id: string, cascade: boolean) => Promise<void>
   onToggleStar: (id: string) => Promise<void>
   onToggleArchive: (id: string) => Promise<void>
+  onFeedback: (target: FeedbackTarget) => void
 }
 
 const DelegatedChildSessionItem = React.memo(function DelegatedChildSessionItem({
@@ -3511,6 +3645,7 @@ const DelegatedChildSessionItem = React.memo(function DelegatedChildSessionItem(
   onTogglePin,
   onToggleStar,
   onToggleArchive,
+  onFeedback,
 }: DelegatedChildSessionItemProps): React.ReactElement {
   const status = getDelegatedChildStatus(session, agentIndicatorMap)
 
@@ -3528,6 +3663,7 @@ const DelegatedChildSessionItem = React.memo(function DelegatedChildSessionItem(
       onTogglePin={onTogglePin}
       onToggleStar={onToggleStar}
       onToggleArchive={onToggleArchive}
+      onFeedback={onFeedback}
     />
   )
 })
@@ -3573,6 +3709,7 @@ interface AgentProjectGroupItemProps {
   onToggleStar: (id: string) => Promise<void>
   onToggleArchive: (id: string) => Promise<void>
   onToggleDelegationParent: (id: string, expanded: boolean) => void
+  onFeedback: (target: FeedbackTarget) => void
 }
 
 const AgentProjectGroupItem = React.memo(function AgentProjectGroupItem({
@@ -3611,6 +3748,7 @@ const AgentProjectGroupItem = React.memo(function AgentProjectGroupItem({
   onToggleStar,
   onToggleArchive,
   onToggleDelegationParent,
+  onFeedback,
 }: AgentProjectGroupItemProps): React.ReactElement {
   const isCurrent = group.workspace.id === currentWorkspaceId
   const newSessionShortcutLabel = getAcceleratorDisplay(getActiveAccelerator('new-session'))
@@ -3916,6 +4054,7 @@ const AgentProjectGroupItem = React.memo(function AgentProjectGroupItem({
                       onTogglePin={onTogglePin}
                       onToggleStar={onToggleStar}
                       onToggleArchive={onToggleArchive}
+                      onFeedback={onFeedback}
                     />
 
                     {childCount > 0 && expandedChildren && (
@@ -3935,6 +4074,7 @@ const AgentProjectGroupItem = React.memo(function AgentProjectGroupItem({
                             onTogglePin={onTogglePin}
                             onToggleStar={onToggleStar}
                             onToggleArchive={onToggleArchive}
+                            onFeedback={onFeedback}
                           />
                         ))}
                       </div>

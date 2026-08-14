@@ -11,7 +11,7 @@ import { existsSync, realpathSync, rmSync, readFileSync, writeFileSync, mkdirSyn
 import { writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { registerIntegratedTerminalIpcHandlers } from './lib/integrated-terminal-manager'
-import { IPC_CHANNELS, CHANNEL_IPC_CHANNELS, CHAT_IPC_CHANNELS, AGENT_IPC_CHANNELS, ENVIRONMENT_IPC_CHANNELS, INSTALLER_IPC_CHANNELS, PROXY_IPC_CHANNELS, GITHUB_RELEASE_IPC_CHANNELS, SYSTEM_PROMPT_IPC_CHANNELS, CHAT_TOOL_IPC_CHANNELS, FEISHU_IPC_CHANNELS, DINGTALK_IPC_CHANNELS, WECHAT_IPC_CHANNELS, AUTOMATION_IPC_CHANNELS, CCB_NATIVE_CHANNEL_ID, isPromaPermissionMode, normalizePathForCompare } from '@proma/shared'
+import { IPC_CHANNELS, CHANNEL_IPC_CHANNELS, CHAT_IPC_CHANNELS, AGENT_IPC_CHANNELS, ENVIRONMENT_IPC_CHANNELS, INSTALLER_IPC_CHANNELS, PROXY_IPC_CHANNELS, GITHUB_RELEASE_IPC_CHANNELS, FEEDBACK_IPC_CHANNELS, SYSTEM_PROMPT_IPC_CHANNELS, CHAT_TOOL_IPC_CHANNELS, FEISHU_IPC_CHANNELS, DINGTALK_IPC_CHANNELS, WECHAT_IPC_CHANNELS, AUTOMATION_IPC_CHANNELS, RUNTIME_IPC_CHANNELS, CCB_NATIVE_CHANNEL_ID, TASKBOARD_IPC_CHANNELS, isPromaPermissionMode, normalizePathForCompare } from '@proma/shared'
 import { USER_PROFILE_IPC_CHANNELS, NEW_API_AUTH_IPC_CHANNELS, SETTINGS_IPC_CHANNELS, SCRATCH_PAD_IPC_CHANNELS, QUICK_TASK_IPC_CHANNELS, VOICE_DICTATION_IPC_CHANNELS, APP_ICON_IPC_CHANNELS, DOCK_BADGE_IPC_CHANNELS, STORAGE_IPC_CHANNELS } from '../types'
 import type {
   QuickTaskSubmitInput,
@@ -32,6 +32,7 @@ import type {
 } from '../types'
 import type {
   RuntimeStatus,
+  ModelCenterStatus,
   GitRepoStatus,
   Channel,
   ChannelCreateInput,
@@ -85,6 +86,8 @@ import type {
   SystemProxyDetectResult,
   GitHubRelease,
   GitHubReleaseListOptions,
+  FeedbackSubmitInput,
+  FeedbackSubmitResult,
   PermissionResponse,
   PromaPermissionMode,
   AskUserResponse,
@@ -126,6 +129,24 @@ import type {
   Automation,
   CreateAutomationInput,
   UpdateAutomationInput,
+  Project,
+  Task,
+  Comment,
+  Attachment,
+  TaskChangeActivity,
+  CreateProjectInput,
+  CreateTaskInput,
+  UpdateTaskInput,
+  MoveTaskInput,
+  ArchiveTaskInput,
+  AddRelationInput,
+  CreateCommentInput,
+  UpdateCommentInput,
+  DeleteCommentInput,
+  CreateAttachmentInput,
+  ListTasksFilters,
+  RelationUpdateResult,
+  AttachmentContentResult,
 } from '@proma/shared'
 import type { UserProfile, AppSettings } from '../types'
 import { getRuntimeStatus, getGitRepoStatus, reinitializeRuntime } from './lib/runtime-init'
@@ -187,7 +208,11 @@ import {
 } from './lib/new-api-auth-service'
 import { getSettings, updateSettings } from './lib/settings-service'
 import { setBuiltinMcpUserEnabled } from './lib/builtin-mcp/settings'
+import { clearBrowserSessionData } from './lib/browser/browser-webview.cjs'
 import { setDockBadgeCount } from './lib/dock-badge-service'
+import { activateRuntimePackage, bindNativeRuntime, deleteRuntimePackage, detectRuntime, discoverRuntime, getRuntimeCapabilities, getRuntimeConfig, getRuntimePackageStatus, installRuntimePackage, listRuntimes, refreshRuntimes, unbindNativeRuntime, updateRuntimeConfig } from './lib/runtime/runtime-registry'
+import { getPromaRuntimeModelCatalogStatus } from './lib/runtime/proma-runtime-model-catalog'
+import { shouldSyncLegacyCcbTranscript } from './lib/runtime/runtime-transcript-policy'
 
 import { checkEnvironment } from './lib/environment-checker'
 import { fetchInstallerManifest, findInstallerSource } from './lib/installer-manifest'
@@ -198,6 +223,7 @@ import {
 } from './lib/installer-downloader'
 import { getProxySettings, saveProxySettings } from './lib/proxy-settings-service'
 import { detectSystemProxy } from './lib/system-proxy-detector'
+import { submitFeedback } from './lib/feedback-service'
 import {
   listAutomations,
   getAutomation,
@@ -206,6 +232,8 @@ import {
   deleteAutomation,
 } from './lib/automation-manager'
 import { runAutomationNow, broadcastChanged as broadcastAutomationsChanged } from './lib/automation-scheduler'
+import { taskboardStore, TaskboardError } from './lib/taskboard/taskboard-store'
+import { notifyTaskboardChanged } from './lib/taskboard/taskboard-notify'
 import {
   listAgentSessions,
   createAgentSession,
@@ -220,7 +248,7 @@ import {
   searchAgentSessionMessages,
   searchAgentSessionReferences,
 } from './lib/agent-session-manager'
-import { runAgent, stopAgent, closeAgentSessionRuntime, generateAgentTitle, saveFilesToAgentSession, saveFilesToWorkspaceFiles, isAgentSessionActive, queueAgentMessage, updateAgentPermissionMode, updateAgentRuntimeConfig, invalidateAgentRuntimeConfiguration, getAgentRuntimeExecutionGraph, getAgentRuntimeSubagentTranscript, getAgentTurnChangeStats, rewindAgentSession, forkAgentRuntimeSession } from './lib/agent-service'
+import { runAgent, stopAgent, closeAgentSessionRuntime, generateAgentTitle, saveFilesToAgentSession, saveFilesToWorkspaceFiles, isAgentSessionActive, queueAgentMessage, updateAgentPermissionMode, clearAgentPlanReady, updateAgentRuntimeConfig, invalidateAgentRuntimeConfiguration, getAgentRuntimeExecutionGraph, getAgentRuntimeSubagentTranscript, getAgentTurnChangeStats, rewindAgentSession, forkAgentRuntimeSession } from './lib/agent-service'
 import {
   getAgentRuntimePlanStore,
   saveAgentRuntimePlanStore,
@@ -326,7 +354,6 @@ import { wechatBridge } from './lib/wechat-bridge'
 
 /** 文件浏览器中需要隐藏的系统文件 */
 const HIDDEN_FS_ENTRIES = new Set(['.DS_Store', 'Thumbs.db'])
-
 /** 已知编辑器应用名称白名单（macOS） */
 const KNOWN_EDITORS = [
   'Visual Studio Code', 'Cursor', 'Sublime Text', 'Windsurf',
@@ -992,6 +1019,9 @@ function scheduleAgentCatalogBackgroundSync(): void {
  * 相同会话的并发打开共享一个任务，避免重复启动无状态 Worker。
  */
 function scheduleAgentTranscriptBackgroundSync(sessionId: string): void {
+  // 当前 Proma Runtime 的本地 JSONL 已是唯一历史来源，不能在打开会话时
+  // 额外触发旧 CCB Transcript 同步。只有没有 runtimeId 的历史会话保留兼容路径。
+  if (!shouldSyncLegacyCcbTranscript(getAgentSessionMeta(sessionId)?.runtimeId)) return
   if (agentTranscriptBackgroundSyncs.has(sessionId)) return
   const task = syncCcbSessionTranscript(sessionId)
     .then(result => {
@@ -1016,6 +1046,13 @@ function scheduleAgentTranscriptBackgroundSync(sessionId: string): void {
   agentTranscriptBackgroundSyncs.set(sessionId, task)
 }
 
+/**
+ * 向所有渲染窗口广播任务看板数据变更（main → renderer）
+ */
+function broadcastTaskboardChanged(): void {
+  notifyTaskboardChanged()
+}
+
 export function registerIpcHandlers(): void {
   console.log('[IPC] 正在注册 IPC 处理器...')
   registerIntegratedTerminalIpcHandlers()
@@ -1029,6 +1066,24 @@ export function registerIpcHandlers(): void {
   }
 
   // ===== 运行时相关 =====
+
+  ipcMain.handle(RUNTIME_IPC_CHANNELS.LIST, async () => listRuntimes())
+  ipcMain.handle(RUNTIME_IPC_CHANNELS.REFRESH, async () => refreshRuntimes())
+  ipcMain.handle(RUNTIME_IPC_CHANNELS.GET_CONFIG, async () => getRuntimeConfig())
+  ipcMain.handle(RUNTIME_IPC_CHANNELS.UPDATE_CONFIG, async (_, updates) => updateRuntimeConfig(updates))
+  ipcMain.handle(
+    RUNTIME_IPC_CHANNELS.GET_MODEL_CENTER_STATUS,
+    async (): Promise<ModelCenterStatus> => getPromaRuntimeModelCatalogStatus(),
+  )
+  ipcMain.handle(RUNTIME_IPC_CHANNELS.GET_CAPABILITIES, async (_, runtimeId) => getRuntimeCapabilities(runtimeId))
+  ipcMain.handle(RUNTIME_IPC_CHANNELS.DETECT, async (_, runtimeId) => detectRuntime(runtimeId))
+  ipcMain.handle(RUNTIME_IPC_CHANNELS.DISCOVER, async (_, runtimeId) => discoverRuntime(runtimeId))
+  ipcMain.handle(RUNTIME_IPC_CHANNELS.GET_PACKAGE_STATUS, async (_, runtimeId) => getRuntimePackageStatus(runtimeId))
+  ipcMain.handle(RUNTIME_IPC_CHANNELS.INSTALL_PACKAGE, async (_, runtimeId, version) => installRuntimePackage(runtimeId, version))
+  ipcMain.handle(RUNTIME_IPC_CHANNELS.ACTIVATE_PACKAGE, async (_, runtimeId, buildId) => activateRuntimePackage(runtimeId, buildId))
+  ipcMain.handle(RUNTIME_IPC_CHANNELS.DELETE_PACKAGE, async (_, runtimeId, version) => deleteRuntimePackage(runtimeId, version))
+  ipcMain.handle(RUNTIME_IPC_CHANNELS.BIND_NATIVE, async (_, runtimeId, executablePath) => bindNativeRuntime(runtimeId, executablePath))
+  ipcMain.handle(RUNTIME_IPC_CHANNELS.UNBIND_NATIVE, async (_, runtimeId, buildId) => unbindNativeRuntime(runtimeId, buildId))
 
   // 获取运行时状态
   ipcMain.handle(
@@ -2222,8 +2277,8 @@ export function registerIpcHandlers(): void {
   // 创建 Agent 会话
   ipcMain.handle(
     AGENT_IPC_CHANNELS.CREATE_SESSION,
-    async (_, title?: string, channelId?: string, workspaceId?: string, modelId?: string, draft?: boolean): Promise<AgentSessionMeta> => {
-      const session = createAgentSession(title, channelId, workspaceId, modelId, draft === true)
+    async (_, title?: string, channelId?: string, workspaceId?: string, modelId?: string, draft?: boolean, taskboardTaskId?: string): Promise<AgentSessionMeta> => {
+      const session = createAgentSession(title, channelId, workspaceId, modelId, draft === true, taskboardTaskId)
       if (!session.draft) {
         feishuBridgeManager.ensureSessionMirror(session).catch((error) => {
           console.error('[飞书 Session 镜像] 新会话建群失败:', error)
@@ -2381,7 +2436,11 @@ export function registerIpcHandlers(): void {
     AGENT_IPC_CHANNELS.DELETE_SESSION,
     async (_, id: string): Promise<void> => {
       await closeAgentSessionRuntime(id)
-      await deleteCcbSessionTranscript(id)
+      // 当前 Proma Runtime 的会话只使用本地 JSONL；仅旧版缺少 runtimeId 的会话
+      // 仍需要清理历史 CCB Transcript。
+      if (!getAgentSessionMeta(id)?.runtimeId) {
+        await deleteCcbSessionTranscript(id)
+      }
       // 清理权限服务中该会话的白名单
       permissionService.clearSessionWhitelist(id)
       permissionService.clearSessionPending(id)
@@ -2389,7 +2448,9 @@ export function registerIpcHandlers(): void {
       askUserService.clearSessionPending(id)
       // 清理 ExitPlanMode 服务中的待处理请求
       exitPlanService.clearSessionPending(id)
-      return deleteAgentSession(id)
+      deleteAgentSession(id)
+      // 清理该会话内置浏览器的独立存储（Cookie/localStorage/缓存等）
+      void clearBrowserSessionData(id)
     }
   )
 
@@ -2570,8 +2631,12 @@ export function registerIpcHandlers(): void {
           stopAgent(sessionId)
         }
         await closeAgentSessionRuntime(sessionId)
-        await deleteCcbSessionTranscript(sessionId)
+        if (!getAgentSessionMeta(sessionId)?.runtimeId) {
+          await deleteCcbSessionTranscript(sessionId)
+        }
         deleteAgentSession(sessionId)
+        // 清理该会话内置浏览器的独立存储（Cookie/localStorage/缓存等）
+        void clearBrowserSessionData(sessionId)
       }
       for (const automationId of affectedAutomationIds) {
         deleteAutomation(automationId)
@@ -2945,6 +3010,7 @@ export function registerIpcHandlers(): void {
         permissionMode: approvalMode,
         planModeEnabled: enabled,
       })
+      clearAgentPlanReady(sessionId)
       if (isAgentSessionActive(sessionId)) {
         await updateAgentPermissionMode(sessionId, enabled ? 'plan' : approvalMode).catch((err) => {
           console.warn(`[IPC] 运行中计划模式切换失败: sessionId=${sessionId}`, err)
@@ -3091,6 +3157,7 @@ export function registerIpcHandlers(): void {
               console.warn(`[IPC] ExitPlanMode 持久化 session 权限模式失败: sessionId=${sessionId}`, err)
             }
           }
+          clearAgentPlanReady(sessionId)
           event.sender.send(AGENT_IPC_CHANNELS.STREAM_EVENT, {
             sessionId,
             payload: { kind: 'proma_event', event: { type: 'permission_mode_changed', mode: targetMode } },
@@ -4110,6 +4177,15 @@ export function registerIpcHandlers(): void {
     }
   )
 
+  // ===== 用户反馈 =====
+
+  ipcMain.handle(
+    FEEDBACK_IPC_CHANNELS.SUBMIT,
+    async (_, input: FeedbackSubmitInput): Promise<FeedbackSubmitResult> => {
+      return submitFeedback(input)
+    }
+  )
+
   // ===== 飞书集成 =====
 
   // --- 旧 API（向后兼容，操作 bots[0]）---
@@ -5027,4 +5103,211 @@ export function registerIpcHandlers(): void {
       await runAutomationNow(id)
     }
   )
+
+  // ===== 任务看板（Taskboard）=====
+
+  const tbId = (v: unknown): string | undefined =>
+    typeof v === 'string' && v.length > 0 ? v : undefined
+
+  const tbNumber = (v: unknown): number => {
+    if (typeof v !== 'number' || !Number.isFinite(v)) throw new Error('version 必须是有限数字')
+    return v
+  }
+
+  ipcMain.handle(TASKBOARD_IPC_CHANNELS.LIST_PROJECTS, async (): Promise<Project[]> => {
+    return taskboardStore.listProjects()
+  })
+
+  ipcMain.handle(TASKBOARD_IPC_CHANNELS.CREATE_PROJECT, async (_, input: CreateProjectInput): Promise<Project> => {
+    if (!input || typeof input !== 'object') throw new Error('input 必须是对象')
+    const id = tbId(input.id)
+    const name = tbId(input.name)
+    if (!id) throw new Error('id 必填')
+    if (!name) throw new Error('name 必填')
+    return taskboardStore.createProject({ id, name, workspacePath: input.workspacePath ?? null })
+  })
+
+  ipcMain.handle(TASKBOARD_IPC_CHANNELS.DELETE_PROJECT, async (_, id: string): Promise<Project> => {
+    const pid = tbId(id)
+    if (!pid) throw new Error('id 必填')
+    return taskboardStore.deleteProject(pid)
+  })
+
+  ipcMain.handle(TASKBOARD_IPC_CHANNELS.LIST_TASKS, async (_, filters?: ListTasksFilters): Promise<Task[]> => {
+    return taskboardStore.listTasks(filters ?? {})
+  })
+
+  ipcMain.handle(TASKBOARD_IPC_CHANNELS.GET_TASK, async (_, id: string): Promise<Task | null> => {
+    const tid = tbId(id)
+    if (!tid) throw new Error('id 必填')
+    return taskboardStore.getTask(tid)
+  })
+
+  ipcMain.handle(TASKBOARD_IPC_CHANNELS.CREATE_TASK, async (_, input: CreateTaskInput): Promise<Task> => {
+    if (!input || typeof input !== 'object') throw new Error('input 必须是对象')
+    const id = tbId(input.id)
+    const projectId = tbId(input.projectId)
+    const title = tbId(input.title)
+    if (!id) throw new Error('id 必填')
+    if (!projectId) throw new Error('projectId 必填')
+    if (!title) throw new Error('title 必填')
+    const task = taskboardStore.createTask({ ...input, id, projectId, title })
+    broadcastTaskboardChanged()
+    return task
+  })
+
+  ipcMain.handle(TASKBOARD_IPC_CHANNELS.UPDATE_TASK, async (_, input: UpdateTaskInput): Promise<Task> => {
+    if (!input || typeof input !== 'object') throw new Error('input 必须是对象')
+    const id = tbId(input.id)
+    if (!id) throw new Error('id 必填')
+    tbNumber(input.version)
+    const task = taskboardStore.updateTask({ ...input, id })
+    broadcastTaskboardChanged()
+    return task
+  })
+
+  ipcMain.handle(TASKBOARD_IPC_CHANNELS.MOVE_TASK, async (_, input: MoveTaskInput): Promise<Task> => {
+    if (!input || typeof input !== 'object') throw new Error('input 必须是对象')
+    const id = tbId(input.id)
+    if (!id) throw new Error('id 必填')
+    tbNumber(input.version)
+    const task = taskboardStore.moveTask({ ...input, id })
+    broadcastTaskboardChanged()
+    return task
+  })
+
+  ipcMain.handle(TASKBOARD_IPC_CHANNELS.ARCHIVE_TASK, async (_, input: ArchiveTaskInput): Promise<Task> => {
+    if (!input || typeof input !== 'object') throw new Error('input 必须是对象')
+    const id = tbId(input.id)
+    if (!id) throw new Error('id 必填')
+    tbNumber(input.version)
+    const task = taskboardStore.archiveTask({ ...input, id })
+    broadcastTaskboardChanged()
+    return task
+  })
+
+  ipcMain.handle(TASKBOARD_IPC_CHANNELS.RESTORE_TASK, async (_, input: ArchiveTaskInput): Promise<Task> => {
+    if (!input || typeof input !== 'object') throw new Error('input 必须是对象')
+    const id = tbId(input.id)
+    if (!id) throw new Error('id 必填')
+    tbNumber(input.version)
+    const task = taskboardStore.restoreTask({ ...input, id })
+    broadcastTaskboardChanged()
+    return task
+  })
+
+  ipcMain.handle(TASKBOARD_IPC_CHANNELS.DELETE_ARCHIVED_TASK, async (_, id: string, version: number): Promise<{ task: Task; attachmentIds: string[] }> => {
+    const tid = tbId(id)
+    if (!tid) throw new Error('id 必填')
+    tbNumber(version)
+    const result = taskboardStore.deleteArchivedTask(tid, version)
+    taskboardStore.cleanupAttachmentFiles(result.attachmentIds)
+    broadcastTaskboardChanged()
+    return result
+  })
+
+  ipcMain.handle(TASKBOARD_IPC_CHANNELS.LIST_ACTIVITIES, async (_, taskId: string): Promise<TaskChangeActivity[]> => {
+    const tid = tbId(taskId)
+    if (!tid) throw new Error('taskId 必填')
+    return taskboardStore.listTaskActivities(tid)
+  })
+
+  ipcMain.handle(TASKBOARD_IPC_CHANNELS.LIST_COMMENTS, async (_, taskId: string): Promise<Comment[]> => {
+    const tid = tbId(taskId)
+    if (!tid) throw new Error('taskId 必填')
+    return taskboardStore.listComments(tid)
+  })
+
+  ipcMain.handle(TASKBOARD_IPC_CHANNELS.CREATE_COMMENT, async (_, input: CreateCommentInput): Promise<Comment> => {
+    if (!input || typeof input !== 'object') throw new Error('input 必须是对象')
+    const taskId = tbId(input.taskId)
+    if (!taskId) throw new Error('taskId 必填')
+    const comment = taskboardStore.createComment({ ...input, taskId })
+    broadcastTaskboardChanged()
+    return comment
+  })
+
+  ipcMain.handle(TASKBOARD_IPC_CHANNELS.UPDATE_COMMENT, async (_, input: UpdateCommentInput): Promise<Comment> => {
+    if (!input || typeof input !== 'object') throw new Error('input 必须是对象')
+    const id = tbId(input.id)
+    if (!id) throw new Error('id 必填')
+    tbNumber(input.version)
+    const comment = taskboardStore.updateComment({ ...input, id })
+    broadcastTaskboardChanged()
+    return comment
+  })
+
+  ipcMain.handle(TASKBOARD_IPC_CHANNELS.DELETE_COMMENT, async (_, input: DeleteCommentInput): Promise<Comment> => {
+    if (!input || typeof input !== 'object') throw new Error('input 必须是对象')
+    const id = tbId(input.id)
+    if (!id) throw new Error('id 必填')
+    tbNumber(input.version)
+    const comment = taskboardStore.deleteComment({ ...input, id })
+    broadcastTaskboardChanged()
+    return comment
+  })
+
+  ipcMain.handle(TASKBOARD_IPC_CHANNELS.LIST_ATTACHMENTS, async (_, taskId: string): Promise<Attachment[]> => {
+    const tid = tbId(taskId)
+    if (!tid) throw new Error('taskId 必填')
+    return taskboardStore.listTaskAttachments(tid)
+  })
+
+  ipcMain.handle(TASKBOARD_IPC_CHANNELS.CREATE_ATTACHMENT, async (_, input: CreateAttachmentInput): Promise<Attachment> => {
+    if (!input || typeof input !== 'object') throw new Error('input 必须是对象')
+    const taskId = tbId(input.taskId)
+    if (!taskId) throw new Error('taskId 必填')
+    const filename = tbId(input.filename)
+    if (!filename) throw new Error('filename 必填')
+    const attachment = taskboardStore.createAttachment(taskId, null, filename, input.contentType ?? 'application/octet-stream', input.dataBase64)
+    broadcastTaskboardChanged()
+    return attachment
+  })
+
+  ipcMain.handle(TASKBOARD_IPC_CHANNELS.CREATE_COMMENT_ATTACHMENT, async (_, input: CreateAttachmentInput): Promise<Attachment> => {
+    if (!input || typeof input !== 'object') throw new Error('input 必须是对象')
+    const taskId = tbId(input.taskId)
+    const commentId = tbId(input.commentId)
+    if (!taskId) throw new Error('taskId 必填')
+    if (!commentId) throw new Error('commentId 必填')
+    const filename = tbId(input.filename)
+    if (!filename) throw new Error('filename 必填')
+    const attachment = taskboardStore.createAttachment(taskId, commentId, filename, input.contentType ?? 'application/octet-stream', input.dataBase64)
+    broadcastTaskboardChanged()
+    return attachment
+  })
+
+  ipcMain.handle(TASKBOARD_IPC_CHANNELS.DELETE_ATTACHMENT, async (_, id: string): Promise<Attachment> => {
+    const aid = tbId(id)
+    if (!aid) throw new Error('id 必填')
+    const attachment = taskboardStore.deleteAttachment(aid)
+    broadcastTaskboardChanged()
+    return attachment
+  })
+
+  ipcMain.handle(TASKBOARD_IPC_CHANNELS.READ_ATTACHMENT_CONTENT, async (_, id: string): Promise<AttachmentContentResult> => {
+    const aid = tbId(id)
+    if (!aid) throw new Error('id 必填')
+    return taskboardStore.readAttachmentContent(aid)
+  })
+
+  ipcMain.handle(TASKBOARD_IPC_CHANNELS.ADD_RELATION, async (_, input: AddRelationInput): Promise<RelationUpdateResult> => {
+    if (!input || typeof input !== 'object') throw new Error('input 必须是对象')
+    const id = tbId(input.id)
+    if (!id) throw new Error('id 必填')
+    tbNumber(input.version)
+    const result = taskboardStore.addRelation({ ...input, id })
+    broadcastTaskboardChanged()
+    return result
+  })
+
+  ipcMain.handle(TASKBOARD_IPC_CHANNELS.REMOVE_RELATION, async (_, input: AddRelationInput): Promise<RelationUpdateResult> => {
+    if (!input || typeof input !== 'object') throw new Error('input 必须是对象')
+    const id = tbId(input.id)
+    if (!id) throw new Error('id 必填')
+    tbNumber(input.version)
+    const result = taskboardStore.removeRelation({ ...input, id })
+    broadcastTaskboardChanged()
+    return result
+  })
 }

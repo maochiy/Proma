@@ -6,15 +6,16 @@
 
 import * as React from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
-import { PanelRightClose, Plus, Terminal, X } from 'lucide-react'
+import { Plus, Terminal, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { WINDOW_CONTROLS_INSET_RIGHT } from '@/lib/platform'
-import { Tooltip, TooltipTrigger, TooltipContent } from '@/components/ui/tooltip'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import {
   agentDiffUnseenChangesAtom,
   isAgentExecutionNodeTab,
   isAgentTerminalTab,
+  isBrowserTaskTab,
+  isBrowserInstanceTab,
   currentAgentSessionIdAtom,
 } from '@/atoms/agent-atoms'
 import type {
@@ -33,7 +34,6 @@ interface DiffPanelTabBarProps {
   onTabAdd: (tab: AgentSidePanelAddTab) => void
   onTabReorder: (source: AgentSidePanelTab, target: AgentSidePanelTab) => void
   getTabLabel?: (tab: AgentSidePanelTab) => string | undefined
-  onClose?: () => void
   isWindows?: boolean
 }
 
@@ -43,6 +43,7 @@ interface PreviousTabState {
 }
 
 export const AGENT_SIDE_PANEL_TAB_LABELS: Record<AgentSidePanelStaticTab, string> = {
+  browser: '浏览器',
   session: '会话文件',
   workspace: '工作区文件',
   changes: '文件改动',
@@ -65,7 +66,6 @@ export function DiffPanelTabBar({
   onTabAdd,
   onTabReorder,
   getTabLabel,
-  onClose,
   isWindows = false,
 }: DiffPanelTabBarProps): React.ReactElement {
   const unseenMap = useAtomValue(agentDiffUnseenChangesAtom)
@@ -111,7 +111,9 @@ export function DiffPanelTabBar({
   const resolveTabLabel = React.useCallback((tab: AgentSidePanelTab): string => {
     if (isAgentExecutionNodeTab(tab)) return getTabLabel?.(tab) ?? '执行节点'
     if (isAgentTerminalTab(tab)) return getTabLabel?.(tab) ?? '终端'
-    return AGENT_SIDE_PANEL_TAB_LABELS[tab]
+    if (isBrowserTaskTab(tab)) return getTabLabel?.(tab) ?? '浏览器任务'
+    if (isBrowserInstanceTab(tab)) return getTabLabel?.(tab) ?? '浏览器'
+    return AGENT_SIDE_PANEL_TAB_LABELS[tab as AgentSidePanelStaticTab]
   }, [getTabLabel])
 
   return (
@@ -201,23 +203,6 @@ export function DiffPanelTabBar({
           </PopoverContent>
         </Popover>
 
-        {onClose && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                type="button"
-                onClick={onClose}
-                className="mb-[3px] ml-auto mr-1 flex size-7 shrink-0 items-center justify-center rounded text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground"
-                aria-label="折叠右侧功能区"
-              >
-                <PanelRightClose className="size-4" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom">
-              折叠功能区 ({navigator.platform.includes('Mac') ? '⌘⇧B' : 'Ctrl+Shift+B'})
-            </TooltipContent>
-          </Tooltip>
-        )}
       </div>
     </div>
   )

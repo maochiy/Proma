@@ -9,6 +9,12 @@ export interface RestoredAgentContextUsage {
   outputTokens?: number
   cacheReadTokens?: number
   cacheCreationTokens?: number
+  /** 会话累计净输入 tokens（不含缓存；对齐 opencode adjusted input 口径） */
+  cumulativeInputTokens?: number
+  /** 会话累计缓存读取 tokens（用于计算缓存命中率） */
+  cumulativeCacheReadTokens?: number
+  /** 会话累计缓存写入 tokens */
+  cumulativeCacheCreationTokens?: number
   contextWindow?: number
   contextUsageIsEstimated: boolean
   autoCompactEnabled?: boolean
@@ -127,6 +133,18 @@ export function derivePersistedAgentContextUsage(
   let effectiveContextWindow: number | undefined
   let hasAssistantUsageInTurn = false
   let compactResultPending = false
+  // 会话累计（缓存命中率），对齐 opencode adjusted input 口径
+  let cumulativeInputTokens = 0
+  let cumulativeCacheReadTokens = 0
+  let cumulativeCacheCreationTokens = 0
+
+  const accumulateUsage = (usage: { inputTokens: number; cacheReadTokens?: number; cacheCreationTokens?: number }): void => {
+    const cacheRead = usage.cacheReadTokens ?? 0
+    const cacheCreation = usage.cacheCreationTokens ?? 0
+    cumulativeCacheReadTokens += cacheRead
+    cumulativeCacheCreationTokens += cacheCreation
+    cumulativeInputTokens += Math.max(0, usage.inputTokens - cacheRead - cacheCreation)
+  }
 
   for (const [index, message] of messages.entries()) {
     const record = asRecord(message)
@@ -156,6 +174,7 @@ export function derivePersistedAgentContextUsage(
     if (record.type === 'assistant' && record.parent_tool_use_id == null) {
       const usage = readUsage(asRecord(record.message)?.usage)
       if (!usage || usage.inputTokens <= 0) continue
+      accumulateUsage(usage)
       const candidate: ContextUsageSnapshot = {
         value: {
           ...usage,
@@ -210,6 +229,7 @@ export function derivePersistedAgentContextUsage(
 
     const usage = readUsage(record.usage)
     if (usage && usage.inputTokens > 0) {
+      accumulateUsage(usage)
       const candidate: ContextUsageSnapshot = {
         value: {
           ...usage,
@@ -227,6 +247,9 @@ export function derivePersistedAgentContextUsage(
   if (!snapshot) return undefined
   return {
     ...snapshot.value,
+    cumulativeInputTokens,
+    cumulativeCacheReadTokens,
+    cumulativeCacheCreationTokens,
     contextWindow,
     ...(autoCompactEnabled !== undefined && { autoCompactEnabled }),
     ...(autoCompactThreshold !== undefined && { autoCompactThreshold }),

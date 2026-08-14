@@ -124,9 +124,15 @@ import {
   agentFloatingPanelForcedSessionsAtom,
   agentFloatingPanelVisibleSessionsAtom,
   beginAgentFloatingPanelTurnAtom,
+  markAgentStreamStopped,
 } from '@/atoms/agent-atoms'
 import type { AgentContextStatus, AgentStreamState } from '@/atoms/agent-atoms'
 import { settingsOpenAtom } from '@/atoms/settings-tab'
+import {
+  browserAnnotationKey,
+  browserAnnotationsAtomFamily,
+  browserSelectedAnnotationIdsAtomFamily,
+} from '@/atoms/browser-atoms'
 import { longTextPasteAsAttachmentEnabledAtom } from '@/atoms/ui-preferences'
 import { channelsAtom, thinkingExpandedAtom } from '@/atoms/chat-atoms'
 import { useOpenSession } from '@/hooks/useOpenSession'
@@ -154,12 +160,14 @@ import {
 } from '@/lib/agent-thinking-effort'
 import {
   buildQueuedMessageSendPayload,
+  canAutoSendQueuedAgentMessage,
   createAgentQueuedMessage,
   moveQueuedMessage,
   parseQueuedMessageMentions,
   queuedTextToParagraphHtml,
   removeQueuedMessage,
   restoreQueuedMessageToFront,
+  shouldDeferAgentMessage,
 } from '@/lib/agent-message-queue'
 import type { AgentQueuedAttachment, AgentQueuedMessage, QueueDropPlacement } from '@/lib/agent-message-queue'
 import { useSessionFloatingLayout } from '@/hooks/useSessionFloatingLayout'
@@ -199,7 +207,7 @@ function resolveRunContextWindow(
   return modelInfo?.contextWindow ?? previous
 }
 
-/** 新 Turn 只重置流式展示字段，保留当前会话的上下文用量和 CCB 压缩配置。 */
+/** 新 Turn 只重置流式展示字段，保留当前会话的上下文用量和 Runtime 压缩配置。 */
 function preserveAgentContextState(
   previous: AgentStreamState | undefined,
   contextWindow = previous?.contextWindow,
@@ -209,6 +217,9 @@ function preserveAgentContextState(
     outputTokens: previous?.outputTokens,
     cacheReadTokens: previous?.cacheReadTokens,
     cacheCreationTokens: previous?.cacheCreationTokens,
+    cumulativeInputTokens: previous?.cumulativeInputTokens,
+    cumulativeCacheReadTokens: previous?.cumulativeCacheReadTokens,
+    cumulativeCacheCreationTokens: previous?.cumulativeCacheCreationTokens,
     costUsd: previous?.costUsd,
     contextWindow,
     contextUsageIsEstimated: previous?.contextUsageIsEstimated,
@@ -263,10 +274,16 @@ function getErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-function isStaleAgentQueueError(error: unknown): boolean {
+function isTransientAgentRuntimeStateError(error: unknown): boolean {
   const message = getErrorMessage(error)
   return message.includes('会话未运行，无法追加消息') ||
-    message.includes('无活跃消息通道可注入队列消息')
+    message.includes('无活跃消息通道可注入队列消息') ||
+    message.includes('当前没有可介入的活跃 Turn') ||
+    message.includes('暂不支持在当前 Turn 内追加普通等待消息') ||
+    message.includes('暂不支持同一 Query 内的队列消息') ||
+    message.includes('当前 Runtime 不支持队列消息') ||
+    message.includes('上一条消息仍在处理中') ||
+    message.includes('会话正在运行中')
 }
 
 export function AgentView({ sessionId }: { sessionId: string }): React.ReactElement {
@@ -322,6 +339,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   // atom 输出引用未变，订阅者跳过通知。
   const streamState = useAtomValue(agentSessionStreamingStateAtomFamily(sessionId))
   const streaming = streamState?.running ?? false
+  const stopping = streamState?.stopping ?? false
   useSessionFloatingRuntimeLifecycle(sessionId)
   // 软空闲态：本轮主体已结束、UI 可输入，但 SDK 通道仍开着等后台任务唤醒。
   // 此时服务端 activeSessions 仍保留，新消息须走注入通道而非新建 run。
@@ -390,6 +408,12 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   )
   const [pendingPrompt, setPendingPrompt] = useAtom(agentPendingPromptAtom)
   const [pendingFiles, setPendingFiles] = useAtom(agentPendingFilesAtomFamily(sessionId))
+  const browserAnnotations = useAtomValue(browserAnnotationsAtomFamily(sessionId))
+  const selectedBrowserAnnotationIds = useAtomValue(browserSelectedAnnotationIdsAtomFamily(sessionId))
+  const selectedBrowserAnnotations = React.useMemo(
+    () => browserAnnotations.filter((annotation) => selectedBrowserAnnotationIds.has(browserAnnotationKey(annotation))),
+    [browserAnnotations, selectedBrowserAnnotationIds],
+  )
   const [queuedMessages, setQueuedMessages] = useAtom(agentMessageQueueAtomFamily(sessionId))
   const [workspaces, setAgentWorkspaces] = useAtom(agentWorkspacesAtom)
   // 保持 channelId 稳定：初始化前使用上次有效值，避免工具栏抖动
@@ -429,6 +453,9 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     outputTokens: streamState?.outputTokens,
     cacheReadTokens: streamState?.cacheReadTokens,
     cacheCreationTokens: streamState?.cacheCreationTokens,
+    cumulativeInputTokens: streamState?.cumulativeInputTokens,
+    cumulativeCacheReadTokens: streamState?.cumulativeCacheReadTokens,
+    cumulativeCacheCreationTokens: streamState?.cumulativeCacheCreationTokens,
     costUsd: streamState?.costUsd,
     contextWindow: streamState?.contextWindow,
     contextUsageIsEstimated: streamState?.contextUsageIsEstimated,
@@ -516,7 +543,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   const wsAttachedFilesMap = useAtomValue(workspaceAttachedFilesMapAtom)
   const wsAttachedFiles = currentWorkspaceId ? (wsAttachedFilesMap.get(currentWorkspaceId) ?? []) : []
 
-  /** 独立切换计划模式；审批模式保持原值，运行中由 Main 热同步到 CCB。 */
+  /** 独立切换计划模式；审批模式保持原值，运行中由 Main 热同步到当前 Runtime。 */
   const handlePlanModeChange = React.useCallback(async (enabled: boolean): Promise<void> => {
     const previous = isPlanMode
     setPlanModeSessions((prev) => {
@@ -654,7 +681,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       } catch (error) {
         if (cancelled) return
         console.error(
-          `[AgentView] CCB 模型目录加载失败: channel=${agentChannelId}`,
+          `[AgentView] Runtime 模型目录加载失败: channel=${agentChannelId}`,
           error,
         )
         setRuntimeModelCatalogs((previous) => {
@@ -674,7 +701,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     }
 
     void loadCatalogs(true)
-    // CCB CLI 可能在桌面端运行期间更新 ~/.claude 或项目 .claude 配置。
+    // Runtime CLI 可能在桌面端运行期间更新用户级或项目级配置。
     // Main 会按配置内容指纹命中缓存，因此轮询只产生轻量 IPC，不会重复解析 Runtime。
     const refreshTimer = window.setInterval(() => {
       void loadCatalogs(false)
@@ -1119,6 +1146,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         ...(mentions.mentionedSkills.length > 0 && { mentionedSkills: mentions.mentionedSkills }),
         ...(mentions.mentionedMcpServers.length > 0 && { mentionedMcpServers: mentions.mentionedMcpServers }),
         ...(mentions.mentionedSessionIds.length > 0 && { mentionedSessionIds: mentions.mentionedSessionIds }),
+        ...(selectedBrowserAnnotations.length > 0 && { browserAnnotations: selectedBrowserAnnotations }),
       })
     } catch (error) {
       setStreamingStates((prev) => {
@@ -1138,6 +1166,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     effectivePermissionMode,
     runtimeThinking,
     sessionId,
+    selectedBrowserAnnotations,
     setStreamingStates,
     store,
   ])
@@ -1167,14 +1196,14 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     })
 
     // interrupt 由本函数读到的实时 streaming 决定，而非调用方传入的快照：
-    // - streaming（本轮真正进行中）：注入前需软中断当前 turn
+    // - streaming（本轮真正进行中）：由 Runtime 通过 steering 立即介入
     // - backgroundWaiting（软空闲，无活跃 turn）：直接注入，无需中断
     // 避免"外层判定 streaming、内层已结束"两个快照不一致导致的竞态。
     if (streaming || backgroundWaiting) {
       try {
         await queueMessageIntoActiveAgent(message, payload.rawText, payload.sdkText, payload.mentions, streaming)
       } catch (error) {
-        if (isStaleAgentQueueError(error)) {
+        if (isTransientAgentRuntimeStateError(error)) {
           console.warn('[AgentView] 检测到陈旧的 Agent 追加通道，改为启动新一轮运行:', error)
           await startQueuedMessageRun(payload.rawText, payload.mentions, agentChannelId, message.additionalDirectories)
           return
@@ -1204,7 +1233,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   const messagesRefreshingRef = React.useRef(false)
   const loadingSessionIdRef = React.useRef<string | null>(null)
 
-  // Proma 本地 JSONL 首屏加载完成后，CCB Transcript 会在主进程后台增量同步。
+  // 历史兼容会话可能在主进程后台同步 Transcript。
   // 只有当前会话空闲时才静默替换投影；运行中继续保留 liveMessages，避免重复气泡。
   React.useEffect(() => {
     return window.electronAPI.onAgentSessionTranscriptSynced((payload) => {
@@ -2007,7 +2036,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     void window.electronAPI.updateAgentRuntimeConfig(sessionId, {
       model: option.modelId,
     }).catch((error) => {
-      console.error('[AgentView] 实时更新 CCB 模型失败:', error)
+      console.error('[AgentView] 实时更新 Runtime 模型失败:', error)
     })
   }, [
     backgroundWaiting,
@@ -2199,16 +2228,16 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     const effectiveText = text || suggestion || ''
     const pendingFilesSnapshot = pendingFilesRef.current
     if (!messagesLoaded || (!effectiveText && pendingFilesSnapshot.length === 0) || !agentChannelId || !hasAvailableModel) return
-    if (!streaming && messagesRefreshingRef.current) {
-      toast.info('上一轮消息正在同步', {
-        description: '请稍等片刻再发送；队列会在同步完成后继续。',
-      })
-      return
-    }
+    const shouldDeferMessage = shouldDeferAgentMessage({
+      streaming,
+      stopping,
+      messagesRefreshing: messagesRefreshingRef.current,
+    })
     const additionalDirectoriesForRun = createBaseAdditionalDirectories()
 
-    if (streaming) {
-      // Agent 正在输出时，用户消息默认进入 Proma 托管队列，不打断当前 turn。
+    if (shouldDeferMessage) {
+      // Agent 正在输出，或用户已点击暂停但 Runtime 尚未完全收尾时，
+      // 消息立即进入 Proma 托管队列。输入框保持可用，旧回合完成后自动续跑。
       const attachmentContext = pendingFilesSnapshot.length > 0
         ? await preparePendingFilesForSend(pendingFilesSnapshot, additionalDirectoriesForRun)
         : null
@@ -2397,6 +2426,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       ...(mentions.mentionedSkills.length > 0 && { mentionedSkills: mentions.mentionedSkills }),
       ...(mentions.mentionedMcpServers.length > 0 && { mentionedMcpServers: mentions.mentionedMcpServers }),
       ...(mentions.mentionedSessionIds.length > 0 && { mentionedSessionIds: mentions.mentionedSessionIds }),
+      ...(selectedBrowserAnnotations.length > 0 && { browserAnnotations: selectedBrowserAnnotations }),
     }
 
     // 清空输入框（仅当发送的是用户自己输入的内容，而非推荐建议时）
@@ -2417,20 +2447,44 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
         return map
       })
     })
-  }, [inputContent, createBaseAdditionalDirectories, preparePendingFilesForSend, restoreQueuedAttachmentsToPending, sessionId, agentChannelId, agentModelId, selectedRuntimeModel, currentWorkspaceId, runtimeThinking, streaming, backgroundWaiting, suggestion, hasAvailableModel, store, consumeQuotedSelection, setStreamingStates, setAgentStreamErrors, setPromptSuggestions, setInputContent, setLiveMessagesMap, effectivePermissionMode, messagesLoaded, referenceableSessionIds, setQueuedMessages, setQuotedSelectionMap, sendPlainTextAgentMessage, setAgentSessions])
+  }, [inputContent, createBaseAdditionalDirectories, preparePendingFilesForSend, restoreQueuedAttachmentsToPending, sessionId, agentChannelId, agentModelId, selectedRuntimeModel, currentWorkspaceId, runtimeThinking, streaming, backgroundWaiting, stopping, suggestion, hasAvailableModel, store, consumeQuotedSelection, setStreamingStates, setAgentStreamErrors, setPromptSuggestions, setInputContent, setLiveMessagesMap, effectivePermissionMode, messagesLoaded, referenceableSessionIds, setQueuedMessages, setQuotedSelectionMap, sendPlainTextAgentMessage, setAgentSessions, selectedBrowserAnnotations])
 
   /** 停止生成 */
   const handleStop = React.useCallback((): void => {
+    if (stopping) return
+
     store.set(stoppedByUserSessionsAtom, (prev: Set<string>) => {
       const next = new Set(prev)
       next.add(sessionId)
       return next
     })
 
-    // 不再提前把 UI 标记为空闲。stopAgent 只有在 CCB QueryEngine 真正退出、
-    // Worker 回到 ready 后才完成，随后由全局 STREAM_COMPLETE 统一结束运行态。
-    window.electronAPI.stopAgent(sessionId).catch(console.error)
-  }, [sessionId, store])
+    // 先让 UI 立即进入停止态；主进程仍会等待 Runtime 真正退出后发送完成事件。
+    setStreamingStates((prev) => {
+      const current = prev.get(sessionId)
+      if (!current || !current.running) return prev
+      const map = new Map(prev)
+      map.set(sessionId, markAgentStreamStopped(current))
+      return map
+    })
+
+    window.electronAPI.stopAgent(sessionId).catch((error: unknown) => {
+      console.error('[AgentView] 停止 Runtime 失败:', error)
+      store.set(stoppedByUserSessionsAtom, (prev: Set<string>) => {
+        if (!prev.has(sessionId)) return prev
+        const next = new Set(prev)
+        next.delete(sessionId)
+        return next
+      })
+      setStreamingStates((prev) => {
+        const current = prev.get(sessionId)
+        if (!current?.stopping) return prev
+        const map = new Map(prev)
+        map.set(sessionId, { ...current, running: true, stopping: false })
+        return map
+      })
+    })
+  }, [sessionId, setStreamingStates, stopping, store])
 
   /** 手动发送 /compact 命令 */
   const handleCompact = React.useCallback((): void => {
@@ -2752,7 +2806,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   const activeInteractionPanel = getActiveAgentInteractionPanel(interactionRequestCounts)
   const hasInteractionPanel = shouldReplaceAgentComposer(interactionRequestCounts)
   const hasBlockingRequests = hasInteractionPanel
-  const canSendQueuedNow = messagesLoaded && (streaming || !messagesRefreshing) && !!agentChannelId && hasAvailableModel && !hasBlockingRequests
+  const canSendQueuedNow = messagesLoaded && !stopping && (streaming || !messagesRefreshing) && !!agentChannelId && hasAvailableModel && !hasBlockingRequests
   const autoSendingQueuedRef = React.useRef(false)
   const queuedSendInFlightRef = React.useRef(false)
   const sendingQueuedMessageIdsRef = React.useRef<Set<string>>(new Set())
@@ -2827,9 +2881,13 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   React.useEffect(() => {
     if (autoSendingQueuedRef.current) return
     if (queuedSendInFlightRef.current) return
-    if (queuedMessages.length === 0) return
-    if (messagesRefreshingRef.current) return
-    if (!canSendQueuedNow || streaming || stoppedByUser) return
+    if (!canAutoSendQueuedAgentMessage({
+      queueLength: queuedMessages.length,
+      canSendNow: canSendQueuedNow,
+      streaming,
+      stopping,
+      messagesRefreshing: messagesRefreshingRef.current,
+    })) return
 
     const message = queuedMessages[0]
     if (!message) return
@@ -2842,15 +2900,23 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     sendPlainTextAgentMessage(message)
       .catch((error) => {
         console.error('[AgentView] 自动发送队列消息失败:', error)
-        toast.error('自动发送队列消息失败', { description: String(error) })
+        if (isTransientAgentRuntimeStateError(error)) {
+          console.info('[AgentView] Runtime 仍在收尾，队列消息将在状态就绪后自动重试')
+          // 等 finally 释放 in-flight 标记后再恢复队首，确保状态更新能重新触发 effect。
+          window.setTimeout(() => {
+            setQueuedMessages((prev) => restoreQueuedMessageToFront(prev, message))
+          }, 100)
+          return
+        }
         setQueuedMessages((prev) => restoreQueuedMessageToFront(prev, message))
+        toast.error('自动发送队列消息失败', { description: String(error) })
       })
       .finally(() => {
         sendingQueuedMessageIdsRef.current.delete(message.id)
         queuedSendInFlightRef.current = false
         autoSendingQueuedRef.current = false
       })
-  }, [canSendQueuedNow, queuedMessages, sendPlainTextAgentMessage, setQueuedMessages, stoppedByUser, streaming])
+  }, [canSendQueuedNow, queuedMessages, sendPlainTextAgentMessage, setQueuedMessages, stopping, streaming])
 
   // ===== 预览面板状态（toggle 快捷键，分屏布局在 MainArea） =====
   const setPreviewOpenMap = useSetAtom(previewPanelOpenMapAtom)
@@ -2869,7 +2935,12 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
   }, [togglePreviewPanel])
 
   const hasTextInput = inputContent.trim().length > 0
-  const canSend = messagesLoaded && (streaming || !messagesRefreshing) && (hasTextInput || pendingFiles.length > 0 || !!suggestion) && agentChannelId !== null && hasAvailableModel && (!streaming || hasTextInput)
+  const canSend = messagesLoaded
+    && (hasTextInput || pendingFiles.length > 0 || !!suggestion)
+    && agentChannelId !== null
+    && hasAvailableModel
+    && (!streaming || hasTextInput)
+  const waitingForQueuedRun = !streaming && queuedMessages.length > 0
 
   const handleThinkingEffortChange = React.useCallback((
     level: import('@proma/shared').ThinkingEffortLevel,
@@ -2887,7 +2958,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
       thinkingConfig: nextThinking,
       effortLevel: level,
     }).catch((error) => {
-      console.error('[AgentView] 实时更新 CCB 思考等级失败:', error)
+      console.error('[AgentView] 实时更新 Runtime 思考等级失败:', error)
     })
     setAgentThinkingEffortLevel(level)
     window.electronAPI.updateSettings({
@@ -2928,13 +2999,16 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
           outputTokens={contextStatus.outputTokens}
           cacheReadTokens={contextStatus.cacheReadTokens}
           cacheCreationTokens={contextStatus.cacheCreationTokens}
+          cumulativeInputTokens={contextStatus.cumulativeInputTokens}
+          cumulativeCacheReadTokens={contextStatus.cumulativeCacheReadTokens}
+          cumulativeCacheCreationTokens={contextStatus.cumulativeCacheCreationTokens}
           contextWindow={contextStatus.contextWindow}
           isEstimated={contextStatus.contextUsageIsEstimated === true}
           autoCompactEnabled={contextStatus.autoCompactEnabled}
           autoCompactThreshold={contextStatus.autoCompactThreshold}
           effectiveContextWindow={contextStatus.effectiveContextWindow}
           isCompacting={contextStatus.isCompacting}
-          isProcessing={streaming}
+          isProcessing={streaming || waitingForQueuedRun}
           sessionId={sessionId}
           channelId={planQuotaChannelId}
           channelUpdatedAt={planQuotaChannelUpdatedAt}
@@ -2961,6 +3035,7 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
     contextStatus.effectiveContextWindow,
     contextStatus.isCompacting,
     streaming,
+    waitingForQueuedRun,
     handleCompact,
   ])
 
@@ -3054,6 +3129,8 @@ export function AgentView({ sessionId }: { sessionId: string }): React.ReactElem
           messagesLoaded={messagesLoaded}
           persistedSDKMessages={persistedSDKMessages}
           streaming={streaming}
+          waitingForQueuedRun={waitingForQueuedRun}
+          queuedRunStartedAt={queuedMessages[0]?.createdAt}
           streamState={streamState}
           liveMessages={liveMessages}
           sessionPath={sessionPath}

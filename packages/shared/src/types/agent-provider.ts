@@ -12,6 +12,8 @@ import type {
   ThinkingConfig,
   ThinkingEffortLevel,
 } from './agent'
+import type { RuntimeId } from './runtime'
+import type { ContextPacket, RuntimeModelRoute } from './runtime-dispatch'
 
 /** SDK 用户消息（队列消息注入用，匹配 SDK SDKUserMessage 结构） */
 export interface SDKUserMessageInput {
@@ -25,7 +27,7 @@ export interface SDKUserMessageInput {
 
 /** 队列消息注入选项 */
 export interface SendQueuedMessageOptions {
-  /** 先取消当前 turn，再把消息作为新一轮用户输入发送 */
+  /** 由 Runtime 原子执行 steering，使消息立即介入当前 turn。 */
   interrupt?: boolean
   /** 当前用户输入显式引用的 Skill name（兼容历史 slug 已在编排层归一化） */
   skillMentions?: string[]
@@ -42,6 +44,8 @@ export interface SendQueuedMessageOptions {
 export interface AgentQueryInput {
   /** 会话 ID */
   sessionId: string
+  /** 由主进程 Dispatch Policy 注入的 Runtime；Renderer 不应直接设置。 */
+  runtimeId?: RuntimeId
   /** 用户 prompt（已包含上下文注入） */
   prompt: string
   /** 模型 ID */
@@ -52,6 +56,24 @@ export interface AgentQueryInput {
   additionalSkillDirectories?: string[]
   /** 中止信号 */
   abortSignal?: AbortSignal
+  /** Runtime 专用的宿主环境变量。 */
+  env?: Record<string, string | undefined>
+  /** Runtime 专用系统提示词。 */
+  systemPrompt?: string | { type: 'preset'; preset: 'claude_code'; append?: string }
+  /** 由 Proma 主进程编译的统一上下文包。 */
+  contextPacket?: ContextPacket
+  /** 由 Proma 模型中心解析出的 Runtime 路由。 */
+  modelRoute?: RuntimeModelRoute
+  /** Runtime 建立/恢复会话后的回调。 */
+  onSessionId?: (sessionId: string) => void
+  /** 使用 Runtime 原生能力执行一次上下文压缩，不把 /compact 当作普通提示词发送。 */
+  compactRequest?: boolean
+  /**
+   * Proma 主进程编译的 MCP Server 配置（materialize 后：内置工具为 http 端点，
+   * 外部 server 为 stdio/http 连接信息）。支持 MCP 的 Runtime（如 Pi）据此
+   * 连接并暴露其中的工具（例如 collaboration 子 Agent 工具 delegate_*）。
+   */
+  mcpServers?: Record<string, unknown>
 }
 
 /** 空闲 Session 操作所需的 Runtime 启动参数。 */

@@ -11,6 +11,8 @@ export interface Workspace {
 
 // 运行时相关类型
 export * from './runtime'
+export * from './runtime-workflow'
+export * from './runtime-dispatch'
 
 // 渠道（AI 供应商）相关类型
 export * from './channel'
@@ -36,6 +38,9 @@ export * from './installer'
 // GitHub Release 相关类型
 export * from './github'
 
+// 用户反馈相关类型
+export * from './feedback'
+
 // 系统提示词相关类型
 export * from './system-prompt'
 
@@ -53,3 +58,9 @@ export * from './wechat'
 
 // 定时任务（Automation）相关类型
 export * from './automation'
+
+// Proma Browser 交互相关类型
+export * from './browser'
+
+// 任务看板（Taskboard）相关类型
+export * from './taskboard'

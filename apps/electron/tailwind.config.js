@@ -87,6 +87,11 @@ export default {
         xl: 'calc(var(--radius) + var(--radius-xl-extra, 2px))',
         '2xl': 'calc(var(--radius) + var(--radius-2xl-extra, 4px))',
       },
+      // ===== z-index：扩展支持 400/500 用于对话框内下拉 =====
+      zIndex: {
+        '400': '400',
+        '500': '500',
+      },
       // ===== 阴影：覆写 Tailwind 内置的 sm/md/lg/xl/DEFAULT =====
       // 现有 78 处 shadow-md / shadow-lg 等代码无需改动，自动吃多层柔阴影 + 主题自适应
       boxShadow: {

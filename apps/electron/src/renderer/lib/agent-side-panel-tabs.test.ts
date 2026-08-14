@@ -218,7 +218,7 @@ describe('右侧功能区加号菜单', () => {
       hasExecutionGraph: true,
       hasPlan: true,
       hasSideChat: true,
-    })).toEqual(['workspace', 'plan', 'execution', 'chat', 'terminal'])
+    })).toEqual(['browser', 'workspace', 'plan', 'execution', 'chat', 'terminal'])
   })
 
   test('Given 没有执行图和侧边问答 When 生成可选项 Then 不显示执行与问答', () => {
@@ -227,7 +227,7 @@ describe('右侧功能区加号菜单', () => {
       hasExecutionGraph: false,
       hasPlan: false,
       hasSideChat: false,
-    })).toEqual(['session', 'workspace', 'changes', 'terminal'])
+    })).toEqual(['browser', 'session', 'workspace', 'changes', 'terminal'])
   })
 
   test('Given 执行节点动态 Tab 已打开 When 生成加号菜单 Then 不影响静态功能候选项', () => {
@@ -236,7 +236,7 @@ describe('右侧功能区加号菜单', () => {
       hasExecutionGraph: true,
       hasPlan: false,
       hasSideChat: false,
-    })).toEqual(['session', 'workspace', 'changes', 'execution', 'terminal'])
+    })).toEqual(['browser', 'session', 'workspace', 'changes', 'execution', 'terminal'])
   })
 
   test('Given 当前存在计划 When 子智能体不存在 Then 加号菜单仍可单独打开计划', () => {
@@ -245,6 +245,6 @@ describe('右侧功能区加号菜单', () => {
       hasExecutionGraph: false,
       hasPlan: true,
       hasSideChat: false,
-    })).toEqual(['session', 'workspace', 'changes', 'plan', 'terminal'])
+    })).toEqual(['browser', 'session', 'workspace', 'changes', 'plan', 'terminal'])
   })
 })

@@ -3,6 +3,7 @@ import {
   getEffectivePermissionMode,
   getPlanModeChangeFromToolName,
   normalizeApprovalMode,
+  updatePlanSuggestionForMode,
   updatePlanModeSessionSet,
 } from './agent-plan-mode'
 
@@ -56,5 +57,18 @@ describe('Agent 计划阶段状态', () => {
 
   test('Given 历史审批字段为 plan When 显示审批模式 Then 回退到请求批准', () => {
     expect(normalizeApprovalMode('plan')).toBe('default')
+  })
+
+  test('Given 计划建议仍显示 When 开始执行计划 Then 清除对话框建议', () => {
+    const prev = new Map([['session-a', '请执行该计划']])
+    const next = updatePlanSuggestionForMode(prev, 'session-a', false)
+
+    expect(next.has('session-a')).toBe(false)
+    expect(next).not.toBe(prev)
+  })
+
+  test('Given 仍处于计划模式 When 同步状态 Then 保留计划建议', () => {
+    const prev = new Map([['session-a', '请执行该计划']])
+    expect(updatePlanSuggestionForMode(prev, 'session-a', true)).toBe(prev)
   })
 })

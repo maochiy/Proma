@@ -228,6 +228,10 @@ interface AgentMessagesProps {
   /** Phase 4: 持久化的 SDKMessage（新格式） */
   persistedSDKMessages?: SDKMessage[]
   streaming: boolean
+  /** 用户已发送下一条消息，正在等待上一轮 Runtime 完成停止与消息同步。 */
+  waitingForQueuedRun?: boolean
+  /** 等待中的队首消息创建时间，用作“正在思考”计时起点。 */
+  queuedRunStartedAt?: number
   streamState?: AgentStreamState
   /** Phase 2: 实时 SDKMessage 列表（流式期间累积） */
   liveMessages?: SDKMessage[]
@@ -449,7 +453,7 @@ export function formatDuration(ms: number): string {
   return `${minutes}m ${remainingSeconds.toFixed(0)}s`
 }
 
-export function AgentMessages({ sessionId, contentOffsetX = 0, sessionModelId, messagesLoaded, persistedSDKMessages, streaming, streamState, liveMessages, sessionPath, attachedDirs, stoppedByUser, onRetry, onRetryInNewSession, onFork, onRewind, onCompact }: AgentMessagesProps): React.ReactElement {
+export function AgentMessages({ sessionId, contentOffsetX = 0, sessionModelId, messagesLoaded, persistedSDKMessages, streaming, waitingForQueuedRun = false, queuedRunStartedAt, streamState, liveMessages, sessionPath, attachedDirs, stoppedByUser, onRetry, onRetryInNewSession, onFork, onRewind, onCompact }: AgentMessagesProps): React.ReactElement {
   const userProfile = useAtomValue(userProfileAtom)
   const setMinimapCache = useSetAtom(tabMinimapCacheAtom)
   const sessions = useAtomValue(agentSessionsAtom)
@@ -739,7 +743,7 @@ export function AgentMessages({ sessionId, contentOffsetX = 0, sessionModelId, m
         <ConversationContent
           style={{ transform: contentOffsetX ? `translateX(${contentOffsetX}px)` : undefined }}
         >
-          {!hasContent && !streaming ? (
+          {!hasContent && !streaming && !waitingForQueuedRun ? (
             <EmptyState />
           ) : (
             <>
@@ -868,6 +872,19 @@ export function AgentMessages({ sessionId, contentOffsetX = 0, sessionModelId, m
                     </Message>
                   )}
                 </>
+              )}
+
+              {/* 暂停后的下一条消息已进入队列：旧 Runtime 收尾期间持续显示处理中，
+                  但不把旧流重新标记为 running，避免误走 Runtime 注入通道。 */}
+              {waitingForQueuedRun && !streaming && (
+                <Message from="assistant">
+                  <MessageContent className="pl-0">
+                    <AgentRunningIndicator
+                      startedAt={queuedRunStartedAt}
+                      model={sessionModelId}
+                    />
+                  </MessageContent>
+                </Message>
               )}
 
             </>

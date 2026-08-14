@@ -377,6 +377,7 @@ export function createChannel(input: ChannelCreateInput): Channel {
     baseUrl: input.baseUrl,
     apiKey: encryptApiKey(input.apiKey),
     models: input.models,
+    ...(input.autoCompactRatio != null ? { autoCompactRatio: input.autoCompactRatio } : {}),
     defaultModelId: resolveDefaultModelId(
       input.models,
       input.defaultModelId,
@@ -418,6 +419,11 @@ export function updateChannel(id: string, input: ChannelUpdateInput): Channel {
     baseUrl: input.baseUrl ?? existing.baseUrl,
     apiKey: input.apiKey ? encryptApiKey(input.apiKey) : existing.apiKey,
     models,
+    ...(input.autoCompactRatio != null
+      ? { autoCompactRatio: input.autoCompactRatio }
+      : 'autoCompactRatio' in input
+        ? { autoCompactRatio: undefined }
+        : {}),
     defaultModelId: resolveDefaultModelId(
       models,
       input.defaultModelId ?? existing.defaultModelId,

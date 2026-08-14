@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, Menu, nativeTheme, protocol, screen, shell } from 'electron'
+import { app, BrowserWindow, dialog, Menu, nativeTheme, protocol, screen, shell, ipcMain } from 'electron'
 import { join } from 'path'
 import { existsSync } from 'fs'
 
@@ -121,6 +121,8 @@ import {
 import { registerGlobalShortcut, unregisterAllGlobalShortcuts } from './lib/global-shortcut-service'
 import { setPromaVersion } from '@proma/core'
 import { TRAY_IPC_CHANNELS } from '../types'
+import { installBrowserWebviewSecurity, registerBrowserWebviewIpc } from './lib/browser/browser-webview.cjs'
+import { registerBrowserAgentIpc } from './lib/browser/browser-agent-ipc'
 
 const MIGRATION_IPC_OPEN = 'migration:open-import-file'
 
@@ -349,6 +351,7 @@ function createWindow(): void {
       preload: join(__dirname, 'preload.cjs'),
       contextIsolation: true,
       nodeIntegration: false,
+      webviewTag: true,
     },
     ...titleBarOptions,
   })
@@ -493,6 +496,10 @@ async function bootstrap(): Promise<void> {
 
   // Register IPC handlers
   registerIpcHandlers()
+  // 只注册一次 Browser WebView 安全策略，避免主窗口重建后重复监听。
+  installBrowserWebviewSecurity(() => mainWindow)
+  registerBrowserWebviewIpc(ipcMain, () => mainWindow)
+  registerBrowserAgentIpc(() => mainWindow)
 
   // 收敛上次退出时遗留的运行中委派子会话（内存态丢失，无法续跑）
   safeRun('markRunningDelegationsAsInterrupted', markRunningDelegationsAsInterrupted)

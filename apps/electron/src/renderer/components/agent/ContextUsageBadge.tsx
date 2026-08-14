@@ -29,6 +29,12 @@ interface ContextUsageBadgeProps {
   outputTokens?: number
   cacheReadTokens?: number
   cacheCreationTokens?: number
+  /** 会话累计净输入 tokens（不含缓存），用于计算缓存命中率 */
+  cumulativeInputTokens?: number
+  /** 会话累计缓存读取 tokens，用于计算缓存命中率 */
+  cumulativeCacheReadTokens?: number
+  /** 会话累计缓存写入 tokens */
+  cumulativeCacheCreationTokens?: number
   costUsd?: number
   contextWindow?: number
   /** 当前上下文 token 是否为 CCB 压缩后的估算值 */
@@ -48,6 +54,21 @@ interface ContextUsageBadgeProps {
   channelId?: string | null
   /** 渠道保存时间；凭据变更后用于使旧额度缓存失效。 */
   channelUpdatedAt?: number
+}
+
+/**
+ * 会话累计缓存命中率（对齐 opencode 口径）：
+ * 命中率 = cacheRead / (净输入 + cacheRead)，分母不含 cacheWrite。
+ * 无累计数据时返回 undefined（不展示）。
+ */
+export function computeCacheHitRate(
+  cumulativeInputTokens: number | undefined,
+  cumulativeCacheReadTokens: number | undefined,
+): number | undefined {
+  if (cumulativeInputTokens == null || cumulativeCacheReadTokens == null) return undefined
+  const denominator = cumulativeInputTokens + cumulativeCacheReadTokens
+  if (denominator <= 0) return undefined
+  return Math.round((cumulativeCacheReadTokens / denominator) * 100)
 }
 
 /** 格式化 token 数为可读字符串（如 1234 → "1.2k"） */
@@ -166,6 +187,9 @@ export function ContextUsageBadge({
   outputTokens,
   cacheReadTokens,
   cacheCreationTokens,
+  cumulativeInputTokens,
+  cumulativeCacheReadTokens,
+  cumulativeCacheCreationTokens,
   contextWindow,
   isEstimated,
   autoCompactEnabled,
@@ -184,18 +208,34 @@ export function ContextUsageBadge({
     outputTokens?: number
     cacheReadTokens?: number
     cacheCreationTokens?: number
+    cumulativeInputTokens?: number
+    cumulativeCacheReadTokens?: number
+    cumulativeCacheCreationTokens?: number
     contextWindow?: number
   } | null>(null)
   // 会话切换时清空陈旧值，避免新会话尚未上报 usage 时显示上个会话的数字
   const lastSessionRef = React.useRef<string | undefined>(sessionId)
+  // 最近一次「轮次结束」时提交的缓存命中率快照：运行中显示上一次，结束才更新
+  const committedHitRateRef = React.useRef<number | undefined>(undefined)
+  const prevProcessingRef = React.useRef<boolean>(isProcessing)
   React.useEffect(() => {
     if (lastSessionRef.current !== sessionId) {
       stableRef.current = null
+      committedHitRateRef.current = undefined
       lastSessionRef.current = sessionId
     }
   }, [sessionId])
   if (inputTokens && inputTokens > 0) {
-    stableRef.current = { inputTokens, outputTokens, cacheReadTokens, cacheCreationTokens, contextWindow }
+    stableRef.current = {
+      inputTokens,
+      outputTokens,
+      cacheReadTokens,
+      cacheCreationTokens,
+      cumulativeInputTokens,
+      cumulativeCacheReadTokens,
+      cumulativeCacheCreationTokens,
+      contextWindow,
+    }
   }
 
   const [open, setOpen] = React.useState(false)
@@ -251,28 +291,49 @@ export function ContextUsageBadge({
   const stable = stableRef.current
   const hasCurrent = inputTokens != null && inputTokens > 0
   const displayTokens = hasCurrent ? inputTokens : stable?.inputTokens
-  const displayWindow =
-    effectiveContextWindow
-    ?? (hasCurrent ? contextWindow : stable?.contextWindow)
+  // contextWindow 本身就要参与展示：新 Runtime 首次模型调用前可能只有
+  // 上下文窗口/压缩策略而没有 usage，此时入口仍然要显示（圆环按 0% 渲染）。
+  const displayWindow = effectiveContextWindow ?? contextWindow ?? stable?.contextWindow
   const displayOutput = hasCurrent ? outputTokens : stable?.outputTokens
-  const displayCacheRead = hasCurrent ? cacheReadTokens : stable?.cacheReadTokens
-  const displayCacheCreation = hasCurrent ? cacheCreationTokens : stable?.cacheCreationTokens
 
-  // 从未有过 usage 数据 → 不显示
-  if (!displayTokens || displayTokens <= 0) return null
+  // 会话累计缓存命中率（对齐 opencode：命中率 = cacheRead / (净输入 + cacheRead)，
+  // 分母不含 cacheWrite）
+  const displayCumulativeInput = cumulativeInputTokens ?? stable?.cumulativeInputTokens
+  const displayCumulativeRead = cumulativeCacheReadTokens ?? stable?.cumulativeCacheReadTokens
+  const cacheHitRate = computeCacheHitRate(displayCumulativeInput, displayCumulativeRead)
+
+  // 轮次提交快照：运行中（isProcessing）显示上一次轮次结束时的命中率；
+  // 本轮结束时把最新累计提交为快照。首轮运行中无快照 → 不显示。
+  const prevProcessing = prevProcessingRef.current
+  prevProcessingRef.current = isProcessing
+  if (!isProcessing && prevProcessing && cacheHitRate != null) {
+    committedHitRateRef.current = cacheHitRate
+  }
+  const displayHitRate = isProcessing ? committedHitRateRef.current : (cacheHitRate ?? committedHitRateRef.current)
+
+  // 新 Runtime 首次模型调用前可能只有上下文窗口/压缩策略，没有 usage。
+  // 仍然保留入口，保证用户可以查看策略并触发手动压缩。
+  const hasContextMetadata = Boolean(
+    displayWindow
+    || autoCompactEnabled !== undefined
+    || autoCompactThreshold !== undefined
+    || effectiveContextWindow !== undefined,
+  )
+  if ((!displayTokens || displayTokens <= 0) && !hasContextMetadata) return null
+  const visibleTokens = displayTokens ?? 0
 
   // 仅使用 CCB Runtime 回传的真实阈值；未拿到配置时不自行猜测。
   const compactThreshold = autoCompactEnabled === false
     ? undefined
     : autoCompactThreshold
   const isWarning = compactThreshold && compactThreshold > 0
-    ? displayTokens / compactThreshold >= WARNING_RATIO
+    ? visibleTokens / compactThreshold >= WARNING_RATIO
     : false
 
-  const ratio = displayWindow ? displayTokens / displayWindow : 0
+  const ratio = displayWindow ? visibleTokens / displayWindow : 0
 
   const percent = displayWindow
-    ? Math.round((displayTokens / displayWindow) * 100)
+    ? Math.round((visibleTokens / displayWindow) * 100)
     : undefined
 
   const handleCompactClick = (): void => {
@@ -318,14 +379,13 @@ export function ContextUsageBadge({
       >
         <div className="flex flex-col gap-1.5">
           {displayOutput ? <DetailRow label="输出" value={displayOutput.toLocaleString()} /> : null}
-          {displayCacheCreation ? <DetailRow label="缓存写入" value={displayCacheCreation.toLocaleString()} /> : null}
-          {displayCacheRead ? <DetailRow label="缓存读取" value={displayCacheRead.toLocaleString()} /> : null}
+          {displayHitRate != null ? <DetailRow label="缓存命中率" value={`${displayHitRate}%`} emphasized={displayHitRate >= 80} /> : null}
 
           {displayWindow ? (
             <>
               <DetailRow
                 label={isEstimated ? '上下文（估算）' : '上下文'}
-                value={`${formatTokens(displayTokens)} / ${formatTokens(displayWindow)}`}
+                value={`${formatTokens(visibleTokens)} / ${formatTokens(displayWindow)}`}
                 emphasized
               />
               {percent != null && (
@@ -339,7 +399,7 @@ export function ContextUsageBadge({
           ) : (
             <DetailRow
               label={isEstimated ? '上下文（估算）' : '上下文'}
-              value={`${formatTokens(displayTokens)} tokens`}
+              value={`${formatTokens(visibleTokens)} tokens`}
               emphasized
             />
           )}

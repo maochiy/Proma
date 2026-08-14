@@ -7,7 +7,7 @@
 
 import * as React from 'react'
 import { useAtomValue, useSetAtom } from 'jotai'
-import { X, FolderOpen, ExternalLink, ChevronRight, MoreHorizontal, FolderSearch, Pencil, FolderInput, Info, FolderHeart, MessageSquarePlus, FileDiff, Terminal } from 'lucide-react'
+import { X, FolderOpen, ExternalLink, ChevronRight, MoreHorizontal, FolderSearch, Pencil, FolderInput, Info, FolderHeart, MessageSquarePlus, FileDiff, Terminal, Globe } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import {
@@ -29,6 +29,7 @@ import { referenceFilePaths } from './file-panel-actions'
 import type { FilePanelReferenceResult, FilePanelUploadEntry } from './file-panel-actions'
 import {
   agentSidePanelOpenAtom,
+  agentSidePanelTabsAtom,
   workspaceFilesVersionAtom,
   currentAgentWorkspaceIdAtom,
   agentWorkspacesAtom,
@@ -49,13 +50,22 @@ import {
   createAgentTerminalTab,
   agentStreamingStatesAtom,
   createAgentExecutionNodeTab,
+  createBrowserInstanceTab,
   getAgentExecutionNodeId,
+  getBrowserTaskId,
+  getBrowserInstanceId,
   getAgentTerminalSessionId,
   isAgentExecutionNodeTab,
+  isBrowserTaskTab,
+  isBrowserInstanceTab,
   isAgentTerminalTab,
   openAgentSidePanelTabAtom,
+  agentBrowserInstanceCounterAtom,
 } from '@/atoms/agent-atoms'
 import type { AgentSidePanelTab } from '@/atoms/agent-atoms'
+import { BrowserPanel } from './BrowserPanel'
+import { useBrowserAgentTasks } from '@/hooks/useBrowserAgentTasks'
+import { browserAgentTasksAtom } from '@/atoms/browser-atoms'
 import { agentSideChatMapAtom } from '@/atoms/chat-atoms'
 import { interfaceVariantAtom } from '@/atoms/theme'
 import { previewFileMapAtom } from '@/atoms/preview-atoms'
@@ -100,7 +110,6 @@ interface SidePanelProps {
   onCreateTerminal: () => void
   onCloseTab: (tab: AgentSidePanelTab) => void
   onReorderTabs: (source: AgentSidePanelTab, target: AgentSidePanelTab) => void
-  onClosePanel: () => void
   width?: number
 }
 
@@ -117,13 +126,15 @@ export function SidePanel({
   onCreateTerminal,
   onCloseTab,
   onReorderTabs,
-  onClosePanel,
   width = 280,
 }: SidePanelProps): React.ReactElement {
   // per-session 侧面板状态（默认打开）
   const isOpen = useAtomValue(agentSidePanelOpenAtom)
   const openSidePanelTab = useSetAtom(openAgentSidePanelTabAtom)
+  const setBrowserInstanceCounter = useSetAtom(agentBrowserInstanceCounterAtom)
   const isWindows = React.useMemo(() => detectIsWindows(), [])
+  const browserAgentTasks = useBrowserAgentTasks(sessionId)
+  const allBrowserAgentTasks = useAtomValue(browserAgentTasksAtom)
 
   // Tab 系统
   const previewFileMap = useAtomValue(previewFileMapAtom)
@@ -505,6 +516,29 @@ export function SidePanel({
   const activeTerminalSnapshot = isAgentTerminalTab(activeTab)
     ? terminalTabSnapshots?.get(activeTab)
     : undefined
+  // 所有会话已打开的浏览器类 Tab（静态 browser + 实例 + 任务），用于多实例常驻渲染。
+  // 注意：这里读全局 atom（而非仅当前会话的 openTabs），并固定 key = sessionId:tab，
+  // 让每个会话的 webview 各自常驻、复用其专属 partition，切换会话只改显隐、不重载。
+  const allSidePanelTabs = useAtomValue(agentSidePanelTabsAtom)
+  const browserTabs = React.useMemo(
+    () => Array.from(allSidePanelTabs.entries()).flatMap(([sessId, tabs]) =>
+      tabs
+        .filter((tab) =>
+          tab === 'browser' || isBrowserInstanceTab(tab) || isBrowserTaskTab(tab),
+        )
+        .map((tab) => ({ sessionId: sessId, tab })),
+    ),
+    [allSidePanelTabs],
+  )
+  // 当前会话的激活 Tab 是否为浏览器类（决定常驻浏览器层是否可见/参与交互）。
+  // 注：层内 webview 始终常驻挂载（含其他会话），仅在不显示浏览器时整层隐藏。
+  const isActiveBrowserTab = (
+    browserTabs.some((item) => item.sessionId === sessionId) && (
+      activeTab === 'browser'
+      || isBrowserInstanceTab(activeTab)
+      || isBrowserTaskTab(activeTab)
+    )
+  )
   const activeExecutionNodeSnapshot = activeExecutionNodeId && isAgentExecutionNodeTab(activeTab)
     ? executionNodeTabSnapshots?.get(activeTab)
     : undefined
@@ -540,12 +574,21 @@ export function SidePanel({
         ? `${baseTitle} ${duplicateIndex + 1}`
         : baseTitle
     }
+    const browserTaskId = getBrowserTaskId(tab)
+    if (browserTaskId && isBrowserTaskTab(tab)) {
+      const browserTask = browserAgentTasks.find((item) => item.taskId === browserTaskId)
+      return browserTask?.title || '浏览器任务'
+    }
+    const browserInstanceId = getBrowserInstanceId(tab)
+    if (browserInstanceId && isBrowserInstanceTab(tab)) {
+      return `浏览器 ${browserInstanceId}`
+    }
     const nodeId = getAgentExecutionNodeId(tab)
     if (!nodeId || !isAgentExecutionNodeTab(tab)) return undefined
     const node = executionNodeTabSnapshots?.get(tab)?.node
       ?? executionNodes.find((item) => item.id === nodeId)
     return node?.name || node?.description || '执行节点'
-  }, [executionNodeTabSnapshots, executionNodes, openTabs, terminalTabSnapshots])
+  }, [browserAgentTasks, executionNodeTabSnapshots, executionNodes, openTabs, terminalTabSnapshots])
 
   const handleCloseChatTab = React.useCallback(() => {
     setSideChatMap((prev) => {
@@ -579,7 +622,7 @@ export function SidePanel({
       {/* 面板内容 */}
       <div
         className={cn(
-          'w-full h-full flex flex-col titlebar-no-drag',
+          'relative w-full h-full flex flex-col titlebar-no-drag',
           isWindows ? 'pt-[34px]' : 'pt-0',
           shouldAnimate && 'transition-opacity duration-300',
           isOpen ? 'opacity-100' : 'opacity-0 pointer-events-none',
@@ -612,10 +655,10 @@ export function SidePanel({
                 }}
                 onTabReorder={onReorderTabs}
                 getTabLabel={getTabLabel}
-                onClose={onClosePanel}
                 isWindows={isWindows}
               />
 
+              <div className="relative flex min-h-0 flex-1 flex-col">
               {activeTerminalSessionId ? (
                 <IntegratedTerminalPanel
                   sessionId={sessionId}
@@ -664,6 +707,8 @@ export function SidePanel({
                 />
               ) : activeTab === 'plan' ? (
                 <RuntimePlanPanel sessionId={sessionId} />
+              ) : isActiveBrowserTab ? (
+                <div className="flex-1 min-h-0" data-persistent-browser-underlay />
               ) : activeTab === 'changes' ? (
                 sessionPath ? (
                   <DiffChangesList
@@ -865,8 +910,63 @@ export function SidePanel({
                   </div>
                 </div>
               )}
+
+              </div>
             </>
           )}
+
+          {/* 常驻浏览器层：始终挂载，但不参与 flex 高度分配；固定定位在 34px Tab 栏下方。
+              launcherVisible 时当前会话无任何 Tab，容器用 display:none 让位给启动页；
+              Electron webview display:none 不销毁 guest、保留页面状态，仅不可见。 */}
+          <div
+            className={cn(
+              'absolute inset-x-0 bottom-0 z-[1]',
+              launcherVisible ? 'hidden' : 'block',
+            )}
+            // macOS 只有 Tab 栏；Windows 还需要避开面板顶部的标题栏预留区。
+            style={{ top: isWindows ? 68 : 34 }}
+          >
+            {/* 每个会话的每个浏览器 Tab（静态/实例/任务）独立挂载一个 webview，
+                始终不卸载；仅当前会话的激活浏览器 Tab 显示，其余 CSS 隐藏。
+                切换会话 / 切换 Tab / 面板开合都不会重建 webview，已打开的页面不会重新加载。
+                每个会话使用独立 partition（Cookie/localStorage/缓存隔离）。 */}
+            <div
+              className={cn(
+                'absolute inset-0 z-[1] flex min-h-0 flex-col bg-background',
+                isActiveBrowserTab
+                  ? 'visible opacity-100'
+                  : 'invisible opacity-0 pointer-events-none',
+              )}
+              data-persistent-browser-layer
+            >
+              {browserTabs.map(({ sessionId: tabSessionId, tab }) => {
+                // 仅当前会话的激活浏览器 Tab 可见，其他会话/其他 Tab 常驻但隐藏
+                const active = tabSessionId === sessionId && tab === activeTab
+                const taskId = isBrowserTaskTab(tab)
+                  ? (getBrowserTaskId(tab) ?? undefined)
+                  : undefined
+                const browserTask = taskId ? allBrowserAgentTasks.get(taskId) : undefined
+                return (
+                  <div
+                    // key 固定为 sessionId:tab：常驻不卸载，切换会话只改显隐
+                    key={`${tabSessionId}:${tab}`}
+                    className={cn(
+                      'absolute inset-0 flex min-h-0 flex-col bg-background',
+                      active ? 'visible opacity-100' : 'invisible opacity-0 pointer-events-none',
+                    )}
+                    data-persistent-browser-instance={`${tabSessionId}:${tab}`}
+                  >
+                    <BrowserPanel
+                      key={`${tabSessionId}:${tab}`}
+                      sessionId={tabSessionId}
+                      taskId={taskId}
+                      initialUrl={browserTask?.url}
+                    />
+                  </div>
+                )
+              })}
+            </div>
+          </div>
       </div>
     </div>
   )
@@ -878,6 +978,12 @@ const SIDE_PANEL_LAUNCHER_ENTRIES: Array<{
   description: string
   icon: React.ReactNode
 }> = [
+  {
+    tab: 'browser',
+    title: '浏览器',
+    description: '打开内置浏览器，浏览网页并采集页面证据',
+    icon: <Globe className="size-4" />,
+  },
   {
     tab: 'session',
     title: '会话文件',

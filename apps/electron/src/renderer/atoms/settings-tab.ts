@@ -11,8 +11,9 @@
  */
 
 import { atom } from 'jotai'
+import { activeViewAtom } from './active-view'
 
-export type SettingsTab = 'general' | 'channels' | 'proxy' | 'appearance' | 'about' | 'prompts' | 'tools' | 'bots' | 'tutorial' | 'shortcuts' | 'voice-input' | 'migration' | 'storage'
+export type SettingsTab = 'general' | 'channels' | 'proxy' | 'runtime' | 'appearance' | 'about' | 'prompts' | 'tools' | 'bots' | 'tutorial' | 'shortcuts' | 'voice-input' | 'migration' | 'storage'
 export type ToolSettingsFocus = 'memory' | 'nano-banana' | 'custom-tools'
 
 /** 当前设置标签页（不持久化，每次打开设置默认显示渠道） */
@@ -22,7 +23,16 @@ export const settingsTabAtom = atom<SettingsTab>('channels')
 export const toolSettingsFocusAtom = atom<ToolSettingsFocus | null>(null)
 
 /** 设置浮窗是否打开 */
-export const settingsOpenAtom = atom(false)
+const settingsOpenStateAtom = atom(false)
+
+/** 兼容旧入口的设置路由状态：写入时同步切换主视图，不再打开 Dialog。 */
+export const settingsOpenAtom = atom(
+  (get) => get(settingsOpenStateAtom),
+  (_get, set, open: boolean) => {
+    set(settingsOpenStateAtom, open)
+    set(activeViewAtom, open ? 'settings' : 'conversations')
+  },
+)
 
 /** 渠道创建表单是否有未保存内容（用于拦截导航离开） */
 export const channelFormDirtyAtom = atom(false)

@@ -24,6 +24,199 @@ export type PlatformArch =
   | 'linux-x64'
   | 'win32-x64'
 
+/** Proma 统一管理的 Runtime。 */
+export type RuntimeId = 'pi' | 'hermes' | 'codex' | 'claude'
+
+/** 被 Pi/Hermes 策略调度的外部 Harness。 */
+export type RoutedHarnessId = 'codex' | 'claude'
+
+/** Pi/Hermes 是主内核，Codex/Claude Code 只作为被策略调度的 Harness。 */
+export type RuntimeRole = 'kernel' | 'routed-harness'
+
+/** Runtime 的 Harness 标识。native 是 Pi 主内核的兼容别名。 */
+export type HarnessId = 'native' | RuntimeId
+
+/** Runtime 能力键，来源于统一 Runtime Capability 模型。 */
+export type RuntimeCapability =
+  | 'streaming'
+  | 'tools'
+  | 'approvals'
+  | 'steering'
+  | 'cancellation'
+  | 'sessionResume'
+  | 'customModels'
+  | 'managedCredentials'
+  | 'contextUsage'
+  | 'compaction'
+  | 'workTasks'
+
+export type RuntimeCapabilitySupport = 'supported' | 'partial' | 'unsupported' | 'unknown'
+
+export interface RuntimeCapabilitySnapshot {
+  runtimeId: RuntimeId
+  runtimeVersion: string
+  source: 'system' | 'bundled' | 'managed' | 'unknown'
+  capabilities: Partial<Record<RuntimeCapability, RuntimeCapabilitySupport>>
+  checkedAt: number
+}
+
+export interface RuntimeInstallation {
+  runtimeId: RuntimeId
+  status: 'unknown' | 'checking' | 'ready' | 'missing' | 'broken'
+  version: string | null
+  executablePath: string | null
+  source: 'system' | 'bundled' | 'managed' | null
+  detail: string | null
+  checkedAt: number | null
+}
+
+export interface RuntimeDefinition {
+  id: RuntimeId
+  role: RuntimeRole
+  name: string
+  description: string
+  command: string | null
+  bundled: boolean
+  capabilities: RuntimeCapability[]
+  installation: RuntimeInstallation
+}
+
+export interface RuntimeModelCatalog {
+  runtimeId: RuntimeId
+  source: 'proma-channels' | 'legacy-compat'
+  models: RuntimeModelCatalogEntry[]
+  usableModelCount: number
+}
+
+/** 统一 Runtime 配置，凭证仍由渠道/safeStorage 管理，不在此保存明文密钥。 */
+export interface RuntimeConfig {
+  /** Proma Runtime 工作目录。 */
+  runtimeHome: string | null
+  /** 外部 Runtime 源码目录，用于复用 Pi/Hermes Bridge。 */
+  runtimeSourceHome: string | null
+  /** 外部 Runtime API 地址；留空时仅使用 Proma 本地适配层。 */
+  runtimeApiBaseUrl: string | null
+  /**
+   * 旧 Frakio 配置字段，仅用于兼容读取。
+   *
+   * 新配置和设置页面不会再写入这些字段。
+   */
+  frakioHome?: string | null
+  frakioSourceHome?: string | null
+  frakioApiBaseUrl?: string | null
+  defaultRuntimeId: RuntimeId
+  defaultHarnessId: HarnessId
+  enabledRuntimeIds: RuntimeId[]
+  routedHarnesses: RoutedHarnessId[]
+  updatedAt: number
+}
+
+export type RuntimePackageSource = 'bundled' | 'managed' | 'native' | 'system'
+export type RuntimePackageState = 'checking' | 'missing' | 'installed' | 'broken'
+
+export interface RuntimePackage {
+  runtimeId: RuntimeId
+  runtimeVersion: string
+  runtimeBuildId: string
+  source: RuntimePackageSource
+  installationState: RuntimePackageState
+  availability: 'ready' | 'unavailable' | 'broken'
+  executablePath: string | null
+  runtimeDir: string | null
+  installedAt: string | null
+  verifiedAt: string | null
+  detail: string | null
+}
+
+export interface RuntimeActivation {
+  runtimeId: RuntimeId
+  activeBuildId: string | null
+  previousBuildId: string | null
+  activationRevision: string
+}
+
+export interface RuntimePackageStatus {
+  runtimeId: RuntimeId
+  activation: RuntimeActivation | null
+  activeBinding: RuntimePackage | null
+  packages: RuntimePackage[]
+  upstreamLatest: string | null
+  /** Runtime Catalog 返回的可安装版本。 */
+  availableVersions?: RuntimeRelease[]
+  checkedAt: string
+  source: 'remote' | 'local'
+}
+
+export interface RuntimeRelease {
+  version: string
+  packageVersion?: string
+  integrity?: string
+  verifiedAt?: string
+  node?: string
+  detail?: string
+}
+
+export interface RuntimeDiscoveryCandidate {
+  executablePath: string
+  version: string | null
+  source: 'system' | 'managed' | 'unknown'
+  detail: string | null
+}
+
+export interface RuntimeModelCatalogEntry {
+  id: string
+  name: string
+  provider: string
+  defaultModelId: string | null
+  models: string[]
+  compatible: boolean
+}
+
+/** 模型中心返回的公开模型配置，不包含明文凭证。 */
+export interface ModelCenterModel {
+  id: string
+  name: string
+  provider: string
+  providerKey: string
+  model: string
+  models: string[]
+  baseUrl: string
+  apiMode: string
+  hasApiKey: boolean
+  oauthAccountId: string
+  runtimeRevision: string
+}
+
+/** Proma 模型中心与可选 Runtime API 的连接状态。 */
+export interface ModelCenterStatus {
+  configured: boolean
+  connected: boolean
+  baseUrl: string | null
+  models: ModelCenterModel[]
+  usableModelCount: number
+  checkedAt: string
+  error: string | null
+}
+
+export const RUNTIME_IPC_CHANNELS = {
+  LIST: 'runtime-registry:list',
+  REFRESH: 'runtime-registry:refresh',
+  GET_CONFIG: 'runtime-registry:get-config',
+  UPDATE_CONFIG: 'runtime-registry:update-config',
+  GET_CAPABILITIES: 'runtime-registry:get-capabilities',
+  DETECT: 'runtime-registry:detect',
+  DISCOVER: 'runtime-registry:discover',
+  GET_PACKAGE_STATUS: 'runtime-registry:get-package-status',
+  INSTALL_PACKAGE: 'runtime-registry:install-package',
+  ACTIVATE_PACKAGE: 'runtime-registry:activate-package',
+  DELETE_PACKAGE: 'runtime-registry:delete-package',
+  BIND_NATIVE: 'runtime-registry:bind-native',
+  UNBIND_NATIVE: 'runtime-registry:unbind-native',
+  GET_MODEL_CENTER_STATUS: 'runtime-registry:get-model-center-status',
+} as const
+
+export type RuntimeIpcChannel = (typeof RUNTIME_IPC_CHANNELS)[keyof typeof RUNTIME_IPC_CHANNELS]
+
 /**
  * Bun 二进制下载信息
  */

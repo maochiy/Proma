@@ -10,6 +10,7 @@ import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { cn } from "@/lib/utils";
 import {
   Settings,
+  ArrowLeft,
   Radio,
   Palette,
   Info,
@@ -18,12 +19,12 @@ import {
   Wrench,
   Bot,
   GraduationCap,
-  X,
   Keyboard,
   Mic,
   HardDriveDownload,
   HardDrive,
   Search,
+  Cpu,
 } from "lucide-react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { settingsTabAtom, channelFormDirtyAtom, settingsCloseRequestedAtom, settingsOpenAtom } from "@/atoms/settings-tab";
@@ -55,6 +56,7 @@ import { ShortcutSettings } from "./ShortcutSettings";
 import { VoiceInputSettings } from "./VoiceInputSettings";
 import { MigrationSettings } from "./MigrationSettings";
 import { StorageSettings } from "./StorageSettings";
+import { RuntimeSettings } from "./RuntimeSettings";
 
 /** 设置 Tab 定义 */
 interface TabItem {
@@ -74,6 +76,7 @@ const BASE_TABS: TabItem[] = [
   { id: "channels", label: "模型配置", icon: <Radio size={16} /> },
   { id: "prompts", label: "提示词管理", icon: <BookOpen size={16} /> },
   { id: "proxy", label: "代理设置", icon: <Globe size={16} /> },
+  { id: "runtime", label: "Runtime 中心", icon: <Cpu size={16} /> },
 ];
 
 const TOOLS_TAB: TabItem = {
@@ -142,6 +145,8 @@ function renderTabContent(tab: SettingsTab): React.ReactElement {
       return <PromptSettings />;
     case "proxy":
       return <ProxySettings />;
+    case "runtime":
+      return <RuntimeSettings />;
     case "tools":
       return <ToolSettings />;
     case "appearance":
@@ -253,10 +258,22 @@ export function SettingsPanel({
   }, [searchQuery]);
 
   return (
-    <div className="flex h-full min-h-0">
-      <aside className="flex w-[208px] flex-shrink-0 flex-col border-r border-border/50 bg-muted/35">
-        <div className="px-3 pb-2 pt-3">
-          <div className="flex h-8 items-center gap-2 rounded-lg border border-border/65 bg-background/75 px-2.5 text-muted-foreground shadow-xs focus-within:border-foreground/20">
+    <div className="flex h-full min-h-0 min-w-0 flex-1 overflow-hidden">
+      <aside className="flex w-[212px] flex-shrink-0 flex-col bg-transparent">
+        <div className="flex items-center px-2 pb-1 pt-[52px]">
+          {onClose && (
+            <button
+              type="button"
+              onClick={handleClose}
+              className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-md px-2 text-left text-[13px] font-medium text-muted-foreground transition-colors hover:bg-foreground/[0.06] hover:text-foreground"
+            >
+              <ArrowLeft size={15} />
+              <span>返回对话</span>
+            </button>
+          )}
+        </div>
+        <div className="px-2 pb-2 pt-2">
+          <div className="flex h-8 items-center gap-2 rounded-lg border border-border/55 bg-background/65 px-2.5 text-muted-foreground shadow-xs backdrop-blur-sm focus-within:border-foreground/20">
             <Search size={14} className="shrink-0" />
             <input
               value={searchQuery}
@@ -310,27 +327,18 @@ export function SettingsPanel({
         </ScrollArea>
       </aside>
 
-      <section className="flex min-w-0 flex-1 bg-dialog">
+      <section className="flex min-w-0 flex-1 overflow-hidden border-l border-border/50 bg-card/90">
         <ScrollArea className="min-h-0 min-w-0 flex-1">
-          <div className="mx-auto w-full max-w-[760px] px-7 pb-7 pt-6">
+          {/* 顶部需避开 52px 的 titlebar 拖拽区（WebkitAppRegion:'drag'），
+              否则落在这个区间内的按钮（如「添加配置」）点击会被当作窗口拖动吞掉。
+              与左侧 aside 的返回按钮保持一致的顶部避让。 */}
+          <div className="mx-auto w-full max-w-[1060px] px-7 pb-7 pt-[60px]">
             {renderTabContent(activeTab)}
           </div>
         </ScrollArea>
-        {onClose && (
-          <div className="flex w-12 flex-shrink-0 justify-center pt-3">
-            <button
-              type="button"
-              aria-label="关闭设置"
-              onClick={handleClose}
-              className="flex size-8 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-            >
-              <X size={17} />
-            </button>
-          </div>
-        )}
       </section>
 
-      {/* 退出拦截弹窗（侧边栏导航 / X 关闭 / Cmd+W） */}
+      {/* 退出拦截弹窗（设置导航 / 返回对话 / Cmd+W） */}
       <AlertDialog open={showNavDialog} onOpenChange={(open) => { if (!open) cancelPendingAction() }}>
         <AlertDialogContent>
           <AlertDialogHeader>

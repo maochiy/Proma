@@ -6,6 +6,7 @@ import {
   ChevronRight,
   FileDiff,
   GitBranch,
+  Globe,
   Upload,
 } from 'lucide-react'
 import { toast } from 'sonner'
@@ -25,11 +26,13 @@ import {
   currentAgentWorkspaceIdAtom,
   agentWorkspacesAtom,
   createAgentExecutionNodeTab,
+  createBrowserTaskTab,
   openAgentSidePanelTabAtom,
   workspaceAttachedDirectoriesMapAtom,
   workspaceAttachedFilesMapAtom,
   workspaceFilesVersionAtom,
 } from '@/atoms/agent-atoms'
+import { useBrowserAgentTasks } from '@/hooks/useBrowserAgentTasks'
 import { cn } from '@/lib/utils'
 import {
   buildSessionExecutionNodes,
@@ -143,6 +146,8 @@ export function SessionFloatingPanel({
   const agentChannelId = useAtomValue(agentChannelIdAtom)
   const agentModelId = useAtomValue(agentModelIdAtom)
   const [commitDialogOpen, setCommitDialogOpen] = React.useState(false)
+  const browserAgentTasks = useBrowserAgentTasks(sessionId)
+  const [browserExpanded, setBrowserExpanded] = React.useState(true)
 
   const sessionMeta = React.useMemo(
     () => sessions.find((session) => session.id === sessionId) ?? null,
@@ -310,6 +315,18 @@ export function SessionFloatingPanel({
       },
     })
   }, [graph?.runtimeSessionId, nodes, openSidePanelTab, sessionId])
+
+  const openBrowserTask = React.useCallback((taskId: string) => {
+    openSidePanelTab({ sessionId, tab: createBrowserTaskTab(taskId) })
+  }, [openSidePanelTab, sessionId])
+
+  const visibleBrowserTasks = React.useMemo(
+    () => browserAgentTasks
+      .filter((task) => task.status === 'running')
+      .slice(0, 4),
+    [browserAgentTasks],
+  )
+  const visibleBrowserTaskCount = visibleBrowserTasks.length
 
   const toggleSubagents = React.useCallback(() => {
     setSubagentsExpandedMap((previous) => {
@@ -490,6 +507,46 @@ export function SessionFloatingPanel({
             </section>
           )}
         </div>
+      )}
+      {visibleBrowserTaskCount > 0 && (
+        <section
+          className="mt-2 border-t border-border/55 pt-2"
+          data-session-floating-browser-region
+        >
+          <button
+            type="button"
+            className="flex w-full items-center gap-1.5 rounded-lg px-2 py-1.5 text-left hover:bg-accent/55"
+            onClick={() => setBrowserExpanded((value) => !value)}
+            aria-expanded={browserExpanded}
+          >
+            {browserExpanded
+              ? <ChevronDown className="size-3.5 text-muted-foreground" />
+              : <ChevronRight className="size-3.5 text-muted-foreground" />}
+            <h3 className="flex-1 text-[11px] font-medium text-muted-foreground">
+              {visibleBrowserTaskCount} 个浏览器任务
+            </h3>
+            <Globe className="size-3.5 text-muted-foreground" />
+          </button>
+          {browserExpanded && (
+            <div className="mt-1 space-y-1">
+              {visibleBrowserTasks.map((task) => (
+                <button
+                  key={task.taskId}
+                  type="button"
+                  className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-accent/55"
+                  onClick={() => openBrowserTask(task.taskId)}
+                  title="点击在右侧打开该浏览器页面"
+                  data-browser-task-entry={task.taskId}
+                >
+                  <Globe className="size-3.5 shrink-0 text-muted-foreground" />
+                  <span className="agent-status-shimmer min-w-0 flex-1 truncate text-xs">
+                    {task.title}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </section>
       )}
     </aside>
   )

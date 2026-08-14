@@ -1,0 +1,246 @@
+import { describe, expect, test, mock } from 'bun:test'
+
+// context-packet-compiler 的传递依赖链（config-paths 等）在顶层 import
+// electron 的 BrowserWindow，bun test 环境无法加载真实 electron 模块，
+// 这里 mock 掉，让编译器纯函数可以在单测中运行。
+mock.module('electron', () => ({
+  app: { isPackaged: false, getPath: () => '/tmp', getName: () => 'proma' },
+  safeStorage: {
+    isEncryptionAvailable: () => false,
+    encryptString: (value: string) => Buffer.from(value, 'utf-8'),
+    decryptString: (buffer: Buffer) => buffer.toString('utf-8'),
+  },
+  BrowserWindow: class {},
+  clipboard: {},
+  ipcMain: { handle: () => {}, on: () => {} },
+  webContents: { fromId: () => null },
+  shell: { openPath: async () => {} },
+  dialog: { showOpenDialog: async () => ({ canceled: true, filePaths: [] }) },
+}))
+
+import type { ContextPacket, DispatchRun, RuntimeTaskGraph } from '@proma/shared'
+import { contextPacketText } from './context-packet-text'
+
+// context-packet-compiler 的传递依赖链包含顶层 import electron 的模块
+// （channel-manager 的 safeStorage 等），bun test 环境无法加载真实 electron。
+// 静态 import 会被提升到 mock 之前执行，因此这里用动态 import。
+const { contextPacketFromRun } = await import('./context-packet-compiler')
+
+function packetFixture(): ContextPacket {
+  const taskGraph: RuntimeTaskGraph = {
+    id: 'graph-1',
+    rootTaskId: 'task-1',
+    revision: 1,
+    createdAt: 1,
+    updatedAt: 1,
+    tasks: [{
+      id: 'task-1',
+      title: '执行实现',
+      kind: 'implementation',
+      runtimeId: 'claude',
+      harnessId: 'claude',
+      status: 'running',
+      dependsOn: [],
+      inputArtifactIds: [],
+      outputArtifactIds: [],
+      requiresUserApproval: true,
+      approvalState: 'approved',
+      retryCount: 0,
+      maxRetries: 1,
+      timeoutMs: null,
+      prompt: '实现设置页',
+      result: null,
+      error: null,
+      createdAt: 1,
+      updatedAt: 1,
+      startedAt: 1,
+      completedAt: null,
+    }],
+  }
+
+  return {
+    schemaVersion: 1,
+    packetId: 'packet-1',
+    sessionId: 'session-1',
+    workspaceId: 'workspace-1',
+    compiledAt: 1,
+    profile: { userName: '测试用户', avatar: '' },
+    conversation: {
+      recentMessages: [{ role: 'user', content: '实现登录页' }],
+      messageCount: 1,
+    },
+    workspace: {
+      name: 'Proma',
+      slug: 'proma',
+      path: '/tmp/proma',
+      rules: ['使用中文'],
+      attachedDirectories: ['/tmp/shared'],
+      attachedFiles: ['/tmp/requirements.md'],
+    },
+    memory: {
+      claudeMd: '不要修改 README',
+      autoMemoryFiles: ['/tmp/memory.md'],
+    },
+    skills: [{ name: 'code-review', description: '代码审查', path: '/tmp/skill' }],
+    mcp: {
+      enabledServers: ['web_search'],
+      builtinServers: ['memory'],
+    },
+    attachments: ['/tmp/requirements.md'],
+    browserAnnotations: [{
+      target: 'element',
+      comment: '按钮需要改成主色',
+      url: 'https://example.com',
+      pageTitle: '设置页',
+      rect: { x: 1, y: 2, width: 3, height: 4 },
+      text: '保存',
+      createdAt: 1,
+    }],
+    taskGraph,
+    artifacts: [{
+      id: 'artifact-1',
+      taskId: 'task-0',
+      kind: 'plan',
+      content: '先修改组件，再补测试',
+      createdAt: 1,
+    }],
+    runtime: {
+      runtimeId: 'claude',
+      capabilities: { tools: 'supported', approvals: 'supported' },
+    },
+    model: {
+      modelId: 'model-1',
+      provider: 'anthropic',
+      routeRevision: 'route-1',
+    },
+    dispatchPolicy: {
+      strategyId: 'proma.hermes.dynamic.v1',
+      instruction: '只执行已批准任务',
+    },
+  }
+}
+
+describe('Proma Context Packet', () => {
+  test('Given Profile、Memory、Skills、MCP 和浏览器标注 When 编译文本 Then 所有上下文进入统一 Packet', () => {
+    const text = contextPacketText(packetFixture())
+
+    expect(text).toContain('测试用户')
+    expect(text).toContain('不要修改 README')
+    expect(text).toContain('code-review')
+    expect(text).toContain('web_search')
+    expect(text).toContain('按钮需要改成主色')
+    expect(text).toContain('/tmp/requirements.md')
+    expect(text).toContain('memory')
+  })
+
+  test('Given Hermes 任务图和前序产物 When 投影到 Harness Then 保留任务状态和产物内容', () => {
+    const text = contextPacketText(packetFixture())
+
+    expect(text).toContain('Hermes 任务图')
+    expect(text).toContain('task-1 执行实现 [running]')
+    expect(text).toContain('先修改组件，再补测试')
+    expect(text).toContain('模型路由：anthropic/model-1')
+    expect(text).toContain('proma.hermes.dynamic.v1')
+  })
+
+  test('Given Runtime 原生 Session 已保存历史且系统提示词已注入 Skill When 构建本轮消息 Then 可省略重复内容', () => {
+    const packet = packetFixture()
+    packet.skills = [{
+      name: 'computer-use',
+      description: '操作内置浏览器',
+      content: '这里是很长的 Skill 操作说明',
+    }]
+
+    const text = contextPacketText(packet, {
+      includeRecentMessages: false,
+      includeSkillContent: false,
+    })
+
+    expect(text).toContain('computer-use：操作内置浏览器')
+    expect(text).not.toContain('这里是很长的 Skill 操作说明')
+    expect(text).not.toContain('实现登录页')
+  })
+
+  test('Given Hermes 子任务 When 投影 Context Packet Then 只带依赖链产物且不复制整段会话历史', () => {
+    const run = {
+      id: 'run-1',
+      sessionId: 'session-1',
+      workspaceId: 'workspace-1',
+      status: 'running',
+      plan: {
+        intent: 'implementation',
+        prompt: '实现登录页',
+        graph: {
+          id: 'graph-1',
+          rootTaskId: 'task-1',
+          revision: 1,
+          createdAt: 1,
+          updatedAt: 1,
+          tasks: [{
+            id: 'task-1',
+            title: '执行实现',
+            kind: 'implementation',
+            runtimeId: 'claude',
+            harnessId: 'claude',
+            status: 'running',
+            dependsOn: [],
+            inputArtifactIds: ['artifact-1'],
+            outputArtifactIds: ['artifact-2'],
+            requiresUserApproval: false,
+            approvalState: 'approved',
+            retryCount: 0,
+            maxRetries: 1,
+            timeoutMs: null,
+            prompt: '实现设置页',
+            result: null,
+            error: null,
+            createdAt: 1,
+            updatedAt: 1,
+            startedAt: 1,
+            completedAt: null,
+          }],
+        },
+      },
+      artifacts: [
+        { id: 'artifact-1', taskId: 'task-0', kind: 'plan', content: '前置计划', createdAt: 1 },
+        { id: 'artifact-2', taskId: 'task-1', kind: 'diff', content: '实现补丁', createdAt: 2 },
+      ],
+      approvedTaskIds: ['task-1'],
+      currentTaskId: 'task-1',
+      error: null,
+      createdAt: 1,
+      updatedAt: 2,
+      completedAt: null,
+    } as unknown as DispatchRun
+
+    const packet = contextPacketFromRun({
+      sessionId: 'session-1',
+      modelRoute: {
+        modelId: 'model-1',
+        provider: 'anthropic',
+        routeRevision: 'route-1',
+        runtimeId: 'claude',
+        channelId: 'channel-1',
+        baseUrl: '',
+        apiMode: 'anthropic_messages',
+        credentialRevision: 'r1',
+        capabilities: {},
+        source: 'legacy-compat',
+      },
+      runtimeId: 'claude',
+      strategyId: 'proma.hermes.dynamic.v1',
+      strategyInstruction: '只执行已批准任务',
+      // 子任务不再把整段 Proma 会话历史复制进来
+      recentMessageLimit: 0,
+      // 只带依赖链产物
+      artifacts: [run.artifacts[0]!],
+    }, run)
+
+    expect(packet.conversation.recentMessages).toEqual([])
+    expect(packet.artifacts).toHaveLength(1)
+    expect(packet.artifacts[0]?.id).toBe('artifact-1')
+    expect(packet.artifacts[0]?.content).toBe('前置计划')
+    // 任务图本身仍完整投影，模型能看到当前执行节点
+    expect(packet.taskGraph?.tasks[0]?.id).toBe('task-1')
+  })
+})

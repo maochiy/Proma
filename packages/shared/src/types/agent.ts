@@ -1,4 +1,8 @@
 import type { ChannelModel, ProviderType } from './channel'
+import type { RuntimeId } from './runtime'
+import type { AgentDispatchContext } from './runtime-workflow'
+import type { AgentDispatchState } from './runtime-workflow'
+import type { BrowserAnnotation } from './browser'
 
 /**
  * Agent 相关类型定义
@@ -409,6 +413,7 @@ export interface SDKAssistantMessage {
       output_tokens?: number
       cache_read_input_tokens?: number
       cache_creation_input_tokens?: number
+      context_window?: number
     }
     model?: string
     stop_reason?: string
@@ -724,7 +729,7 @@ export interface AgentToolResultImage {
 }
 
 /** 计划阶段状态变化来源 */
-export type AgentPlanModeChangeSource = 'initial' | 'tool' | 'permission'
+export type AgentPlanModeChangeSource = 'initial' | 'tool' | 'permission' | 'execution'
 
 /**
  * Agent 事件流类型
@@ -848,6 +853,8 @@ export type AgentStreamPayload =
 export interface AgentSessionMeta {
   /** 会话唯一标识 */
   id: string
+  /** 当前 runtimeSessionId 所属的 Proma Runtime。缺失表示旧 CCB 会话。 */
+  runtimeId?: RuntimeId
   /** CCB Desktop Runtime 内部会话 ID。 */
   runtimeSessionId?: string
   /** CCB Desktop Runtime 版本。 */
@@ -890,6 +897,8 @@ export interface AgentSessionMeta {
   completedButUnconfirmed?: boolean
   /** 最后一次流式执行是否被用户主动中断 */
   stoppedByUser?: boolean
+  /** 当前会话最近一次由 Dispatch Policy 生成的状态。 */
+  dispatchState?: AgentDispatchState
   /**
    * 最近一次用户中断本轮执行的耗时（毫秒）。
    * 用于中断后 UI 显示「你在 N 秒后停止了」；无 result 消息时作为 fallback。
@@ -912,6 +921,8 @@ export interface AgentSessionMeta {
   rootSessionId?: string
   /** 来源委派任务 ID（由 collaboration 工具生成，用于父子会话关联） */
   sourceDelegationId?: string
+  /** 该会话已在任务看板绑定的任务 ID（首条消息自动建任务/状态同步用） */
+  taskboardTaskId?: string
   /** 委派角色，用于 UI 和后续统计 */
   delegationRole?: AgentDelegationRole
   /** 委派任务当前状态 */
@@ -1304,6 +1315,10 @@ export interface AgentSendInput {
   triggeredBy?: 'user' | 'automation' | 'delegation'
   /** 定时任务执行上下文（注入到系统提示词，用户不可见） */
   automationContext?: string
+  /** 主进程生成的调度上下文，不允许调用方直接指定 Runtime。 */
+  dispatchContext?: AgentDispatchContext
+  /** 当前消息引用的 Proma Browser 页面标注。 */
+  browserAnnotations?: BrowserAnnotation[]
 }
 
 // ===== Agent 队列消息 =====
@@ -1319,8 +1334,8 @@ export interface AgentQueueMessageInput {
   /** 前端预生成的 UUID（用于乐观更新去重） */
   uuid?: string
   /**
-   * 软中断当前 Agent turn 后再追加消息。
-   * true：先调用 SDK query.interrupt() 立即打断正在输出的 turn，再注入消息。
+   * 将消息作为 steering 立即介入当前 Agent turn。
+   * true：由 Runtime 原子处理当前输出的介入与后续消息消费。
    * false / undefined：排队追加（默认行为，turn 结束后才会被消费）。
    */
   interrupt?: boolean

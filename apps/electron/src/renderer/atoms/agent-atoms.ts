@@ -73,6 +73,23 @@ export function finalizeStreamingActivities(
   }
 }
 
+/**
+ * 将用户点击暂停后的流式状态立即收敛到停止态。
+ *
+ * Runtime 的真正停止仍由主进程异步确认；这里仅负责前端反馈，避免按钮继续显示
+ * 运行中。保留 startedAt 和已有内容，供停止文案与消息收尾逻辑继续使用。
+ */
+export function markAgentStreamStopped(state: AgentStreamState): AgentStreamState {
+  if (!state.running) return state
+  return {
+    ...state,
+    running: false,
+    backgroundWaiting: false,
+    stopping: true,
+    ...finalizeStreamingActivities(state.toolActivities),
+  }
+}
+
 export interface ContextCompactionState {
   status: 'running' | 'success' | 'noop' | 'failed'
   trigger?: 'manual' | 'auto'
@@ -85,6 +102,8 @@ export interface ContextCompactionState {
 /** Agent 会话的流式状态 */
 export interface AgentStreamState {
   running: boolean
+  /** 用户已点击停止，等待 Runtime 完成真正收尾。 */
+  stopping?: boolean
   /**
    * 后台任务等待态（软空闲）：本轮主体已结束、UI 可输入，但 SDK 通道仍开着等后台任务唤醒。
    * 此状态下 running 为 false，但服务端 activeSessions 仍保留，新消息必须走注入通道而非新建 run。
@@ -101,6 +120,12 @@ export interface AgentStreamState {
   cacheReadTokens?: number
   /** 缓存写入 token 数 */
   cacheCreationTokens?: number
+  /** 会话累计净输入 tokens（不含缓存；对齐 opencode 的 adjusted input 口径） */
+  cumulativeInputTokens?: number
+  /** 会话累计缓存读取 tokens（用于计算缓存命中率） */
+  cumulativeCacheReadTokens?: number
+  /** 会话累计缓存写入 tokens */
+  cumulativeCacheCreationTokens?: number
   /** 费用（美元） */
   costUsd?: number
   /** 模型上下文窗口大小 */
@@ -616,6 +641,7 @@ export const agentSidePanelWidthAtom = atomWithStorage<number>(
 export const agentSidePanelOpenMapAtom = atom<Map<string, boolean>>(new Map())
 
 export type AgentSidePanelStaticTab =
+  | 'browser'
   | 'session'
   | 'workspace'
   | 'changes'
@@ -625,14 +651,19 @@ export type AgentSidePanelStaticTab =
 
 export type AgentExecutionNodeTab = `execution-node:${string}`
 export type AgentTerminalTab = `terminal:${string}`
+export type BrowserTaskTab = `browser-task:${string}`
+export type BrowserInstanceTab = `browser-instance:${string}`
 
 export type AgentSidePanelTab =
   | AgentSidePanelStaticTab
   | AgentExecutionNodeTab
   | AgentTerminalTab
+  | BrowserTaskTab
+  | BrowserInstanceTab
 
 const EXECUTION_NODE_TAB_PREFIX = 'execution-node:'
 const TERMINAL_TAB_PREFIX = 'terminal:'
+const BROWSER_TASK_TAB_PREFIX = 'browser-task:'
 
 /** 为执行节点创建独立的右侧动态 Tab ID。 */
 export function createAgentExecutionNodeTab(
@@ -672,11 +703,50 @@ export function getAgentTerminalSessionId(tab: AgentSidePanelTab): string | null
     : null
 }
 
+/** 为浏览器任务创建独立的右侧动态 Tab ID。 */
+export function createBrowserTaskTab(taskId: string): BrowserTaskTab {
+  return `${BROWSER_TASK_TAB_PREFIX}${encodeURIComponent(taskId)}`
+}
+
+/** 判断右侧动态 Tab 是否为浏览器任务。 */
+export function isBrowserTaskTab(tab: AgentSidePanelTab): tab is BrowserTaskTab {
+  return tab.startsWith(BROWSER_TASK_TAB_PREFIX)
+}
+
+/** 从浏览器任务 Tab 还原任务 ID。 */
+export function getBrowserTaskId(tab: AgentSidePanelTab): string | null {
+  return isBrowserTaskTab(tab)
+    ? decodeURIComponent(tab.slice(BROWSER_TASK_TAB_PREFIX.length))
+    : null
+}
+
+const BROWSER_INSTANCE_TAB_PREFIX = 'browser-instance:'
+
+/** 为手动打开的浏览器实例创建唯一动态 Tab ID（可同时打开多个）。 */
+export function createBrowserInstanceTab(id: string): BrowserInstanceTab {
+  return `${BROWSER_INSTANCE_TAB_PREFIX}${encodeURIComponent(id)}`
+}
+
+/** 判断右侧动态 Tab 是否为浏览器实例。 */
+export function isBrowserInstanceTab(tab: AgentSidePanelTab): tab is BrowserInstanceTab {
+  return tab.startsWith(BROWSER_INSTANCE_TAB_PREFIX)
+}
+
+/** 从浏览器实例 Tab 还原实例 ID。 */
+export function getBrowserInstanceId(tab: AgentSidePanelTab): string | null {
+  return isBrowserInstanceTab(tab)
+    ? decodeURIComponent(tab.slice(BROWSER_INSTANCE_TAB_PREFIX.length))
+    : null
+}
+
 /** 侧面板当前 Tab：会话文件 / 工作区文件 / 文件改动 / Chat（per-session Map） */
 export const agentDiffPanelTabAtom = atom<Map<string, AgentSidePanelTab>>(new Map())
 
 /** 右侧功能区已打开的动态 Tabs，按会话隔离并保留打开顺序。 */
 export const agentSidePanelTabsAtom = atom<Map<string, AgentSidePanelTab[]>>(new Map())
+
+/** 浏览器实例序号，按会话隔离（每会话从 1 递增，生成唯一 browser-instance Tab）。 */
+export const agentBrowserInstanceCounterAtom = atom<Map<string, number>>(new Map())
 
 /** 右侧功能区是否显示默认启动页，按会话隔离。 */
 export const agentSidePanelLauncherAtom = atom<Map<string, boolean>>(new Map())
@@ -1701,8 +1771,20 @@ export function applyAgentEvent(
       const shouldUseResultUsage = needResultFallback
         && event.usage?.inputTokens != null
         && (event.usage.inputTokens > 0 || prev.contextUsageIsEstimated !== true)
+      // 会话累计（缓存命中率）：仅在兜底场景（流式从未上报 usage）累加一次，
+      // 避免与流式 usage_update 的累计重复；result.usage 是整 query 累计值，
+      // 净输入 = totalInput - cacheRead - cacheCreation（对齐 opencode adjusted input）。
+      const fallbackCacheRead = event.usage?.cacheReadTokens ?? 0
+      const fallbackCacheCreation = event.usage?.cacheCreationTokens ?? 0
+      const fallbackTotalInput = event.usage?.inputTokens ?? 0
+      const fallbackNetInput = fallbackTotalInput > 0 ? Math.max(0, fallbackTotalInput - fallbackCacheRead - fallbackCacheCreation) : 0
       return {
         ...prev,
+        ...(shouldUseResultUsage && {
+          cumulativeInputTokens: (prev.cumulativeInputTokens ?? 0) + fallbackNetInput,
+          cumulativeCacheReadTokens: (prev.cumulativeCacheReadTokens ?? 0) + fallbackCacheRead,
+          cumulativeCacheCreationTokens: (prev.cumulativeCacheCreationTokens ?? 0) + fallbackCacheCreation,
+        }),
         ...(event.usage ? {
           ...(event.usage.costUsd != null && { costUsd: event.usage.costUsd }),
           ...(event.usage.contextWindow != null && {
@@ -1760,7 +1842,16 @@ export function applyAgentEvent(
         }),
       }
 
-    case 'usage_update':
+    case 'usage_update': {
+      // 会话累计（缓存命中率）：event.usage.inputTokens 是含缓存的整轮 totalInput，
+      // 净输入 = totalInput - cacheRead - cacheCreation（对齐 opencode adjusted input）。
+      const cacheRead = event.usage.cacheReadTokens ?? 0
+      const cacheCreation = event.usage.cacheCreationTokens ?? 0
+      const totalInput = event.usage.inputTokens ?? 0
+      const netInputDelta = totalInput > 0 ? Math.max(0, totalInput - cacheRead - cacheCreation) : 0
+      const cumulativeInputTokens = (prev.cumulativeInputTokens ?? 0) + (event.usage.inputTokens != null ? netInputDelta : 0)
+      const cumulativeCacheReadTokens = (prev.cumulativeCacheReadTokens ?? 0) + (event.usage.cacheReadTokens != null ? cacheRead : 0)
+      const cumulativeCacheCreationTokens = (prev.cumulativeCacheCreationTokens ?? 0) + (event.usage.cacheCreationTokens != null ? cacheCreation : 0)
       return {
         ...prev,
         ...(event.usage.inputTokens != null && {
@@ -1770,6 +1861,9 @@ export function applyAgentEvent(
         ...(event.usage.outputTokens != null && { outputTokens: event.usage.outputTokens }),
         ...(event.usage.cacheReadTokens != null && { cacheReadTokens: event.usage.cacheReadTokens }),
         ...(event.usage.cacheCreationTokens != null && { cacheCreationTokens: event.usage.cacheCreationTokens }),
+        cumulativeInputTokens,
+        cumulativeCacheReadTokens,
+        cumulativeCacheCreationTokens,
         ...(event.usage.costUsd != null && { costUsd: event.usage.costUsd }),
         // contextWindow 取 max：本分支同时承载「流式 assistant 消息按模型名推断的窗口」
         // 与「后端从 SDK result 透传的真实窗口（context_window 事件）」两个来源。
@@ -1779,6 +1873,7 @@ export function applyAgentEvent(
           contextWindow: Math.max(prev.contextWindow ?? 0, event.usage.contextWindow),
         }),
       }
+    }
 
     case 'compacting':
       return {
@@ -1901,6 +1996,12 @@ export interface AgentContextStatus {
   outputTokens?: number
   cacheReadTokens?: number
   cacheCreationTokens?: number
+  /** 会话累计净输入 tokens（不含缓存） */
+  cumulativeInputTokens?: number
+  /** 会话累计缓存读取 tokens（用于计算缓存命中率） */
+  cumulativeCacheReadTokens?: number
+  /** 会话累计缓存写入 tokens */
+  cumulativeCacheCreationTokens?: number
   costUsd?: number
   contextWindow?: number
   /** 当前上下文 token 是否为 CCB 压缩后的估算值 */
@@ -1921,6 +2022,9 @@ export const agentContextStatusAtom = atom<AgentContextStatus>((get) => {
     outputTokens: state?.outputTokens,
     cacheReadTokens: state?.cacheReadTokens,
     cacheCreationTokens: state?.cacheCreationTokens,
+    cumulativeInputTokens: state?.cumulativeInputTokens,
+    cumulativeCacheReadTokens: state?.cumulativeCacheReadTokens,
+    cumulativeCacheCreationTokens: state?.cumulativeCacheCreationTokens,
     costUsd: state?.costUsd,
     contextWindow: state?.contextWindow,
     contextUsageIsEstimated: state?.contextUsageIsEstimated,

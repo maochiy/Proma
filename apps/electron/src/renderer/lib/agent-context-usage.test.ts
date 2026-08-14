@@ -51,7 +51,7 @@ describe('历史会话上下文圆环水合', () => {
       },
     ] as SDKMessage[])
 
-    expect(restored).toEqual({
+    expect(restored).toMatchObject({
       inputTokens: 44_000,
       outputTokens: 800,
       cacheReadTokens: 30_000,
@@ -87,7 +87,7 @@ describe('历史会话上下文圆环水合', () => {
       },
     ] as SDKMessage[])
 
-    expect(restored).toEqual({
+    expect(restored).toMatchObject({
       inputTokens: 24_000,
       contextWindow: 200_000,
       contextUsageIsEstimated: true,
@@ -129,7 +129,7 @@ describe('历史会话上下文圆环水合', () => {
       },
     ] as SDKMessage[])
 
-    expect(restored).toEqual({
+    expect(restored).toMatchObject({
       inputTokens: 984,
       contextWindow: 200_000,
       contextUsageIsEstimated: true,
@@ -164,7 +164,7 @@ describe('历史会话上下文圆环水合', () => {
       },
     ] as SDKMessage[])
 
-    expect(restored).toEqual({
+    expect(restored).toMatchObject({
       inputTokens: 984,
       contextWindow: 200_000,
       contextUsageIsEstimated: true,
@@ -206,7 +206,7 @@ describe('历史会话上下文圆环水合', () => {
       },
     ] as SDKMessage[])
 
-    expect(restored).toEqual({
+    expect(restored).toMatchObject({
       inputTokens: 2_100,
       outputTokens: 300,
       cacheReadTokens: 900,
@@ -249,7 +249,7 @@ describe('历史会话上下文圆环水合', () => {
       },
     ] as SDKMessage[])
 
-    expect(restored).toEqual({
+    expect(restored).toMatchObject({
       inputTokens: 30_000,
       outputTokens: 500,
       cacheReadTokens: 10_000,

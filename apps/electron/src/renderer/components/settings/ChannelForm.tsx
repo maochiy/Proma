@@ -231,6 +231,16 @@ function getModelListValidationError(models: ChannelModel[]): string | undefined
     ) {
       return `模型「${id}」的 Context Window 必须是正整数`
     }
+    if (
+      model.autoCompactRatio !== undefined
+      && (
+        !Number.isFinite(model.autoCompactRatio)
+        || model.autoCompactRatio < 0
+        || model.autoCompactRatio > 100
+      )
+    ) {
+      return `模型「${id}」的压缩触发占比必须是 0-100 之间的数字`
+    }
   }
   return undefined
 }
@@ -243,6 +253,7 @@ function toCcbConfiguredModelEditorValue(
     name: model.name,
     description: model.description,
     contextWindow: model.contextWindow,
+    autoCompactRatio: model.autoCompactRatio,
     effortLevels: model.thinkingEffortLevels,
   }
 }
@@ -272,6 +283,9 @@ export function ChannelForm({
       ?? '',
   )
   const [enabled, setEnabled] = React.useState(channel?.enabled ?? true)
+  const [autoCompactRatio, setAutoCompactRatio] = React.useState<number | undefined>(
+    channel?.autoCompactRatio,
+  )
   const initialApiKeyRef = React.useRef('')
 
   // 模型新增和编辑
@@ -526,6 +540,17 @@ export function ChannelForm({
       toast.error('Context Window 必须是正整数')
       return
     }
+    if (
+      newModelDraft.autoCompactRatio !== undefined
+      && (
+        !Number.isFinite(newModelDraft.autoCompactRatio)
+        || newModelDraft.autoCompactRatio < 0
+        || newModelDraft.autoCompactRatio > 100
+      )
+    ) {
+      toast.error('压缩触发占比必须是 0-100 之间的数字')
+      return
+    }
 
     const model: ChannelModel = {
       id,
@@ -535,6 +560,9 @@ export function ChannelForm({
         : {}),
       ...(newModelDraft.contextWindow !== undefined
         ? { contextWindow: newModelDraft.contextWindow }
+        : {}),
+      ...(newModelDraft.autoCompactRatio !== undefined
+        ? { autoCompactRatio: newModelDraft.autoCompactRatio }
         : {}),
       ...(newModelDraft.effortLevels !== undefined
         ? { thinkingEffortLevels: [...newModelDraft.effortLevels] }
@@ -567,6 +595,11 @@ export function ChannelForm({
           ? { contextWindow: patch.contextWindow }
           : patch.contextWindow === undefined && 'contextWindow' in patch
             ? { contextWindow: undefined }
+            : {}),
+        ...(patch.autoCompactRatio !== undefined
+          ? { autoCompactRatio: patch.autoCompactRatio }
+          : patch.autoCompactRatio === undefined && 'autoCompactRatio' in patch
+            ? { autoCompactRatio: undefined }
             : {}),
         ...(patch.effortLevels !== undefined
           ? { thinkingEffortLevels: [...patch.effortLevels] }
@@ -743,6 +776,7 @@ export function ChannelForm({
         baseUrl,
         apiKey: effectiveApiKey,
         models,
+        ...(autoCompactRatio !== undefined ? { autoCompactRatio } : {}),
         defaultModelId: defaultModelId || undefined,
         enabled,
       }
@@ -764,6 +798,7 @@ export function ChannelForm({
       setSaving(false)
     }
   }, [
+    autoCompactRatio,
     baseUrl,
     channel,
     defaultModelId,
@@ -817,6 +852,17 @@ export function ChannelForm({
 
   /** 保存配置。 */
   const handleSave = async (): Promise<void> => {
+    if (
+      autoCompactRatio !== undefined
+      && (
+        !Number.isFinite(autoCompactRatio)
+        || autoCompactRatio < 0
+        || autoCompactRatio > 100
+      )
+    ) {
+      toast.error('供应商压缩触发占比必须是 0-100 之间的数字')
+      return
+    }
     if (modelListValidationError) {
       toast.error(modelListValidationError)
       return
@@ -845,6 +891,7 @@ export function ChannelForm({
         || baseUrl !== channel.baseUrl
         || effectiveApiKey !== initialApiKeyRef.current
         || JSON.stringify(models) !== JSON.stringify(channel.models)
+        || autoCompactRatio !== channel.autoCompactRatio
         || defaultModelId !== originalDefaultModelId
         || enabled !== channel.enabled
       )
@@ -1155,6 +1202,17 @@ export function ChannelForm({
               </div>
             )}
           </div>
+          <SettingsInput
+            label="上下文压缩触发占比"
+            description="整个供应商所有模型的默认压缩占比（0-100，百分比）。未配置的模型使用该值；模型单独配置时以模型为准。留空默认 80%。"
+            type="number"
+            value={autoCompactRatio === undefined ? '' : String(autoCompactRatio)}
+            onChange={(value) => {
+              const raw = value.trim()
+              setAutoCompactRatio(raw ? Number(raw) : undefined)
+            }}
+            placeholder="默认 80%"
+          />
           <SettingsToggle
             label="启用此配置"
             description="关闭后该配置的模型不会在选择列表中出现"

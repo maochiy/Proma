@@ -9,7 +9,7 @@
  * - 悬停（收起态）：临时飞出完整侧栏 overlay，不进文档流
  * - 点击切换按钮：固定展开 / 收起；折叠按钮 fixed，位置不跳
  *
- * MainArea 支持多标签页，Settings 视图为独立覆盖。
+ * MainArea 支持多标签页；Settings 视图作为顶层路由替换整个工作区。
  */
 
 import * as React from 'react'
@@ -17,6 +17,7 @@ import { useAtom, useAtomValue } from 'jotai'
 import { LeftSidebar } from './LeftSidebar'
 import { RightSidePanel } from './RightSidePanel'
 import { MainArea } from '@/components/tabs/MainArea'
+import { SettingsView } from '@/components/settings/SettingsView'
 import { AppShellProvider, type AppShellContextType } from '@/contexts/AppShellContext'
 import { appModeAtom } from '@/atoms/app-mode'
 import {
@@ -74,14 +75,20 @@ export interface AppShellProps {
 
 export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
   const appMode = useAtomValue(appModeAtom)
+  const activeView = useAtomValue(activeViewAtom)
+  const isSettingsView = activeView === 'settings'
   const currentSessionId = useAtomValue(currentAgentSessionIdAtom)
   const isPanelOpen = useAtomValue(currentSessionSidePanelOpenAtom)
   const automationForm = useAtomValue(automationFormAtom)
   const interfaceVariant = useAtomValue(interfaceVariantAtom)
   const isClassic = interfaceVariant === 'classic'
   // 定时任务表单打开时隐藏右侧文件面板，让中间区域扩展到全宽（表单内含自己的右栏配置）
-  const activeView = useAtomValue(activeViewAtom)
-  const showRightPanel = appMode === 'agent' && !!currentSessionId && !automationForm.open && activeView !== 'automations' && activeView !== 'agent-skills'
+  const showRightPanel = !isSettingsView
+    && appMode === 'agent'
+    && !!currentSessionId
+    && !automationForm.open
+    && activeView !== 'automations'
+    && activeView !== 'agent-skills'
   const isWindows = React.useMemo(() => detectIsWindows(), [])
   const isMac = React.useMemo(() => detectIsMac(), [])
 
@@ -305,99 +312,101 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
   }, [clampedRightPanelWidth, setRightPanelWidth])
 
 
-  // 顶栏 drag 左边界：收起飞出时让出整块侧栏，避免 app-region 盖住按钮与顶部 hover
+  // 设置页是独立路由，不再渲染普通对话侧栏，因此标题栏从窗口左侧开始。
   const titlebarDragLeft = titlebarDragLeftOffset({
     isMac,
-    sidebarCollapsed,
-    sidebarPeeking,
-    leftSidebarWidth: peekPanelWidth,
+    sidebarCollapsed: isSettingsView ? true : sidebarCollapsed,
+    sidebarPeeking: isSettingsView ? false : sidebarPeeking,
+    leftSidebarWidth: isSettingsView ? 0 : peekPanelWidth,
   })
 
   return (
     <AppShellProvider value={contextValue}>
-      {/* 顶栏固定折叠按钮：位置不随侧栏跳动。
-          关键：不要把按钮嵌在 drag 父级里再挖 no-drag 洞——Electron/Chromium
-          的 app-region hitmask 对「drag 内小矩形 no-drag」不可靠（Windows 控制按钮
-          已踩过坑）。这里把 no-drag 热区与 drag 条在几何上彻底拆开。 */}
-      <div
-        className="titlebar-no-drag fixed top-0 left-0 z-[200] flex h-[52px] items-center"
-        style={{
-          // 只覆盖红绿灯占位 + 折叠按钮，右侧交给独立 drag 条
-          width: isMac ? TITLEBAR_DRAG_LEFT : 12 + SIDEBAR_TOGGLE_SIZE,
-          WebkitAppRegion: 'no-drag',
-          // Electron hit-test：完全透明 no-drag 有时不参与命中，给极淡底色
-          backgroundColor: 'rgba(0,0,0,0.001)',
-        } as React.CSSProperties}
-        onMouseEnter={() => {
-          // 飞出后移到折叠按钮：保持打开，不在未飞出时误弹出
-          if (sidebarCollapsed && sidebarPeeking) {
-            openSidebarPeekShared(setSidebarPeeking)
-          }
-        }}
-        onMouseLeave={(e) => {
-          if (!sidebarCollapsed || !sidebarPeeking) return
-          lastPointerRef.current = { x: e.clientX, y: e.clientY }
-          // 若仍在左侧面板几何内（例如移回 Code），保持打开
-          if (
-            isPointerInSidebarPeekZone(e.clientX, e.clientY, {
-              panelWidth: peekPanelWidth,
-              peeking: true,
-              toggleChromeRight,
-            })
-          ) {
-            openSidebarPeekShared(setSidebarPeeking)
-            return
-          }
-          scheduleCloseSidebarPeekShared(setSidebarPeeking, () => {
-            const { x, y } = lastPointerRef.current
-            return !isPointerInExpandedPeekZone(x, y)
-          })
-        }}
-      >
-        {/* 红绿灯占位：不拦截事件，避免挡住原生 traffic lights */}
+      {!isSettingsView && (
+        /* 顶栏固定折叠按钮：位置不随侧栏跳动。
+           关键：不要把按钮嵌在 drag 父级里再挖 no-drag 洞——Electron/Chromium
+           的 app-region hitmask 对「drag 内小矩形 no-drag」不可靠（Windows 控制按钮
+           已踩过坑）。这里把 no-drag 热区与 drag 条在几何上彻底拆开。 */
         <div
-          className="h-full flex-shrink-0 pointer-events-none"
-          style={{ width: isMac ? SIDEBAR_TOGGLE_LEFT : 12 }}
-          aria-hidden
-        />
-        <button
-          type="button"
-          aria-label={sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}
-          className="titlebar-no-drag relative z-[1] size-8 flex-shrink-0 flex items-center justify-center rounded-md text-foreground/45 hover:bg-foreground/[0.06] hover:text-foreground/75 active:bg-foreground/[0.08] transition-colors focus-visible:outline-none"
+          className="titlebar-no-drag fixed top-0 left-0 z-[200] flex h-[52px] items-center"
           style={{
+            // 只覆盖红绿灯占位 + 折叠按钮，右侧交给独立 drag 条
+            width: isMac ? TITLEBAR_DRAG_LEFT : 12 + SIDEBAR_TOGGLE_SIZE,
             WebkitAppRegion: 'no-drag',
+            // Electron hit-test：完全透明 no-drag 有时不参与命中，给极淡底色
             backgroundColor: 'rgba(0,0,0,0.001)',
           } as React.CSSProperties}
-          onPointerDown={(e) => {
-            // 优先 pointerdown：即使某些环境 click 仍被标题栏吞掉也能切换
-            if (e.button !== 0) return
-            e.preventDefault()
-            e.stopPropagation()
-            sidebarToggleAtRef.current = Date.now()
-            handleToggleSidebar()
+          onMouseEnter={() => {
+            // 飞出后移到折叠按钮：保持打开，不在未飞出时误弹出
+            if (sidebarCollapsed && sidebarPeeking) {
+              openSidebarPeekShared(setSidebarPeeking)
+            }
           }}
-          onMouseDown={(e) => {
-            // 部分 Electron 标题栏场景 pointer 事件不稳定，mousedown 兜底
-            if (e.button !== 0) return
-            e.preventDefault()
-            e.stopPropagation()
-            if (Date.now() - sidebarToggleAtRef.current < SIDEBAR_COLLAPSE_DURATION_MS) return
-            sidebarToggleAtRef.current = Date.now()
-            handleToggleSidebar()
-          }}
-          onClick={(e) => {
-            e.preventDefault()
-            e.stopPropagation()
-            // pointerdown/mousedown 已在短窗口内切换过则跳过，避免双触发
-            if (Date.now() - sidebarToggleAtRef.current < SIDEBAR_COLLAPSE_DURATION_MS) {
+          onMouseLeave={(e) => {
+            if (!sidebarCollapsed || !sidebarPeeking) return
+            lastPointerRef.current = { x: e.clientX, y: e.clientY }
+            // 若仍在左侧面板几何内（例如移回 Code），保持打开
+            if (
+              isPointerInSidebarPeekZone(e.clientX, e.clientY, {
+                panelWidth: peekPanelWidth,
+                peeking: true,
+                toggleChromeRight,
+              })
+            ) {
+              openSidebarPeekShared(setSidebarPeeking)
               return
             }
-            handleToggleSidebar()
+            scheduleCloseSidebarPeekShared(setSidebarPeeking, () => {
+              const { x, y } = lastPointerRef.current
+              return !isPointerInExpandedPeekZone(x, y)
+            })
           }}
         >
-          {sidebarCollapsed ? <PanelLeftOpen size={14} /> : <PanelLeftClose size={14} />}
-        </button>
-      </div>
+          {/* 红绿灯占位：不拦截事件，避免挡住原生 traffic lights */}
+          <div
+            className="h-full flex-shrink-0 pointer-events-none"
+            style={{ width: isMac ? SIDEBAR_TOGGLE_LEFT : 12 }}
+            aria-hidden
+          />
+          <button
+            type="button"
+            aria-label={sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'}
+            className="titlebar-no-drag relative z-[1] size-8 flex-shrink-0 flex items-center justify-center rounded-md text-foreground/45 hover:bg-foreground/[0.06] hover:text-foreground/75 active:bg-foreground/[0.08] transition-colors focus-visible:outline-none"
+            style={{
+              WebkitAppRegion: 'no-drag',
+              backgroundColor: 'rgba(0,0,0,0.001)',
+            } as React.CSSProperties}
+            onPointerDown={(e) => {
+              // 优先 pointerdown：即使某些环境 click 仍被标题栏吞掉也能切换
+              if (e.button !== 0) return
+              e.preventDefault()
+              e.stopPropagation()
+              sidebarToggleAtRef.current = Date.now()
+              handleToggleSidebar()
+            }}
+            onMouseDown={(e) => {
+              // 部分 Electron 标题栏场景 pointer 事件不稳定，mousedown 兜底
+              if (e.button !== 0) return
+              e.preventDefault()
+              e.stopPropagation()
+              if (Date.now() - sidebarToggleAtRef.current < SIDEBAR_COLLAPSE_DURATION_MS) return
+              sidebarToggleAtRef.current = Date.now()
+              handleToggleSidebar()
+            }}
+            onClick={(e) => {
+              e.preventDefault()
+              e.stopPropagation()
+              // pointerdown/mousedown 已在短窗口内切换过则跳过，避免双触发
+              if (Date.now() - sidebarToggleAtRef.current < SIDEBAR_COLLAPSE_DURATION_MS) {
+                return
+              }
+              handleToggleSidebar()
+            }}
+          >
+            {sidebarCollapsed ? <PanelLeftOpen size={14} /> : <PanelLeftClose size={14} />}
+          </button>
+        </div>
+      )}
 
       {/* 独立 drag 条：从折叠按钮右缘开始，到右侧面板之前。
           右侧面板顶栏有自己的 titlebar-no-drag，不需要 drag 条覆盖。
@@ -419,6 +428,12 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
 
 
       <div className="shell-bg relative h-screen w-screen flex overflow-hidden bg-background">
+        {isSettingsView ? (
+          <div className="relative z-[60] flex min-w-0 flex-1">
+            <SettingsView />
+          </div>
+        ) : (
+          <>
         {/* 布局模型（width + 同步 translate，面板右缘与主区左缘同帧）：
             - 外列动画 width：peekWidth ↔ 0，主区同帧伸缩
             - 内层同曲线 translateX：0 ↔ -peekWidth，视觉上整栏往左滑出（而非右侧被裁切）
@@ -524,6 +539,8 @@ export function AppShell({ contextValue }: AppShellProps): React.ReactElement {
             )}
             <RightSidePanel width={clampedRightPanelWidth} />
           </div>
+        )}
+          </>
         )}
       </div>
     </AppShellProvider>

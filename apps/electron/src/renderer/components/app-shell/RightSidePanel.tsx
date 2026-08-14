@@ -17,12 +17,13 @@ import {
   agentSidePanelLauncherAtom,
   agentSidePanelTabsAtom,
   closeAgentSidePanelTabAtom,
-  closeAgentSidePanelAtom,
   openAgentSidePanelTabAtom,
   reorderAgentSidePanelTabsAtom,
   agentSessionsAtom,
   createAgentTerminalTab,
+  createBrowserInstanceTab,
   getAgentTerminalSessionId,
+  agentBrowserInstanceCounterAtom,
 } from '@/atoms/agent-atoms'
 import type { AgentSidePanelTab } from '@/atoms/agent-atoms'
 import { SidePanel } from '@/components/agent/SidePanel'
@@ -31,6 +32,7 @@ import type { AgentSidePanelAddTab } from '@/lib/agent-side-panel-tabs'
 export function RightSidePanel({ width }: { width?: number }): React.ReactElement | null {
   const appMode = useAtomValue(appModeAtom)
   const currentSessionId = useAtomValue(currentAgentSessionIdAtom)
+
   const sessionPathMap = useAtomValue(agentSessionPathMapAtom)
   const diffPanelTabMap = useAtomValue(agentDiffPanelTabAtom)
   const sidePanelTabsMap = useAtomValue(agentSidePanelTabsAtom)
@@ -40,7 +42,6 @@ export function RightSidePanel({ width }: { width?: number }): React.ReactElemen
   const openSidePanelTab = useSetAtom(openAgentSidePanelTabAtom)
   const closeSidePanelTab = useSetAtom(closeAgentSidePanelTabAtom)
   const reorderSidePanelTabs = useSetAtom(reorderAgentSidePanelTabsAtom)
-  const closeSidePanel = useSetAtom(closeAgentSidePanelAtom)
 
   const setActiveTab = React.useCallback((tab: AgentSidePanelTab) => {
     if (!currentSessionId) return
@@ -78,14 +79,34 @@ export function RightSidePanel({ width }: { width?: number }): React.ReactElemen
     void handleCreateTerminal()
   }, [handleCreateTerminal])
 
+  const setBrowserInstanceCounter = useSetAtom(agentBrowserInstanceCounterAtom)
+
   const handleOpenTab = React.useCallback((tab: AgentSidePanelAddTab) => {
     if (!currentSessionId) return
     if (tab === 'terminal') {
       void handleCreateTerminal()
       return
     }
+    if (tab === 'browser') {
+      // 浏览器可同时打开多个实例：每次点击都创建唯一 browser-instance Tab。
+      const nextIndex = (() => {
+        let index = 0
+        setBrowserInstanceCounter((previous) => {
+          const next = new Map(previous)
+          index = (next.get(currentSessionId) ?? 0) + 1
+          next.set(currentSessionId, index)
+          return next
+        })
+        return index
+      })()
+      openSidePanelTab({
+        sessionId: currentSessionId,
+        tab: createBrowserInstanceTab(String(nextIndex)),
+      })
+      return
+    }
     openSidePanelTab({ sessionId: currentSessionId, tab })
-  }, [currentSessionId, handleCreateTerminal, openSidePanelTab])
+  }, [currentSessionId, handleCreateTerminal, openSidePanelTab, setBrowserInstanceCounter])
 
   const handleCloseTab = React.useCallback((tab: AgentSidePanelTab) => {
     if (!currentSessionId) return
@@ -129,7 +150,6 @@ export function RightSidePanel({ width }: { width?: number }): React.ReactElemen
       onCreateTerminal={handleCreateTerminalRequest}
       onCloseTab={handleCloseTab}
       onReorderTabs={handleReorderTabs}
-      onClosePanel={() => closeSidePanel(currentSessionId)}
       width={width}
     />
   )

@@ -73,12 +73,19 @@ import {
   upsertAgentSession,
   mergeFetchedAgentSessions,
 } from '@/lib/agent-session-list'
-import { reconcileAgentRunActivity } from '@/lib/agent-running-state'
+import {
+  reconcileAgentRunActivity,
+  shouldSuppressAgentStreamError,
+} from '@/lib/agent-running-state'
 import {
   getAgentCompletionMarkers,
   notifyAgentCompletion,
 } from '@/lib/agent-completion-presence'
-import { getPlanModeChangeFromToolName, updatePlanModeSessionSet } from '@/lib/agent-plan-mode'
+import {
+  getPlanModeChangeFromToolName,
+  updatePlanModeSessionSet,
+  updatePlanSuggestionForMode,
+} from '@/lib/agent-plan-mode'
 import { mergeAgentLiveMessages } from '@/lib/agent-live-message'
 import {
   getExplicitRuntimePlanActivationTodoId,
@@ -234,6 +241,7 @@ function payloadToLegacyEvents(payload: AgentStreamPayload): AgentEvent[] {
             outputTokens: u.output_tokens,
             cacheReadTokens: u.cache_read_input_tokens,
             cacheCreationTokens: u.cache_creation_input_tokens,
+            ...(u.context_window != null ? { contextWindow: u.context_window } : {}),
           },
         })
       }
@@ -266,7 +274,13 @@ function payloadToLegacyEvents(payload: AgentStreamPayload): AgentEvent[] {
         subtype: string
         total_cost_usd?: number
         modelUsage?: Record<string, { contextWindow?: number }>
-        usage?: { input_tokens: number; output_tokens: number; cache_read_input_tokens: number; cache_creation_input_tokens: number }
+        usage?: {
+          input_tokens: number
+          output_tokens: number
+          cache_read_input_tokens: number
+          cache_creation_input_tokens: number
+          context_window?: number
+        }
         isSyntheticCompactionResult?: boolean
       }
       if (rMsg.isSyntheticCompactionResult) {
@@ -298,6 +312,7 @@ function payloadToLegacyEvents(payload: AgentStreamPayload): AgentEvent[] {
           ...(u && { outputTokens: u.output_tokens }),
           ...(u && { cacheReadTokens: u.cache_read_input_tokens }),
           ...(u && { cacheCreationTokens: u.cache_creation_input_tokens }),
+          ...(u?.context_window != null ? { contextWindow: u.context_window } : {}),
         } : undefined,
       }]
     }
@@ -414,10 +429,65 @@ function payloadToLegacyEvents(payload: AgentStreamPayload): AgentEvent[] {
   }
 }
 
+
+/** 判断 STREAM_COMPLETE 是否应弹出 Toast 提示（避免与 SDKMessageRenderer 已展示的错误重复）。 */
+export function shouldShowStreamCompleteToast(payload: {
+  resultSubtype?: string
+  stoppedByUser?: boolean
+  resultErrors?: unknown[]
+}): boolean {
+  if (!payload.resultSubtype) return false
+  if (payload.resultSubtype === 'success') return false
+  if (payload.stoppedByUser) return false
+  // error_during_execution 的真实原因已经由主进程持久化为结构化错误消息，
+  // SDKMessageRenderer 会展示这条消息；这里不再额外弹一条泛化 Toast，避免重复提示。
+  if (payload.resultSubtype === 'error_during_execution' && payload.resultErrors?.some((error) => typeof error === 'string' && error.trim().length > 0)) {
+    return false
+  }
+  return true
+}
+
+/** 生成 STREAM_COMPLETE Toast 文案；detail 优先展示 SDK 携带的真实原因。 */
+export function streamCompleteToastMessage(payload: {
+  resultSubtype?: string
+  resultErrors?: Array<string | undefined>
+}): string {
+  const messages: Record<string, string> = {
+    error_max_turns: '任务被中断：已达到轮次上限。继续对话可让 Agent 接着完成。',
+    error_max_budget_usd: '任务被中断：已达到预算上限。',
+    error_during_execution: '任务执行过程中发生错误。',
+    empty_response: 'Agent 本轮结束了，但没有返回任何可展示内容。你的消息已保留，可以直接重试或切换模型。',
+  }
+  const detail = payload.resultErrors?.find((e) => typeof e === 'string' && e.trim().length > 0)?.trim()
+  const fallback = payload.resultSubtype ? (messages[payload.resultSubtype] ?? `任务异常结束（${payload.resultSubtype}）`) : '任务异常结束'
+  return detail ? `任务执行出错：${detail}` : fallback
+}
+
 export function useGlobalAgentListeners(): void {
   const store = useStore()
 
   useEffect(() => {
+    // 任务看板：草稿会话发送时绑定 threadId 到任务
+    // 从 TaskboardView 的 taskPendingBindRef 无法直接访问，改为监听 stream event 并检查 meta
+    const bindTaskboardThread = async (sessionId: string): Promise<void> => {
+      try {
+        const sessions = await window.electronAPI.listAgentSessions()
+        const session = sessions.find((item) => item.id === sessionId)
+        if (!session || !session.taskboardTaskId) return
+        // 会话已关联任务，检查任务是否需要绑定 threadId
+        const task = await window.electronAPI.getTaskboardTask(session.taskboardTaskId)
+        if (task && !task.threadId) {
+          await window.electronAPI.updateTaskboardTask({
+            id: task.id,
+            version: task.version,
+            threadId: sessionId,
+          })
+        }
+      } catch (error) {
+        console.error('[任务看板] 绑定 threadId 失败:', error)
+      }
+    }
+
     /** 正在执行的写工具：toolUseId → { path, sessionId } */
     const pendingWriteTools = new Map<string, { path: string; sessionId: string }>()
     /** 正在执行的 Shell 工具：toolUseId → sessionId（完成后刷新改动统计和 Diff）。 */
@@ -1088,8 +1158,16 @@ export function useGlobalAgentListeners(): void {
             store.set(agentPlanModeSessionsAtom, (prev: Set<string>) =>
               updatePlanModeSessionSet(prev, sessionId, event.active)
             )
+            store.set(agentPromptSuggestionsAtom, (prev) =>
+              updatePlanSuggestionForMode(prev, sessionId, event.active)
+            )
             store.set(agentSessionsAtom, (prev) => prev.map((session) =>
-              session.id === sessionId ? { ...session, planModeEnabled: event.active } : session
+              session.id === sessionId
+                ? {
+                    ...session,
+                    planModeEnabled: event.active,
+                  }
+                : session
             ))
           } else if (event.type === 'permission_mode_changed') {
             // 权限模式变更（如 Plan 模式退出后切换到完全自动）
@@ -1101,6 +1179,9 @@ export function useGlobalAgentListeners(): void {
             })
             store.set(agentPlanModeSessionsAtom, (prev: Set<string>) =>
               updatePlanModeSessionSet(prev, sessionId, event.mode === 'plan')
+            )
+            store.set(agentPromptSuggestionsAtom, (prev) =>
+              updatePlanSuggestionForMode(prev, sessionId, event.mode === 'plan')
             )
             store.set(agentSessionsAtom, (prev) => prev.map((session) =>
               session.id === sessionId
@@ -1115,7 +1196,7 @@ export function useGlobalAgentListeners(): void {
             // 后台任务完成自动唤醒：从"空闲可输入"恢复到"运行中"。
             store.set(agentStreamingStatesAtom, (prev) => {
               const current = prev.get(sessionId)
-              if (!current || current.running) return prev
+              if (!current || current.running || current.stopping) return prev
               const map = new Map(prev)
               map.set(sessionId, { ...current, running: true })
               return map
@@ -1143,7 +1224,11 @@ export function useGlobalAgentListeners(): void {
         const streamBeforeCompletion = store.get(agentStreamingStatesAtom).get(data.sessionId)
         const isCurrentCompletion = Boolean(
           streamBeforeCompletion
-          && (streamBeforeCompletion.running || streamBeforeCompletion.backgroundWaiting)
+          && (
+            streamBeforeCompletion.running
+            || streamBeforeCompletion.backgroundWaiting
+            || streamBeforeCompletion.stopping
+          )
           && !(
             streamBeforeCompletion.startedAt != null
             && (
@@ -1180,16 +1265,19 @@ export function useGlobalAgentListeners(): void {
           },
         })
 
+        // 任务看板：会话完成时绑定 threadId（草稿会话发送后）
+        void bindTaskboardThread(data.sessionId)
+
         // STREAM_COMPLETE 表示后端已完全结束 — 立即标记 running: false
         // 同时将所有未完成的工具活动标记为已完成，防止 subagent spinner 继续转动
         // （complete 事件只清除 retrying，保持 running: true 以防竞态）
         // 竞态保护：通过 startedAt 区分新旧流，防止旧流的 complete 事件重置新流的 running 状态
         store.set(agentStreamingStatesAtom, (prev) => {
           const current = prev.get(data.sessionId)
-          // 既非运行中、也非软空闲态 → 已彻底结束，忽略重复/陈旧的完成事件。
+          // 既非运行中、也非软空闲态、也非等待 Runtime 收尾 → 已彻底结束，忽略重复/陈旧的完成事件。
           // 软空闲态（running=false 但 backgroundWaiting=true）也要处理：空闲超时/用户停止
           // 触发的真正完成会带 backgroundTasksPending=false，需借此清除 backgroundWaiting。
-          if (!current || (!current.running && !current.backgroundWaiting)) {
+          if (!current || (!current.running && !current.backgroundWaiting && !current.stopping)) {
             return prev
           }
           if (current.startedAt != null && (data.startedAt == null || current.startedAt > data.startedAt)) {
@@ -1199,6 +1287,7 @@ export function useGlobalAgentListeners(): void {
           map.set(data.sessionId, {
             ...current,
             running: false,
+            stopping: false,
             // 压缩未收到终态事件（如用户在压缩中暂停）时，在流结束时收尾：
             // 收不到失败信息则按成功收敛，确保对话流显示「上下文已压缩 / 上下文已自动压缩」。
             ...(current.isCompacting && {
@@ -1262,22 +1351,10 @@ export function useGlobalAgentListeners(): void {
           store.set(interruptAgentRuntimePlanAtom, data.sessionId)
         }
 
-        // 非正常结束时显示截断提示
-        if (data.resultSubtype && data.resultSubtype !== 'success' && !data.stoppedByUser) {
-          const messages: Record<string, string> = {
-            error_max_turns: '任务被中断：已达到轮次上限。继续对话可让 Agent 接着完成。',
-            error_max_budget_usd: '任务被中断：已达到预算上限。',
-            error_during_execution: '任务执行过程中发生错误。',
-            empty_response: 'Agent 本轮结束了，但没有返回任何可展示内容。你的消息已保留，可以直接重试或切换模型。',
-          }
-          // error_during_execution 等执行期错误：优先展示 SDK result.errors[] 携带的真实原因，
-          // 让用户能据此判断重试 / 改提问 / 报 bug，而非只看到泛泛的兜底文案。
-          const detail = data.resultErrors?.find((e) => typeof e === 'string' && e.trim().length > 0)?.trim()
-          const fallback = messages[data.resultSubtype] ?? `任务异常结束（${data.resultSubtype}）`
-          const msg = detail
-            ? `任务执行出错：${detail}`
-            : fallback
-          toast.warning(msg, { duration: 8000 })
+        // 非正常结束时显示截断提示；error_during_execution 已持久化真实原因时
+        // 由 SDKMessageRenderer 展示，不重复弹 Toast。
+        if (shouldShowStreamCompleteToast(data)) {
+          toast.warning(streamCompleteToastMessage(data), { duration: 8000 })
         }
 
         // 清除 Plan 模式状态（防止异常退出时残留）
@@ -1362,6 +1439,13 @@ export function useGlobalAgentListeners(): void {
         unstable_batchedUpdates(() => {
         // 错误路径同样不能遗失定时器中的最后一批思考/正文。
         flushLiveMessages(data.sessionId)
+
+        const streamState = store.get(agentStreamingStatesAtom).get(data.sessionId)
+        const stoppedByUser = store.get(stoppedByUserSessionsAtom).has(data.sessionId)
+        if (shouldSuppressAgentStreamError(streamState, stoppedByUser)) {
+          console.info(`[GlobalAgentListeners] 已忽略用户暂停期间的 Runtime 收尾错误: session=${data.sessionId}`)
+          return
+        }
         console.error('[GlobalAgentListeners] 流式错误:', data.error)
 
         // 存储错误消息
@@ -1372,8 +1456,7 @@ export function useGlobalAgentListeners(): void {
         })
 
         // 递增消息刷新版本号，通知 AgentView 重新加载消息
-        const state = store.get(agentStreamingStatesAtom).get(data.sessionId)
-        if (!state?.running) {
+        if (!streamState?.running) {
           store.set(agentMessageRefreshAtom, (prev) => {
             const map = new Map(prev)
             map.set(data.sessionId, (prev.get(data.sessionId) ?? 0) + 1)

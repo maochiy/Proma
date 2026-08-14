@@ -1,12 +1,52 @@
 import { describe, expect, test } from 'bun:test'
 import {
   buildQueuedMessageSendPayload,
+  canAutoSendQueuedAgentMessage,
   createAgentQueuedMessage,
   parseQueuedMessageMentions,
+  shouldDeferAgentMessage,
 } from './agent-message-queue'
 
 const SOURCE_SESSION_ID = 'b5839484-13e3-4ac3-9415-9cb05caa446d'
 const OTHER_SESSION_ID = 'bc42070b-483f-4352-bba6-b3f8714b5af9'
+
+describe('Agent 暂停后续发队列', () => {
+  test('Given 用户已点击暂停但 Runtime 尚未完成收尾 When 立即发送下一条消息 Then 消息应进入等待队列', () => {
+    expect(shouldDeferAgentMessage({
+      streaming: false,
+      stopping: true,
+      messagesRefreshing: false,
+    })).toBe(true)
+  })
+
+  test('Given 上一轮消息仍在同步 When 用户发送下一条消息 Then 消息应继续进入等待队列', () => {
+    expect(shouldDeferAgentMessage({
+      streaming: false,
+      stopping: false,
+      messagesRefreshing: true,
+    })).toBe(true)
+  })
+
+  test('Given 暂停后的消息正在排队 When Runtime 未收尾 Then 不自动启动新一轮', () => {
+    expect(canAutoSendQueuedAgentMessage({
+      queueLength: 1,
+      canSendNow: true,
+      streaming: false,
+      stopping: true,
+      messagesRefreshing: false,
+    })).toBe(false)
+  })
+
+  test('Given 暂停后的消息正在排队 When Runtime 已收尾且消息同步完成 Then 自动启动新一轮', () => {
+    expect(canAutoSendQueuedAgentMessage({
+      queueLength: 1,
+      canSendNow: true,
+      streaming: false,
+      stopping: false,
+      messagesRefreshing: false,
+    })).toBe(true)
+  })
+})
 
 describe('parseQueuedMessageMentions 会话 ID 引用', () => {
   test('Given 用户从会话菜单复制裸 ID When 粘贴到新会话 Then 识别为结构化会话引用', () => {

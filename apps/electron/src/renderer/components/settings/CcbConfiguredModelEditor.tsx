@@ -13,6 +13,8 @@ export interface CcbConfiguredModelEditorValue {
   name?: string
   description?: string
   contextWindow?: number
+  /** 模型级上下文自动压缩触发占比（0-100，百分比）；未配置时回退供应商级。 */
+  autoCompactRatio?: number
   effortLevels?: ThinkingEffortLevel[]
 }
 
@@ -87,6 +89,32 @@ export function CcbConfiguredModelEditor({
                 ? `CCB 自动：${runtimeModel.contextWindow.toLocaleString()}`
                 : '例如 200000'
             }
+          />
+        </ModelField>
+      </div>
+
+      <div className="grid gap-3 md:grid-cols-[1fr_220px]">
+        <div className="md:col-span-2">
+          <div className="mb-2 text-xs font-medium">上下文自动压缩</div>
+          <p className="mb-2 text-[11px] text-muted-foreground">
+            达到上下文窗口的该比例时自动压缩。留空表示使用供应商级配置；都不配置时默认 80%。
+          </p>
+        </div>
+        <ModelField
+          label="压缩触发占比"
+          description="百分比，0-100；留空由供应商级或默认 80% 兜底"
+        >
+          <Input
+            type="number"
+            min={0}
+            max={100}
+            step={5}
+            value={value.autoCompactRatio ?? ''}
+            onChange={event => {
+              const raw = event.target.value.trim()
+              onChange({ autoCompactRatio: raw ? Number(raw) : undefined })
+            }}
+            placeholder="默认 80%"
           />
         </ModelField>
       </div>

@@ -6,7 +6,7 @@
  */
 
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
-import { IPC_CHANNELS, CHANNEL_IPC_CHANNELS, CHAT_IPC_CHANNELS, AGENT_IPC_CHANNELS, ENVIRONMENT_IPC_CHANNELS, INSTALLER_IPC_CHANNELS, PROXY_IPC_CHANNELS, GITHUB_RELEASE_IPC_CHANNELS, SYSTEM_PROMPT_IPC_CHANNELS, CHAT_TOOL_IPC_CHANNELS, FEISHU_IPC_CHANNELS, DINGTALK_IPC_CHANNELS, WECHAT_IPC_CHANNELS, AUTOMATION_IPC_CHANNELS } from '@proma/shared'
+import { IPC_CHANNELS, CHANNEL_IPC_CHANNELS, CHAT_IPC_CHANNELS, AGENT_IPC_CHANNELS, ENVIRONMENT_IPC_CHANNELS, INSTALLER_IPC_CHANNELS, PROXY_IPC_CHANNELS, GITHUB_RELEASE_IPC_CHANNELS, FEEDBACK_IPC_CHANNELS, SYSTEM_PROMPT_IPC_CHANNELS, CHAT_TOOL_IPC_CHANNELS, FEISHU_IPC_CHANNELS, DINGTALK_IPC_CHANNELS, WECHAT_IPC_CHANNELS, AUTOMATION_IPC_CHANNELS, RUNTIME_IPC_CHANNELS, BROWSER_IPC_CHANNELS, BROWSER_AGENT_IPC_CHANNELS, TASKBOARD_IPC_CHANNELS } from '@proma/shared'
 import { USER_PROFILE_IPC_CHANNELS, NEW_API_AUTH_IPC_CHANNELS, SETTINGS_IPC_CHANNELS, SCRATCH_PAD_IPC_CHANNELS, APP_ICON_IPC_CHANNELS, DOCK_BADGE_IPC_CHANNELS, STORAGE_IPC_CHANNELS } from '../types'
 import type {
   RuntimeStatus,
@@ -40,6 +40,7 @@ import type {
   AgentSessionTranscriptSyncedPayload,
   AgentRuntimeModelCatalog,
   AgentRuntimeModelCatalogDraftInput,
+  ModelCenterStatus,
   CcbNativeModelConfiguration,
   CcbNativeModelConfigurationUpdate,
   SDKMessage,
@@ -74,6 +75,8 @@ import type {
   SystemProxyDetectResult,
   GitHubRelease,
   GitHubReleaseListOptions,
+  FeedbackSubmitInput,
+  FeedbackSubmitResult,
   PermissionRequest,
   PermissionResponse,
   PromaPermissionMode,
@@ -117,6 +120,32 @@ import type {
   Automation,
   CreateAutomationInput,
   UpdateAutomationInput,
+  Project,
+  Task,
+  Comment,
+  Attachment,
+  TaskChangeActivity,
+  CreateProjectInput,
+  CreateTaskInput,
+  UpdateTaskInput,
+  MoveTaskInput,
+  ArchiveTaskInput,
+  AddRelationInput,
+  CreateCommentInput,
+  UpdateCommentInput,
+  DeleteCommentInput,
+  CreateAttachmentInput,
+  ListTasksFilters,
+  RelationUpdateResult,
+  AttachmentContentResult,
+  RuntimeConfig,
+  RuntimeDefinition,
+  RuntimeCapabilitySnapshot,
+  RuntimeDiscoveryCandidate,
+  RuntimePackageStatus,
+  BrowserAnnotationCreatedEvent,
+  BrowserErrorEvent,
+  BrowserAgentTask,
 } from '@proma/shared'
 import type {
   UserProfile,
@@ -150,6 +179,22 @@ import { QUICK_TASK_IPC_CHANNELS, TRAY_IPC_CHANNELS, VOICE_DICTATION_IPC_CHANNEL
 export interface ElectronAPI {
   // ===== 运行时相关 =====
 
+  /** 获取 Proma 统一 Runtime 目录。 */
+  listRuntimes: () => Promise<RuntimeDefinition[]>
+  refreshRuntimes: () => Promise<RuntimeDefinition[]>
+  getRuntimeConfig: () => Promise<RuntimeConfig>
+  updateRuntimeConfig: (updates: Partial<RuntimeConfig>) => Promise<RuntimeConfig>
+  getModelCenterStatus: () => Promise<ModelCenterStatus>
+  getRuntimeCapabilities: (runtimeId: import('@proma/shared').RuntimeId) => Promise<RuntimeCapabilitySnapshot>
+  detectRuntime: (runtimeId: import('@proma/shared').RuntimeId) => Promise<RuntimeDefinition | null>
+  discoverRuntime: (runtimeId: import('@proma/shared').RuntimeId) => Promise<RuntimeDiscoveryCandidate[]>
+  getRuntimePackageStatus: (runtimeId: import('@proma/shared').RuntimeId) => Promise<RuntimePackageStatus>
+  installRuntimePackage: (runtimeId: import('@proma/shared').RuntimeId, version: string) => Promise<RuntimePackageStatus>
+  activateRuntimePackage: (runtimeId: import('@proma/shared').RuntimeId, buildId: string) => Promise<RuntimePackageStatus>
+  deleteRuntimePackage: (runtimeId: import('@proma/shared').RuntimeId, version: string) => Promise<RuntimePackageStatus>
+  bindNativeRuntime: (runtimeId: import('@proma/shared').RuntimeId, executablePath: string) => Promise<RuntimePackageStatus>
+  unbindNativeRuntime: (runtimeId: import('@proma/shared').RuntimeId, buildId: string) => Promise<RuntimePackageStatus>
+
   /** 创建一个绑定当前 Agent 会话的交互式集成终端。 */
   createIntegratedTerminal: (
     input: IntegratedTerminalCreateInput,
@@ -177,6 +222,21 @@ export interface ElectronAPI {
   onIntegratedTerminalEvent: (
     callback: (event: IntegratedTerminalEvent) => void,
   ) => () => void
+  /** 订阅 Proma Browser 页面标注。 */
+  onBrowserAnnotationCreated: (callback: (event: BrowserAnnotationCreatedEvent) => void) => () => void
+  /** 订阅 Proma Browser 安全/导航错误。 */
+  onBrowserError: (callback: (event: BrowserErrorEvent) => void) => () => void
+
+  /** 绑定 webview guest 到浏览器任务（Browser Agent） */
+  bindBrowserAgentTask: (input: { taskId: string; guestId: number; url?: string }) => Promise<{ ok: boolean }>
+  /** 解绑浏览器任务 guest */
+  unbindBrowserAgentTask: (input: { guestId: number }) => Promise<{ ok: boolean }>
+  /** 拉取浏览器任务列表 */
+  listBrowserAgentTasks: (input: { sessionId?: string }) => Promise<BrowserAgentTask[]>
+  /** 订阅浏览器任务状态变化 */
+  onBrowserAgentTaskUpdated: (callback: (task: BrowserAgentTask) => void) => () => void
+  /** 订阅 Agent 请求打开浏览器任务页面 */
+  onBrowserAgentOpenTask: (callback: (task: BrowserAgentTask) => void) => () => void
 
   /**
    * 获取运行时状态
@@ -282,6 +342,11 @@ export interface ElectronAPI {
 
   /** 取消进行中的 ChatGPT (Codex) OAuth 登录 */
   codexOAuthCancel: () => Promise<void>
+
+  // ===== 用户反馈 =====
+
+  /** 提交反馈；本地会话读取和脱敏由主进程完成 */
+  submitFeedback: (input: FeedbackSubmitInput) => Promise<FeedbackSubmitResult>
 
   // ===== 对话管理相关 =====
 
@@ -498,7 +563,7 @@ export interface ElectronAPI {
   listAgentSessions: () => Promise<AgentSessionMeta[]>
 
   /** 创建 Agent 会话 */
-  createAgentSession: (title?: string, channelId?: string, workspaceId?: string, modelId?: string, draft?: boolean) => Promise<AgentSessionMeta>
+  createAgentSession: (title?: string, channelId?: string, workspaceId?: string, modelId?: string, draft?: boolean, taskboardTaskId?: string) => Promise<AgentSessionMeta>
 
   /** 获取 Agent 会话 SDKMessage（Phase 4 新格式） */
   getAgentSessionSDKMessages: (id: string) => Promise<SDKMessage[]>
@@ -1205,6 +1270,57 @@ export interface ElectronAPI {
   runAutomationNow: (id: string) => Promise<void>
   /** 订阅任务列表变更事件 */
   onAutomationChanged: (callback: () => void) => () => void
+
+  // ===== 任务看板（Taskboard）=====
+
+  /** 获取全部项目 */
+  listTaskboardProjects: () => Promise<Project[]>
+  /** 创建项目 */
+  createTaskboardProject: (input: CreateProjectInput) => Promise<Project>
+  /** 删除项目 */
+  deleteTaskboardProject: (id: string) => Promise<Project>
+  /** 获取任务列表（支持过滤） */
+  listTaskboardTasks: (filters?: ListTasksFilters) => Promise<Task[]>
+  /** 获取单个任务 */
+  getTaskboardTask: (id: string) => Promise<Task | null>
+  /** 创建任务 */
+  createTaskboardTask: (input: CreateTaskInput) => Promise<Task>
+  /** 更新任务 */
+  updateTaskboardTask: (input: UpdateTaskInput) => Promise<Task>
+  /** 移动任务 */
+  moveTaskboardTask: (input: MoveTaskInput) => Promise<Task>
+  /** 归档任务 */
+  archiveTaskboardTask: (input: ArchiveTaskInput) => Promise<Task>
+  /** 恢复任务 */
+  restoreTaskboardTask: (input: ArchiveTaskInput) => Promise<Task>
+  /** 删除已归档任务 */
+  deleteArchivedTaskboardTask: (id: string, version: number) => Promise<{ task: Task; attachmentIds: string[] }>
+  /** 获取任务活动时间线 */
+  listTaskboardActivities: (taskId: string) => Promise<TaskChangeActivity[]>
+  /** 获取任务评论 */
+  listTaskboardComments: (taskId: string) => Promise<Comment[]>
+  /** 创建评论 */
+  createTaskboardComment: (input: CreateCommentInput) => Promise<Comment>
+  /** 更新评论 */
+  updateTaskboardComment: (input: UpdateCommentInput) => Promise<Comment>
+  /** 删除评论 */
+  deleteTaskboardComment: (input: DeleteCommentInput) => Promise<Comment>
+  /** 获取任务附件 */
+  listTaskboardAttachments: (taskId: string) => Promise<Attachment[]>
+  /** 创建任务附件 */
+  createTaskboardAttachment: (input: CreateAttachmentInput) => Promise<Attachment>
+  /** 创建评论附件 */
+  createTaskboardCommentAttachment: (input: CreateAttachmentInput) => Promise<Attachment>
+  /** 删除附件 */
+  deleteTaskboardAttachment: (id: string) => Promise<Attachment>
+  /** 读取附件内容 */
+  readTaskboardAttachmentContent: (id: string) => Promise<AttachmentContentResult>
+  /** 添加任务关系 */
+  addTaskboardRelation: (input: AddRelationInput) => Promise<RelationUpdateResult>
+  /** 移除任务关系 */
+  removeTaskboardRelation: (input: AddRelationInput) => Promise<RelationUpdateResult>
+  /** 订阅任务看板数据变更 */
+  onTaskboardChanged: (callback: () => void) => () => void
 }
 
 interface MigrationExportResult {
@@ -1245,7 +1361,50 @@ const electronAPI: ElectronAPI = {
     return () => ipcRenderer.removeListener(IPC_CHANNELS.TERMINAL_EVENT, listener)
   },
 
+  onBrowserAnnotationCreated: (callback: (event: BrowserAnnotationCreatedEvent) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: BrowserAnnotationCreatedEvent): void => callback(payload)
+    ipcRenderer.on(BROWSER_IPC_CHANNELS.ANNOTATION_CREATED, listener)
+    return () => ipcRenderer.removeListener(BROWSER_IPC_CHANNELS.ANNOTATION_CREATED, listener)
+  },
+
+  onBrowserError: (callback: (event: BrowserErrorEvent) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: BrowserErrorEvent): void => callback(payload)
+    ipcRenderer.on(BROWSER_IPC_CHANNELS.ERROR, listener)
+    return () => ipcRenderer.removeListener(BROWSER_IPC_CHANNELS.ERROR, listener)
+  },
+
+  bindBrowserAgentTask: (input: { taskId: string; guestId: number; url?: string }) =>
+    ipcRenderer.invoke(BROWSER_AGENT_IPC_CHANNELS.BIND_TASK, input),
+  unbindBrowserAgentTask: (input: { guestId: number }) =>
+    ipcRenderer.invoke(BROWSER_AGENT_IPC_CHANNELS.UNBIND_TASK, input),
+  listBrowserAgentTasks: (input: { sessionId?: string }) =>
+    ipcRenderer.invoke('proma:browser-agent:list-tasks', input),
+  onBrowserAgentTaskUpdated: (callback: (task: BrowserAgentTask) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: BrowserAgentTask): void => callback(payload)
+    ipcRenderer.on(BROWSER_AGENT_IPC_CHANNELS.TASK_UPDATED, listener)
+    return () => ipcRenderer.removeListener(BROWSER_AGENT_IPC_CHANNELS.TASK_UPDATED, listener)
+  },
+  onBrowserAgentOpenTask: (callback: (task: BrowserAgentTask) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, payload: BrowserAgentTask): void => callback(payload)
+    ipcRenderer.on(BROWSER_AGENT_IPC_CHANNELS.OPEN_TASK, listener)
+    return () => ipcRenderer.removeListener(BROWSER_AGENT_IPC_CHANNELS.OPEN_TASK, listener)
+  },
+
   // 运行时
+  listRuntimes: () => ipcRenderer.invoke(RUNTIME_IPC_CHANNELS.LIST),
+  refreshRuntimes: () => ipcRenderer.invoke(RUNTIME_IPC_CHANNELS.REFRESH),
+  getRuntimeConfig: () => ipcRenderer.invoke(RUNTIME_IPC_CHANNELS.GET_CONFIG),
+  updateRuntimeConfig: (updates) => ipcRenderer.invoke(RUNTIME_IPC_CHANNELS.UPDATE_CONFIG, updates),
+  getModelCenterStatus: () => ipcRenderer.invoke(RUNTIME_IPC_CHANNELS.GET_MODEL_CENTER_STATUS),
+  getRuntimeCapabilities: (runtimeId) => ipcRenderer.invoke(RUNTIME_IPC_CHANNELS.GET_CAPABILITIES, runtimeId),
+  detectRuntime: (runtimeId) => ipcRenderer.invoke(RUNTIME_IPC_CHANNELS.DETECT, runtimeId),
+  discoverRuntime: (runtimeId) => ipcRenderer.invoke(RUNTIME_IPC_CHANNELS.DISCOVER, runtimeId),
+  getRuntimePackageStatus: (runtimeId) => ipcRenderer.invoke(RUNTIME_IPC_CHANNELS.GET_PACKAGE_STATUS, runtimeId),
+  installRuntimePackage: (runtimeId, version) => ipcRenderer.invoke(RUNTIME_IPC_CHANNELS.INSTALL_PACKAGE, runtimeId, version),
+  activateRuntimePackage: (runtimeId, buildId) => ipcRenderer.invoke(RUNTIME_IPC_CHANNELS.ACTIVATE_PACKAGE, runtimeId, buildId),
+  deleteRuntimePackage: (runtimeId, version) => ipcRenderer.invoke(RUNTIME_IPC_CHANNELS.DELETE_PACKAGE, runtimeId, version),
+  bindNativeRuntime: (runtimeId, executablePath) => ipcRenderer.invoke(RUNTIME_IPC_CHANNELS.BIND_NATIVE, runtimeId, executablePath),
+  unbindNativeRuntime: (runtimeId, buildId) => ipcRenderer.invoke(RUNTIME_IPC_CHANNELS.UNBIND_NATIVE, runtimeId, buildId),
   getRuntimeStatus: () => {
     return ipcRenderer.invoke(IPC_CHANNELS.GET_RUNTIME_STATUS)
   },
@@ -1393,6 +1552,10 @@ const electronAPI: ElectronAPI = {
 
   codexOAuthCancel: () => {
     return ipcRenderer.invoke(CHANNEL_IPC_CHANNELS.CODEX_OAUTH_CANCEL)
+  },
+
+  submitFeedback: (input: FeedbackSubmitInput) => {
+    return ipcRenderer.invoke(FEEDBACK_IPC_CHANNELS.SUBMIT, input)
   },
 
   // 对话管理
@@ -1671,8 +1834,8 @@ const electronAPI: ElectronAPI = {
     return ipcRenderer.invoke(AGENT_IPC_CHANNELS.LIST_SESSIONS)
   },
 
-  createAgentSession: (title?: string, channelId?: string, workspaceId?: string, modelId?: string, draft?: boolean) => {
-    return ipcRenderer.invoke(AGENT_IPC_CHANNELS.CREATE_SESSION, title, channelId, workspaceId, modelId, draft)
+  createAgentSession: (title?: string, channelId?: string, workspaceId?: string, modelId?: string, draft?: boolean, taskboardTaskId?: string) => {
+    return ipcRenderer.invoke(AGENT_IPC_CHANNELS.CREATE_SESSION, title, channelId, workspaceId, modelId, draft, taskboardTaskId)
   },
 
   getAgentSessionSDKMessages: (id: string) => {
@@ -2757,6 +2920,58 @@ const electronAPI: ElectronAPI = {
     const listener = (): void => callback()
     ipcRenderer.on(AUTOMATION_IPC_CHANNELS.CHANGED, listener)
     return () => { ipcRenderer.removeListener(AUTOMATION_IPC_CHANNELS.CHANGED, listener) }
+  },
+
+  // ===== 任务看板（Taskboard）=====
+  listTaskboardProjects: () => ipcRenderer.invoke(TASKBOARD_IPC_CHANNELS.LIST_PROJECTS),
+  createTaskboardProject: (input: CreateProjectInput) =>
+    ipcRenderer.invoke(TASKBOARD_IPC_CHANNELS.CREATE_PROJECT, input),
+  deleteTaskboardProject: (id: string) =>
+    ipcRenderer.invoke(TASKBOARD_IPC_CHANNELS.DELETE_PROJECT, id),
+  listTaskboardTasks: (filters?: ListTasksFilters) =>
+    ipcRenderer.invoke(TASKBOARD_IPC_CHANNELS.LIST_TASKS, filters),
+  getTaskboardTask: (id: string) =>
+    ipcRenderer.invoke(TASKBOARD_IPC_CHANNELS.GET_TASK, id),
+  createTaskboardTask: (input: CreateTaskInput) =>
+    ipcRenderer.invoke(TASKBOARD_IPC_CHANNELS.CREATE_TASK, input),
+  updateTaskboardTask: (input: UpdateTaskInput) =>
+    ipcRenderer.invoke(TASKBOARD_IPC_CHANNELS.UPDATE_TASK, input),
+  moveTaskboardTask: (input: MoveTaskInput) =>
+    ipcRenderer.invoke(TASKBOARD_IPC_CHANNELS.MOVE_TASK, input),
+  archiveTaskboardTask: (input: ArchiveTaskInput) =>
+    ipcRenderer.invoke(TASKBOARD_IPC_CHANNELS.ARCHIVE_TASK, input),
+  restoreTaskboardTask: (input: ArchiveTaskInput) =>
+    ipcRenderer.invoke(TASKBOARD_IPC_CHANNELS.RESTORE_TASK, input),
+  deleteArchivedTaskboardTask: (id: string, version: number) =>
+    ipcRenderer.invoke(TASKBOARD_IPC_CHANNELS.DELETE_ARCHIVED_TASK, id, version),
+  listTaskboardActivities: (taskId: string) =>
+    ipcRenderer.invoke(TASKBOARD_IPC_CHANNELS.LIST_ACTIVITIES, taskId),
+  listTaskboardComments: (taskId: string) =>
+    ipcRenderer.invoke(TASKBOARD_IPC_CHANNELS.LIST_COMMENTS, taskId),
+  createTaskboardComment: (input: CreateCommentInput) =>
+    ipcRenderer.invoke(TASKBOARD_IPC_CHANNELS.CREATE_COMMENT, input),
+  updateTaskboardComment: (input: UpdateCommentInput) =>
+    ipcRenderer.invoke(TASKBOARD_IPC_CHANNELS.UPDATE_COMMENT, input),
+  deleteTaskboardComment: (input: DeleteCommentInput) =>
+    ipcRenderer.invoke(TASKBOARD_IPC_CHANNELS.DELETE_COMMENT, input),
+  listTaskboardAttachments: (taskId: string) =>
+    ipcRenderer.invoke(TASKBOARD_IPC_CHANNELS.LIST_ATTACHMENTS, taskId),
+  createTaskboardAttachment: (input: CreateAttachmentInput) =>
+    ipcRenderer.invoke(TASKBOARD_IPC_CHANNELS.CREATE_ATTACHMENT, input),
+  createTaskboardCommentAttachment: (input: CreateAttachmentInput) =>
+    ipcRenderer.invoke(TASKBOARD_IPC_CHANNELS.CREATE_COMMENT_ATTACHMENT, input),
+  deleteTaskboardAttachment: (id: string) =>
+    ipcRenderer.invoke(TASKBOARD_IPC_CHANNELS.DELETE_ATTACHMENT, id),
+  readTaskboardAttachmentContent: (id: string) =>
+    ipcRenderer.invoke(TASKBOARD_IPC_CHANNELS.READ_ATTACHMENT_CONTENT, id),
+  addTaskboardRelation: (input: AddRelationInput) =>
+    ipcRenderer.invoke(TASKBOARD_IPC_CHANNELS.ADD_RELATION, input),
+  removeTaskboardRelation: (input: AddRelationInput) =>
+    ipcRenderer.invoke(TASKBOARD_IPC_CHANNELS.REMOVE_RELATION, input),
+  onTaskboardChanged: (callback: () => void) => {
+    const listener = (): void => callback()
+    ipcRenderer.on(TASKBOARD_IPC_CHANNELS.CHANGED, listener)
+    return () => { ipcRenderer.removeListener(TASKBOARD_IPC_CHANNELS.CHANGED, listener) }
   },
 }
 

@@ -38,6 +38,18 @@ export function updatePlanModeSessionSet(
   return next
 }
 
+/** 退出计划模式后清除“请执行该计划”等计划建议。 */
+export function updatePlanSuggestionForMode(
+  prev: Map<string, string>,
+  sessionId: string,
+  active: boolean,
+): Map<string, string> {
+  if (active || !prev.has(sessionId)) return prev
+  const next = new Map(prev)
+  next.delete(sessionId)
+  return next
+}
+
 /** 历史会话若把 plan 存在审批字段中，回退到安全的“请求批准”。 */
 export function normalizeApprovalMode(permissionMode: PromaPermissionMode): PromaApprovalMode {
   return permissionMode === 'plan' ? 'default' : permissionMode

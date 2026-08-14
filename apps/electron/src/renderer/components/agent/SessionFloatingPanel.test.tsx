@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test'
 import { createStore, Provider } from 'jotai'
 import { renderToStaticMarkup } from 'react-dom/server'
 import type { AgentRuntimeExecutionGraph, AgentSessionMeta } from '@proma/shared'
+import type { BrowserAgentTask } from '@proma/shared'
 import {
   type AgentFloatingPanelExecutionNodeState,
   agentFloatingPanelExecutionNodeStatesAtom,
@@ -10,6 +11,7 @@ import {
   agentSessionsAtom,
   agentStreamingStatesAtom,
 } from '@/atoms/agent-atoms'
+import { browserAgentTasksAtom } from '@/atoms/browser-atoms'
 import { createFloatingPlanSignature } from '@/lib/session-floating-runtime-lifecycle'
 import {
   allocateFloatingRuntimeListRows,
@@ -62,10 +64,12 @@ function renderFloatingPanel(
   running: boolean,
   sessions: AgentSessionMeta[] = [],
   graph: AgentRuntimeExecutionGraph = EXECUTION_GRAPH,
+  browserTasks: BrowserAgentTask[] = [],
 ): string {
   const store = createStore()
   store.set(agentRuntimeExecutionGraphsAtom, new Map([[SESSION_ID, graph]]))
   store.set(agentSessionsAtom, sessions)
+  store.set(browserAgentTasksAtom, new Map(browserTasks.map((task) => [task.taskId, task])))
   const executionStates = new Map<string, AgentFloatingPanelExecutionNodeState>()
   for (const node of graph.nodes) {
     executionStates.set(node.id, {
@@ -483,5 +487,78 @@ describe('SessionFloatingPanel 会话悬浮面板', () => {
 
     expect(html).not.toContain('签名稳定的旧计划')
     expect(html).toContain('新节点')
+  })
+
+  test('Given 存在运行中的浏览器任务 When 渲染悬浮面板 Then 展示浏览器任务区块与条目', () => {
+    const html = renderFloatingPanel(false, [], {
+      nodes: [],
+      todos: [],
+      updatedAt: 1,
+    }, [{
+      taskId: 'appstore-connect',
+      sessionId: SESSION_ID,
+      title: 'App Store Connect',
+      url: 'https://appstoreconnect.apple.com/login',
+      status: 'running',
+      createdAt: 100,
+      updatedAt: 100,
+    }])
+
+    expect(html).toContain('data-session-floating-browser-region')
+    expect(html).toContain('1 个浏览器任务')
+    expect(html).toContain('App Store Connect')
+    expect(html).toContain('data-browser-task-entry=\"appstore-connect\"')
+    expect(html).toContain('agent-status-shimmer')
+    expect(html).not.toContain('animate-spin')
+  })
+
+  test('Given 浏览器任务已暂停或失败 When 渲染悬浮面板 Then 不显示（只有 running 显示）', () => {
+    const html = renderFloatingPanel(false, [], {
+      nodes: [],
+      todos: [],
+      updatedAt: 1,
+    }, [
+      {
+        taskId: 'paused-task',
+        sessionId: SESSION_ID,
+        title: '暂停的页面',
+        url: 'about:blank',
+        status: 'paused',
+        createdAt: 100,
+        updatedAt: 100,
+      },
+      {
+        taskId: 'failed-task',
+        sessionId: SESSION_ID,
+        title: '失败的页面',
+        url: 'about:blank',
+        status: 'failed',
+        createdAt: 100,
+        updatedAt: 100,
+      },
+    ])
+
+    expect(html).not.toContain('data-session-floating-browser-region')
+    expect(html).not.toContain('暂停的页面')
+    expect(html).not.toContain('失败的页面')
+  })
+
+  test('Given 浏览器任务已完成 When 渲染悬浮面板 Then 不显示（只有 running 显示）', () => {
+    const html = renderFloatingPanel(false, [], {
+      nodes: [],
+      todos: [],
+      updatedAt: 1,
+    }, [{
+      taskId: 'completed-task',
+      sessionId: SESSION_ID,
+      title: '已完成的页面',
+      url: 'about:blank',
+      status: 'completed',
+      createdAt: 100,
+      updatedAt: 100,
+    }])
+
+    expect(html).not.toContain('data-session-floating-browser-region')
+    expect(html).not.toContain('已完成的页面')
   })
 })

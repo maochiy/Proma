@@ -3,6 +3,7 @@ import type { AgentEvent } from '@proma/shared'
 import type { AgentStreamState } from '@/atoms/agent-atoms'
 import {
   reconcileAgentRunActivity,
+  shouldSuppressAgentStreamError,
   shouldSuppressAgentRunningIndicator,
 } from './agent-running-state'
 
@@ -55,6 +56,17 @@ describe('Agent 执行中状态恢复', () => {
 
     expect(reconcileAgentRunActivity(state, event)).toBe(state)
   })
+
+  test('Given 用户已点击暂停 When Runtime 仍有尾部文本事件 Then 保持停止过渡态不重新激活', () => {
+    const state = createStreamState({ stopping: true })
+    const event: AgentEvent = {
+      type: 'text_complete',
+      text: '停止前最后到达的文本',
+      isIntermediate: false,
+    }
+
+    expect(reconcileAgentRunActivity(state, event)).toBe(state)
+  })
 })
 
 describe('Agent 执行中指示器压缩判断', () => {
@@ -70,5 +82,21 @@ describe('Agent 执行中指示器压缩判断', () => {
       isCompacting: false,
       contextCompaction: { status: 'success' },
     })).toBe(false)
+  })
+})
+
+describe('Agent 暂停错误抑制', () => {
+  test('Given 用户暂停的旧回合仍在收尾 When 收到 Runtime 错误 Then 对用户隐藏', () => {
+    expect(shouldSuppressAgentStreamError(
+      createStreamState({ stopping: true }),
+      true,
+    )).toBe(true)
+  })
+
+  test('Given 新回合已经运行 When 收到 Runtime 错误 Then 正常展示真实错误', () => {
+    expect(shouldSuppressAgentStreamError(
+      createStreamState({ running: true }),
+      true,
+    )).toBe(false)
   })
 })

@@ -16,6 +16,7 @@ import type {
   PermissionRequest,
   PromaPermissionMode,
   SDKMessage,
+  SDKUserMessage,
 } from '@proma/shared'
 import {
   createAgentSession,
@@ -34,8 +35,10 @@ import {
   buildDelegationTaskWithSharedContext,
   buildDelegationPrompt,
   resolveDelegationPermissionMode,
+  hasSubAgentIntent,
 } from './agent-collaboration-utils'
 import { assertEnabledModelForChannel, listEnabledAgentModelsForChannel } from './agent-model-selection'
+import { isUserInputMessage, extractUserText } from '@proma/session-core'
 import type { BuiltinMcpToolFactory } from './builtin-mcp/tool-definition'
 
 interface CollaborationToolContext {
@@ -261,6 +264,25 @@ function createDelegationCompletion(): Pick<DelegationRecord, 'completion' | 're
     resolveCompletion = resolve
   })
   return { completion, resolveCompletion }
+}
+
+/** 取当前会话最近一条真实用户消息的文本（过滤 tool_result / 合成消息） */
+function latestUserInputText(sessionId: string): string {
+  const messages = getAgentSessionSDKMessages(sessionId)
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index]
+    if (!message || message.type !== 'user') continue
+    const userMessage = message as SDKUserMessage
+    if (!isUserInputMessage(userMessage)) continue
+    const text = extractUserText(userMessage)
+    if (text && text.trim()) return text
+  }
+  return ''
+}
+
+/** 用户是否在当前对话明确要求开启子 Agent（硬开关判断） */
+export function userRequestedSubAgents(sessionId: string): boolean {
+  return hasSubAgentIntent(latestUserInputText(sessionId))
 }
 
 function assertCanCreateDelegation(

@@ -113,3 +113,15 @@ ${sharedContext}
 子任务：
 ${task}`
 }
+
+/**
+ * 子 Agent 硬开关意图关键词：仅当用户在当前对话明确表达「开启多个/并行子智能体」
+ * 类意图时才允许创建协作子会话。Claude Code / Codex 运行时内部派生子 Agent
+ * （Task / collabAgentToolCall）走各自 SDK 通道，不经过此开关，不受限制。
+ */
+const SUBAGENT_INTENT_PATTERN = /(多(个|智能体|Agent|代理)|并行|同时(派|开|起)|子\s*(Agent|智能体|代理)|子会话|spawn|sub[\s-]?agent|delegate|多路|几个\s*(Agent|智能体)|一起(协作|处理|干活)|分工|各(自)?负责)/i
+
+/** 文本是否含「开启子 Agent」意图（纯函数，便于测试） */
+export function hasSubAgentIntent(text: string): boolean {
+  return SUBAGENT_INTENT_PATTERN.test(text)
+}

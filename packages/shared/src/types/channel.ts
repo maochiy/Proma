@@ -261,6 +261,12 @@ export interface ChannelModel {
   description?: string
   /** 上下文窗口 Token 数；未配置时由 CCB 内核判断。 */
   contextWindow?: number
+  /**
+   * 上下文自动压缩触发占比（0-100，百分比）。
+   * 达到上下文窗口的该比例时自动压缩；未配置时回退到供应商级 autoCompactRatio，
+   * 再回退到默认 80%。
+   */
+  autoCompactRatio?: number
   /** 是否启用 */
   enabled: boolean
   /** 来源标记：手动添加的模型在拉取供应商列表时保留，不会被覆盖清除 */
@@ -289,6 +295,11 @@ export interface Channel {
   apiKey: string
   /** 可用模型列表 */
   models: ChannelModel[]
+  /**
+   * 供应商级上下文自动压缩触发占比（0-100，百分比）。
+   * 对该渠道所有未单独配置压缩占比的模型生效；未配置时默认 80%。
+   */
+  autoCompactRatio?: number
   /** 新建会话和 CCB 全局配置默认使用的模型。 */
   defaultModelId?: string
   /** 是否启用 */
@@ -309,6 +320,8 @@ export interface ChannelCreateInput {
   /** 明文 API Key，主进程会加密后存储 */
   apiKey: string
   models: ChannelModel[]
+  /** 供应商级上下文自动压缩触发占比（0-100，百分比）。 */
+  autoCompactRatio?: number
   /** 默认模型；必须存在于已启用模型中。 */
   defaultModelId?: string
   enabled: boolean
@@ -324,6 +337,8 @@ export interface ChannelUpdateInput {
   /** 明文 API Key，为空字符串表示不更新 */
   apiKey?: string
   models?: ChannelModel[]
+  /** 供应商级上下文自动压缩触发占比（0-100，百分比）。 */
+  autoCompactRatio?: number
   /** 默认模型；保存时会自动归一化到已启用模型。 */
   defaultModelId?: string
   enabled?: boolean

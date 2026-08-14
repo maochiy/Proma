@@ -62,6 +62,8 @@ import {
 } from './atoms/markdown-font-size'
 import { useGlobalAgentListeners } from './hooks/useGlobalAgentListeners'
 import { useGlobalChatListeners } from './hooks/useGlobalChatListeners'
+import { useGlobalBrowserAgentListeners } from './hooks/useGlobalBrowserAgentListeners'
+import { useGlobalTaskboardListeners } from './hooks/useGlobalTaskboardListeners'
 import { tabsAtom, activeTabIdAtom, ensureScratchPadTab, getPersistableTabState, scratchPadContentAtom, scratchPadLoadedAtom, SCRATCH_PAD_ID } from './atoms/tab-atoms'
 import type { TabItem } from './atoms/tab-atoms'
 import { chatToolsAtom } from './atoms/chat-tool-atoms'
@@ -383,6 +385,22 @@ function AutomationInitializer(): null {
     return unsub
   }, [setAutomations, setAgentSessions, setDraftSessionIds])
 
+  return null
+}
+
+/**
+ * 任务看板初始化组件
+ *
+ * 加载项目与任务，并订阅主进程变更事件刷新。
+ */
+function TaskboardInitializer(): null {
+  useGlobalTaskboardListeners()
+  return null
+}
+
+/** 全局订阅 Browser Agent 任务，并响应主进程的任务页面打开请求。 */
+function BrowserAgentInitializer(): null {
+  useGlobalBrowserAgentListeners()
   return null
 }
 
@@ -940,9 +958,11 @@ if (isQuickTaskWindow) {
       <MarkdownFontSizeInitializer />
       <ChatListenersInitializer />
       <AgentListenersInitializer />
+      <BrowserAgentInitializer />
       <ChatToolInitializer />
       <UpdaterInitializer />
       <AutomationInitializer />
+      <TaskboardInitializer />
       <FeishuInitializer />
       <DingTalkInitializer />
       <TabStatePersistenceInitializer />

@@ -6,10 +6,11 @@
  */
 
 import type { AgentSessionMeta, PromaPermissionMode } from '@proma/shared'
-import { injectAgentCollaborationMcpServer } from '../agent-collaboration-tools'
+import { injectAgentCollaborationMcpServer, userRequestedSubAgents } from '../agent-collaboration-tools'
 import { injectAutomationMcpServer } from '../automation-agent-tools'
 import { injectNanoBananaMcpServer } from '../chat-tools/nano-banana-mcp'
 import { injectWebSearchMcpServer } from './web-search-mcp'
+import { injectBrowserAgentMcpServer } from '../browser/browser-agent-tools'
 import { isBuiltinMcpUserEnabled } from './settings'
 import { builtinMcpToolFactory } from './tool-definition'
 import { promaBuiltinMcpHttpHost } from './http-host'
@@ -42,6 +43,12 @@ export async function injectBuiltinMcpServers(ctx: BuiltinMcpInjectContext): Pro
     injectWebSearchMcpServer(builtinMcpToolFactory, ctx.mcpServers)
   })
 
+  // 内置浏览器 Agent 控制：基础设施型能力，始终注入。Agent 调用 browser_* 工具
+  // 时才创建浏览器任务并显示在悬浮面板；不调用则无任何副作用。
+  await injectBuiltinSafely('browser', async () => {
+    await injectBrowserAgentMcpServer(builtinMcpToolFactory, ctx.mcpServers, { sessionId: ctx.sessionId })
+  })
+
   if (isBuiltinMcpUserEnabled('nano-banana')) {
     await injectBuiltinSafely('nano-banana', () => injectNanoBananaMcpServer(
       builtinMcpToolFactory,
@@ -61,10 +68,14 @@ export async function injectBuiltinMcpServers(ctx: BuiltinMcpInjectContext): Pro
     }))
   }
 
+  // 子 Agent 硬开关：除设置开关外，还要求用户在当前对话明确说了要开多个/并行子
+  // 智能体（userRequestedSubAgents），否则不注入 delegate_* 工具——模型看不到即不会调用。
+  // Claude Code / Codex 运行时内部派生子 Agent 走各自 SDK 通道，不经过此注入，不受限制。
   const collaborationAvailable = isBuiltinMcpUserEnabled('collaboration') &&
     !!ctx.workspaceId &&
     ctx.triggeredBy !== 'delegation' &&
-    (ctx.sessionMeta?.delegationDepth ?? 0) === 0
+    (ctx.sessionMeta?.delegationDepth ?? 0) === 0 &&
+    userRequestedSubAgents(ctx.sessionId)
 
   if (collaborationAvailable) {
     await injectBuiltinSafely('collaboration', () => injectAgentCollaborationMcpServer(builtinMcpToolFactory, ctx.mcpServers, {

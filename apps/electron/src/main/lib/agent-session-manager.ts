@@ -398,6 +398,7 @@ export function createAgentSession(
   workspaceId?: string,
   modelId?: string,
   draft: boolean = false,
+  taskboardTaskId?: string,
 ): AgentSessionMeta {
   const index = readIndex()
   const now = Date.now()
@@ -410,6 +411,7 @@ export function createAgentSession(
     channelId,
     modelId,
     workspaceId,
+    ...(taskboardTaskId ? { taskboardTaskId } : {}),
     createdAt: now,
     updatedAt: now,
   }
@@ -1386,7 +1388,7 @@ export function mergeAgentSessionSDKMessages(
  */
 export function updateAgentSessionMeta(
   id: string,
-  updates: Partial<Pick<AgentSessionMeta, 'title' | 'draft' | 'titleSource' | 'channelId' | 'modelId' | 'runtimeSessionId' | 'runtimeVersion' | 'runtimeArtifactCommit' | 'runtimeProtocolVersion' | 'runtimeLastSequence' | 'runtimeWorkerState' | 'workspaceId' | 'pinned' | 'starred' | 'archived' | 'attachedDirectories' | 'attachedFiles' | 'resumeAtMessageUuid' | 'stoppedByUser' | 'lastStopDurationMs' | 'permissionMode' | 'planModeEnabled' | 'completedButUnconfirmed' | 'sourceAutomationId' | 'automationGraduated' | 'parentSessionId' | 'rootSessionId' | 'sourceDelegationId' | 'delegationRole' | 'delegationStatus' | 'delegationDepth' | 'delegationGoal'>>,
+  updates: Partial<Pick<AgentSessionMeta, 'title' | 'draft' | 'titleSource' | 'channelId' | 'modelId' | 'runtimeId' | 'runtimeSessionId' | 'runtimeVersion' | 'runtimeArtifactCommit' | 'runtimeProtocolVersion' | 'runtimeLastSequence' | 'runtimeWorkerState' | 'workspaceId' | 'pinned' | 'starred' | 'archived' | 'attachedDirectories' | 'attachedFiles' | 'resumeAtMessageUuid' | 'stoppedByUser' | 'dispatchState' | 'lastStopDurationMs' | 'permissionMode' | 'planModeEnabled' | 'completedButUnconfirmed' | 'sourceAutomationId' | 'automationGraduated' | 'parentSessionId' | 'rootSessionId' | 'sourceDelegationId' | 'taskboardTaskId' | 'delegationRole' | 'delegationStatus' | 'delegationDepth' | 'delegationGoal'>>,
 ): AgentSessionMeta {
   const index = readIndex()
   const idx = index.sessions.findIndex((s) => s.id === id)
@@ -1408,7 +1410,10 @@ export function updateAgentSessionMeta(
   const isStoppedByUserOnly = updateKeys.every((key) => key === 'stoppedByUser')
   const isRuntimePreferenceOnly =
     updateKeys.length > 0
-    && updateKeys.every((key) => key === 'permissionMode' || key === 'planModeEnabled')
+    && updateKeys.every((key) =>
+      key === 'permissionMode'
+      || key === 'planModeEnabled'
+    )
   // Worker 状态/序号同步不应改变侧栏新鲜度，否则空闲回收会把会话顶到前面。
   const isRuntimeWorkerTelemetryOnly =
     updateKeys.length > 0

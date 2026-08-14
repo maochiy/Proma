@@ -18,6 +18,7 @@ import {
   mergeAgentRuntimeExecutionGraphAtom,
   recentlyModifiedPathsAtom,
   liveMessagesMapAtom,
+  markAgentStreamStopped,
   stabilizeAgentRuntimeExecutionGraph,
   type AgentStreamState,
 } from './agent-atoms'
@@ -144,6 +145,42 @@ describe('Agent 上下文压缩状态', () => {
       inputTokens: 180_000,
     })
     expect(result.contextUsageIsEstimated).toBeUndefined()
+  })
+})
+
+describe('Agent 暂停即时反馈', () => {
+  test('Given Agent 正在运行且存在未完成工具 When 用户点击暂停 Then 立即进入停止态并保留计时起点', () => {
+    const state = createStreamState({
+      startedAt: 123,
+      backgroundWaiting: true,
+      toolActivities: [{
+        toolUseId: 'tool-1',
+        toolName: 'Bash',
+        input: {},
+        done: false,
+      }],
+    })
+
+    const stopped = markAgentStreamStopped(state)
+
+    expect(stopped).toMatchObject({
+      running: false,
+      backgroundWaiting: false,
+      stopping: true,
+      startedAt: 123,
+    })
+    expect(stopped.toolActivities).toEqual([{
+      toolUseId: 'tool-1',
+      toolName: 'Bash',
+      input: {},
+      done: true,
+    }])
+  })
+
+  test('Given Agent 已经停止 When 再次收敛暂停状态 Then 保持原对象避免无意义重渲染', () => {
+    const state = createStreamState({ running: false })
+
+    expect(markAgentStreamStopped(state)).toBe(state)
   })
 })
 

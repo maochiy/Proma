@@ -218,6 +218,16 @@ export function getSystemPromptsPath(): string {
   return join(getConfigDir(), 'system-prompts.json')
 }
 
+/** 多 Runtime 原生 Session 的本地隔离目录。 */
+export function getRuntimeSessionsDir(): string {
+  const dir = join(getConfigDir(), 'runtime-sessions')
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true })
+    console.log(`[配置] 已创建 Runtime Session 目录: ${dir}`)
+  }
+  return dir
+}
+
 /**
  * 获取 Chat 工具配置文件路径
  *
@@ -239,6 +249,27 @@ export function getAgentSessionsIndexPath(): string {
 /** Proma 计划生命周期历史（当前、待继续、归档与过期时间）。 */
 export function getAgentRuntimePlansPath(): string {
   return join(getConfigDir(), 'agent-runtime-plans.json')
+}
+
+/** Proma Runtime 配置目录。 */
+export function getRuntimeConfigDir(): string {
+  const dir = join(getConfigDir(), 'runtimes')
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+export function getRuntimeConfigPath(): string {
+  return join(getRuntimeConfigDir(), 'config.json')
+}
+
+/** Hermes 动态调度运行索引。 */
+export function getRuntimeDispatchRunsPath(): string {
+  return join(getRuntimeConfigDir(), 'dispatch-runs.json')
+}
+
+/** 旧多 Runtime 工作流索引，仅供兼容迁移。 */
+export function getAgentWorkflowsPath(): string {
+  return join(getConfigDir(), 'agent-workflows.json')
 }
 
 /**
@@ -648,4 +679,85 @@ export function getScratchPadPath(): string {
  */
 export function getAutomationsPath(): string {
   return join(getConfigDir(), 'automations.json')
+}
+
+/**
+ * 获取任务看板（Taskboard）数据目录
+ *
+ * @returns ~/.proma/taskboard/
+ */
+export function getTaskboardDir(): string {
+  return join(getConfigDir(), 'taskboard')
+}
+
+/**
+ * 获取任务看板项目索引路径
+ *
+ * @returns ~/.proma/taskboard/projects.json
+ */
+export function getTaskboardProjectsPath(): string {
+  return join(getTaskboardDir(), 'projects.json')
+}
+
+/**
+ * 获取任务看板任务存储路径（JSONL，每任务一行）
+ *
+ * @returns ~/.proma/taskboard/tasks.jsonl
+ */
+export function getTaskboardTasksPath(): string {
+  return join(getTaskboardDir(), 'tasks.jsonl')
+}
+
+/**
+ * 获取任务看板评论存储路径
+ *
+ * @returns ~/.proma/taskboard/comments.json
+ */
+export function getTaskboardCommentsPath(): string {
+  return join(getTaskboardDir(), 'comments.json')
+}
+
+/**
+ * 获取任务看板活动时间线存储路径
+ *
+ * @returns ~/.proma/taskboard/activities.json
+ */
+export function getTaskboardActivitiesPath(): string {
+  return join(getTaskboardDir(), 'activities.json')
+}
+
+/**
+ * 获取任务看板附件元数据存储路径
+ *
+ * @returns ~/.proma/taskboard/attachments.json
+ */
+export function getTaskboardAttachmentsMetadataPath(): string {
+  return join(getTaskboardDir(), 'attachments.json')
+}
+
+/**
+ * 获取任务看板附件正文目录
+ *
+ * @returns ~/.proma/taskboard/attachments/
+ */
+export function getTaskboardAttachmentsDir(): string {
+  return join(getTaskboardDir(), 'attachments')
+}
+
+/**
+ * 获取任务看板单个附件正文路径
+ *
+ * @returns ~/.proma/taskboard/attachments/{id}
+ */
+export function getTaskboardAttachmentStoragePath(id: string): string {
+  return join(getTaskboardAttachmentsDir(), id)
+}
+
+/**
+ * 获取任务看板关系存储路径
+ *
+ * @returns ~/.proma/taskboard/relations.json
+ */
+export function getTaskboardRelationsPath(): string {
+  return join(getTaskboardDir(), 'relations.json')
 }
