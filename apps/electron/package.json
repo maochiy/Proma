@@ -1,6 +1,6 @@
 {
   "name": "@proma/electron",
-  "version": "0.16.13",
+  "version": "0.16.15",
   "description": "Proma next gen ai software with general agents - Electron App",
   "main": "dist/main.cjs",
   "author": {
@@ -63,6 +63,7 @@
     "iconv-lite": "^0.6.3",
     "mammoth": "^1.12.0",
     "node-pty": "1.1.0",
+    "partial-json": "0.1.7",
     "pdfjs-dist": "^4.10.38",
     "typebox": "1.1.38"
   },
