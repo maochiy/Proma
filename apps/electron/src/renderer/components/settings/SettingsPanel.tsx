@@ -10,6 +10,7 @@ import { useAtom, useAtomValue, useSetAtom } from "jotai";
 import { cn } from "@/lib/utils";
 import {
   Settings,
+  CircleUser,
   ArrowLeft,
   Radio,
   Palette,
@@ -46,6 +47,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { ChannelSettings } from "./ChannelSettings";
 import { GeneralSettings } from "./GeneralSettings";
+import { ProfileSettings } from "./ProfileSettings";
 import { ProxySettings } from "./ProxySettings";
 import { AppearanceSettings } from "./AppearanceSettings";
 import { AboutSettings } from "./AboutSettings";
@@ -72,6 +74,7 @@ interface TabGroup {
 
 /** 基础 Tabs（所有模式都有） */
 const BASE_TABS: TabItem[] = [
+  { id: "profile", label: "个人资料", icon: <CircleUser size={16} /> },
   { id: "general", label: "通用设置", icon: <Settings size={16} /> },
   { id: "channels", label: "模型配置", icon: <Radio size={16} /> },
   { id: "prompts", label: "提示词管理", icon: <BookOpen size={16} /> },
@@ -137,6 +140,8 @@ const TAB_GROUPS: TabGroup[] = [
 /** 根据标签页 id 渲染对应内容 */
 function renderTabContent(tab: SettingsTab): React.ReactElement {
   switch (tab) {
+    case "profile":
+      return <ProfileSettings />;
     case "general":
       return <GeneralSettings />;
     case "channels":

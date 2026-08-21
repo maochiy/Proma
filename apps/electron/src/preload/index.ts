@@ -149,6 +149,7 @@ import type {
 } from '@proma/shared'
 import type {
   UserProfile,
+  UserUsageSummary,
   NewApiAuthState,
   NewApiPasswordLoginInput,
   NewApiApiKeyLoginInput,
@@ -442,6 +443,9 @@ export interface ElectronAPI {
 
   /** 更新用户档案 */
   updateUserProfile: (updates: Partial<UserProfile>) => Promise<UserProfile>
+
+  /** 获取个人用量汇总 */
+  getUserUsageSummary: () => Promise<UserUsageSummary>
 
   // ===== New API 登录相关 =====
 
@@ -1678,6 +1682,10 @@ const electronAPI: ElectronAPI = {
 
   updateUserProfile: (updates: Partial<UserProfile>) => {
     return ipcRenderer.invoke(USER_PROFILE_IPC_CHANNELS.UPDATE, updates)
+  },
+
+  getUserUsageSummary: () => {
+    return ipcRenderer.invoke(USER_PROFILE_IPC_CHANNELS.GET_USAGE_SUMMARY)
   },
 
   // New API 登录

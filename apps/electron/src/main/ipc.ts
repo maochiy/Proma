@@ -148,7 +148,7 @@ import type {
   RelationUpdateResult,
   AttachmentContentResult,
 } from '@proma/shared'
-import type { UserProfile, AppSettings } from '../types'
+import type { UserProfile, UserUsageSummary, AppSettings } from '../types'
 import { getRuntimeStatus, getGitRepoStatus, reinitializeRuntime } from './lib/runtime-init'
 import { getUnstagedChanges, getFileDiff, getUntrackedContent, revertFile, getDiffContents, listWorktrees, getWorktreeChanges, getMainRepoRoot } from './lib/git-diff-service'
 import {
@@ -200,6 +200,7 @@ import {
 import { extractTextFromAttachment } from './lib/document-parser'
 import { getTutorialContent, createWelcomeConversation } from './lib/tutorial-service'
 import { getUserProfile, updateUserProfile } from './lib/user-profile-service'
+import { getUserUsageSummary } from './lib/user-usage-service'
 import {
   checkNewApiAuth,
   loginNewApiWithApiKey,
@@ -1891,6 +1892,13 @@ export function registerIpcHandlers(): void {
     USER_PROFILE_IPC_CHANNELS.UPDATE,
     async (_, updates: Partial<UserProfile>): Promise<UserProfile> => {
       return updateUserProfile(updates)
+    }
+  )
+
+  ipcMain.handle(
+    USER_PROFILE_IPC_CHANNELS.GET_USAGE_SUMMARY,
+    async (): Promise<UserUsageSummary> => {
+      return getUserUsageSummary()
     }
   )
 

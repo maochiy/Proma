@@ -2,6 +2,7 @@
  * Settings Tab Atom - 设置标签页状态
  *
  * 管理设置面板中当前激活的标签页：
+ * - profile: 个人资料
  * - general: 通用设置
  * - channels: 渠道配置
  * - proxy: 代理配置
@@ -13,7 +14,7 @@
 import { atom } from 'jotai'
 import { activeViewAtom } from './active-view'
 
-export type SettingsTab = 'general' | 'channels' | 'proxy' | 'runtime' | 'appearance' | 'about' | 'prompts' | 'tools' | 'bots' | 'tutorial' | 'shortcuts' | 'voice-input' | 'migration' | 'storage'
+export type SettingsTab = 'profile' | 'general' | 'channels' | 'proxy' | 'runtime' | 'appearance' | 'about' | 'prompts' | 'tools' | 'bots' | 'tutorial' | 'shortcuts' | 'voice-input' | 'migration' | 'storage'
 export type ToolSettingsFocus = 'memory' | 'nano-banana' | 'custom-tools'
 
 /** 当前设置标签页（不持久化，每次打开设置默认显示渠道） */
