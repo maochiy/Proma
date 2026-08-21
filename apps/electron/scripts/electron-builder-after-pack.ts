@@ -6,6 +6,7 @@ import {
   EXPECTED_CCB_RUNTIME_VERSION,
 } from '../src/main/lib/ccb-runtime/protocol'
 import { ensurePackagedPromaCli } from './packaged-cli-guard'
+import { ensurePackagedBundledRuntimes } from './packaged-runtime-guard'
 import { refreshSignedRuntimeManifest } from './runtime-manifest-refresh'
 
 interface ElectronBuilderAfterPackContext {
@@ -70,5 +71,6 @@ export function ensurePackagedCli(context: ElectronBuilderAfterPackContext): str
  */
 export default function afterPack(context: ElectronBuilderAfterPackContext): void {
   ensurePackagedCli(context)
+  ensurePackagedBundledRuntimes(context.appOutDir, context.electronPlatformName)
   refreshPackagedCcbRuntime(context)
 }

@@ -5,7 +5,6 @@
  * 不再作为 Proma 的产品概念或新配置输出。
  */
 
-import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -33,9 +32,9 @@ const ALL_CAPABILITIES: RuntimeCapability[] = [
 ]
 
 const RUNTIME_NAMES: Record<RuntimeId, { name: string; description: string; command: string | null }> = {
-  pi: { name: 'Pi', description: '需求澄清与最终结果汇总内核', command: 'pi' },
+  pi: { name: 'Pi', description: '需求澄清与最终结果汇总内核', command: null },
   hermes: { name: 'Hermes', description: '任务拆解、依赖识别与协调内核', command: null },
-  codex: { name: 'Codex', description: '实施计划与自动代码审查内核', command: 'codex' },
+  codex: { name: 'Codex', description: '实施计划与自动代码审查内核', command: null },
   claude: { name: 'Claude Code', description: '按批准计划实施代码的 Harness（Claude Agent SDK）', command: null },
 }
 
@@ -232,12 +231,17 @@ export function scanLocalHermesRuntimePackages(
   sourceHome = '',
   currentPlatform = hermesPlatformArch(),
 ): RuntimePackage[] {
-  const roots = [
-    join(runtimeHome, 'hermes'),
-    join(sourceHome, 'runtime', 'hermes'),
-  ].filter((root, index, values) => root !== join('', 'hermes') && values.indexOf(root) === index)
+  const bundledRoot = process.resourcesPath ? join(process.resourcesPath, 'hermes') : ''
+  const roots = isPackagedElectronApp()
+    ? [bundledRoot]
+    : [
+        bundledRoot,
+        join(runtimeHome, 'hermes'),
+        join(sourceHome, 'runtime', 'hermes'),
+      ]
+  const uniqueRoots = roots.filter((root, index, values) => Boolean(root) && values.indexOf(root) === index)
   const packages: RuntimePackage[] = []
-  for (const root of roots) {
+  for (const root of uniqueRoots) {
     if (!existsSync(root)) continue
     for (const version of readdirSync(root)) {
       const runtimeDir = join(root, version, currentPlatform)
@@ -247,13 +251,13 @@ export function scanLocalHermesRuntimePackages(
       const manifest = readJsonRecord(join(runtimeDir, 'runtime-manifest.json'))
       const runtimeVersion = String(manifest?.hermesAgentVersion || version).trim()
       if (!runtimeVersion) continue
+      const bundled = root === join(process.resourcesPath || '', 'hermes')
+        || Boolean(sourceHome && root.startsWith(join(sourceHome, 'runtime', 'hermes')))
       packages.push({
         runtimeId: 'hermes',
         runtimeVersion,
-        runtimeBuildId: `hermes-managed-${runtimeVersion}-${currentPlatform}`,
-        source: sourceHome && root.startsWith(join(sourceHome, 'runtime', 'hermes'))
-          ? 'bundled'
-          : 'managed',
+        runtimeBuildId: `${bundled ? 'hermes-bundled' : 'hermes-managed'}-${runtimeVersion}-${currentPlatform}`,
+        source: bundled ? 'bundled' : 'managed',
         installationState: 'installed',
         availability: 'ready',
         executablePath: python,
@@ -431,25 +435,6 @@ async function getHermesPackageStatusFromService(): Promise<RuntimePackageStatus
   }
 }
 
-function commandPath(command: string): string | null {
-  try {
-    const lookup = process.platform === 'win32' ? 'where' : 'which'
-    return execFileSync(lookup, [command], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
-      .trim().split(/\r?\n/)[0] || null
-  } catch {
-    return null
-  }
-}
-
-function commandVersion(path: string): string | null {
-  try {
-    return execFileSync(path, ['--version'], { encoding: 'utf8', timeout: 5_000 })
-      .trim().split(/\r?\n/)[0]?.slice(0, 120) || null
-  } catch {
-    return null
-  }
-}
-
 interface BundledPackageInfo {
   packageRoot: string
   version: string
@@ -462,24 +447,32 @@ interface BundledPackageInfo {
  * `@anthropic-ai/claude-agent-sdk` 和对应平台包。这里同时兼容开发环境、
  * Electron 打包目录和 ASAR 外的 node_modules。
  */
+export function isPackagedElectronApp(): boolean {
+  const resourcesPath = process.resourcesPath
+  if (!resourcesPath) return false
+  return existsSync(join(resourcesPath, 'app.asar'))
+    || existsSync(join(resourcesPath, 'app.asar.unpacked'))
+}
+
 function findBundledPackage(packageName: string): BundledPackageInfo | null {
   const roots: string[] = []
-  let current = process.cwd()
-  for (let depth = 0; depth < 6; depth += 1) {
-    roots.push(current)
-    const parent = join(current, '..')
-    if (parent === current) break
-    current = parent
-  }
   if (process.resourcesPath) {
     roots.push(
-      // asarUnpack 出去的整包（如 @openai/codex 主包 + 平台二进制）位于此处，
-      // fork/spawn 的子进程读不到 ASAR 内文件，必须优先从 ASAR 外解析。
+      // 安装包内的 Runtime 必须优先于用户工作区 / PATH。
+      // asarUnpack 出去的整包位于 app.asar.unpacked，fork/spawn 读不到 ASAR 内文件。
       join(process.resourcesPath, 'app.asar.unpacked'),
-      join(process.resourcesPath, 'app.asar'),
       join(process.resourcesPath, 'app'),
       process.resourcesPath,
     )
+  }
+  if (!isPackagedElectronApp()) {
+    let current = process.cwd()
+    for (let depth = 0; depth < 6; depth += 1) {
+      roots.push(current)
+      const parent = join(current, '..')
+      if (parent === current) break
+      current = parent
+    }
   }
 
   for (const root of roots) {
@@ -494,6 +487,29 @@ function findBundledPackage(packageName: string): BundledPackageInfo | null {
     }
   }
   return null
+}
+
+/**
+ * 查找随 Proma 安装的 Pi 内核。
+ *
+ * Pi Worker 通过 `<runtimeRoot>/node_modules/@earendil-works/pi-coding-agent`
+ * 加载依赖。不能使用用户 PATH 中的 `pi` CLI：本机可能没装，版本也可能
+ * 与安装包内置 Worker 不一致。
+ */
+function bundledPiInstallation(): RuntimeInstallation | null {
+  const sdk = findBundledPackage('@earendil-works/pi-coding-agent')
+  if (!sdk) return null
+  // scoped 包：<root>/node_modules/@earendil-works/pi-coding-agent → <root>
+  const runtimeDir = join(sdk.packageRoot, '..', '..', '..')
+  return {
+    runtimeId: 'pi',
+    status: 'ready',
+    version: sdk.version,
+    executablePath: runtimeDir,
+    source: 'bundled',
+    detail: `Proma 已内置 Pi ${sdk.version}。`,
+    checkedAt: Date.now(),
+  }
 }
 
 function bundledClaudeSdkInstallation(): RuntimeInstallation | null {
@@ -571,6 +587,18 @@ function newestReadyPackage(packages: RuntimePackage[]): RuntimePackage | null {
     .at(-1) || null
 }
 
+function missingInstallation(runtimeId: RuntimeId, now: number): RuntimeInstallation {
+  return {
+    runtimeId,
+    status: 'missing',
+    version: null,
+    executablePath: null,
+    source: null,
+    detail: `未发现内置 ${RUNTIME_NAMES[runtimeId].name} Runtime。安装 Proma 时会随应用分发，不依赖本机 PATH。`,
+    checkedAt: now,
+  }
+}
+
 function installationFor(runtimeId: RuntimeId, config: RuntimeConfig): RuntimeInstallation {
   const now = Date.now()
   if (runtimeId === 'claude') {
@@ -581,37 +609,40 @@ function installationFor(runtimeId: RuntimeId, config: RuntimeConfig): RuntimeIn
     const bundled = bundledCodexSdkInstallation()
     if (bundled) return bundled
   }
+  if (runtimeId === 'pi') {
+    const bundled = bundledPiInstallation()
+    if (bundled) return bundled
+  }
   if (runtimeId === 'hermes') {
     const runtimeHome = config.runtimeHome || ''
-    const active = newestReadyPackage(scanLocalHermesRuntimePackages(runtimeHome, config.runtimeSourceHome || ''))
+    const scanned = scanLocalHermesRuntimePackages(runtimeHome, config.runtimeSourceHome || '')
+    const bundled = scanned.find((item) => item.source === 'bundled')
+    const active = bundled || (isPackagedElectronApp() ? null : newestReadyPackage(scanned))
     return {
       runtimeId,
       status: active ? 'ready' : 'missing',
       version: active?.runtimeVersion || null,
       executablePath: active?.executablePath || null,
-      source: active ? 'managed' : null,
-      detail: active?.detail || '未发现 Proma Hermes Runtime。',
+      source: active?.source === 'bundled' ? 'bundled' : active ? 'managed' : null,
+      detail: active?.detail || '未发现内置 Hermes Runtime。安装 Proma 时会随应用分发，不依赖本机 PATH。',
       checkedAt: now,
     }
   }
-  const managed = newestReadyPackage(localRuntimePackages(config, runtimeId))
-  if (managed) {
-    return {
-      runtimeId,
-      status: 'ready',
-      version: managed.runtimeVersion,
-      executablePath: managed.executablePath || managed.runtimeDir,
-      source: 'managed',
-      detail: managed.detail,
-      checkedAt: now,
+  if (!isPackagedElectronApp()) {
+    const managed = newestReadyPackage(localRuntimePackages(config, runtimeId))
+    if (managed) {
+      return {
+        runtimeId,
+        status: 'ready',
+        version: managed.runtimeVersion,
+        executablePath: managed.executablePath || managed.runtimeDir,
+        source: 'managed',
+        detail: managed.detail,
+        checkedAt: now,
+      }
     }
   }
-  const path = RUNTIME_NAMES[runtimeId].command ? commandPath(RUNTIME_NAMES[runtimeId].command!) : null
-  const version = path ? commandVersion(path) : null
-  return {
-    runtimeId, status: path ? 'ready' : 'missing', version, executablePath: path,
-    source: path ? 'system' : null, detail: path ? '已发现系统 Runtime，模型和凭证由 Proma 模型中心提供。' : '未发现系统 Runtime。', checkedAt: now,
-  }
+  return missingInstallation(runtimeId, now)
 }
 
 function definition(runtimeId: RuntimeId, config: RuntimeConfig, registry: Record<string, unknown> | null): RuntimeDefinition {
@@ -688,6 +719,9 @@ export async function refreshRuntimes(): Promise<RuntimeDefinition[]> {
   return local.map((runtime) => {
     const item = remote.get(runtime.id)
     if (!item) return runtime
+    if (runtime.installation.source === 'bundled' && runtime.installation.status === 'ready') {
+      return runtime
+    }
     const installation = item.installation || {}
     const binding = item.activeBinding || {}
     const status = installation.status === 'ready' || installation.status === 'broken' || installation.status === 'checking'
@@ -728,18 +762,24 @@ export function getRuntimeCapabilities(runtimeId: RuntimeId): RuntimeCapabilityS
   }
 }
 
+function packageSource(source: RuntimeInstallation['source']): RuntimePackage['source'] {
+  if (source === 'system') return 'native'
+  if (source === 'managed') return 'managed'
+  return 'bundled'
+}
+
 function packageFor(runtime: RuntimeDefinition): RuntimePackage {
   const installation = runtime.installation
-  const buildId = `${runtime.id}-${installation.version || 'system'}`
+  const buildId = `${runtime.id}-${installation.source || 'bundled'}-${installation.version || 'unknown'}`
   return {
     runtimeId: runtime.id,
     runtimeVersion: installation.version || 'unknown',
     runtimeBuildId: buildId,
-    source: installation.source === 'system' ? 'native' : installation.source === 'managed' ? 'managed' : installation.source || 'system',
+    source: packageSource(installation.source),
     installationState: installation.status === 'ready' ? 'installed' : installation.status === 'broken' ? 'broken' : 'missing',
     availability: installation.status === 'ready' ? 'ready' : installation.status === 'broken' ? 'broken' : 'unavailable',
     executablePath: installation.executablePath,
-    runtimeDir: installation.runtimeId === 'hermes' ? installation.executablePath : null,
+    runtimeDir: runtime.id === 'pi' || runtime.id === 'hermes' ? installation.executablePath : null,
     installedAt: null,
     verifiedAt: installation.checkedAt ? new Date(installation.checkedAt).toISOString() : null,
     detail: installation.detail,
@@ -778,34 +818,22 @@ export async function discoverRuntime(runtimeId: RuntimeId): Promise<RuntimeDisc
       }))
       .filter((item) => Boolean(item.executablePath))
   }
-  const runtime = detectRuntime(runtimeId)
-  if (!runtime?.command) return []
-  const executablePath = commandPath(runtime.command)
-  if (!executablePath) return []
-  return [{
-    executablePath,
-    version: commandVersion(executablePath),
-    source: 'system',
-    detail: '从当前系统 PATH 发现。',
-  }]
+  return []
 }
 
 export async function getRuntimePackageStatus(runtimeId: RuntimeId): Promise<RuntimePackageStatus> {
-  if (runtimeServiceBaseUrl() && runtimeId === 'hermes') {
-    return getHermesPackageStatusFromService()
-  }
-  if (runtimeServiceBaseUrl() && runtimeId !== 'hermes') {
-    const response = await runtimeServiceRequest<RuntimePackageServiceResponse>(`/api/runtime-packages/${runtimeId}`)
-    return mapRuntimePackageStatus(runtimeId, response)
-  }
   const runtime = detectRuntime(runtimeId)
   if (!runtime) throw new Error(`找不到 Runtime：${runtimeId}`)
   if (runtimeId === 'hermes') {
+    if (!isPackagedElectronApp() && runtimeServiceBaseUrl()) {
+      return getHermesPackageStatusFromService()
+    }
     const packages = scanLocalHermesRuntimePackages(
       getRuntimeConfig().runtimeHome || '',
       getRuntimeConfig().runtimeSourceHome || '',
     )
-    const active = newestReadyPackage(packages)
+    const bundled = packages.find((item) => item.source === 'bundled')
+    const active = bundled || (isPackagedElectronApp() ? null : newestReadyPackage(packages))
     return {
       runtimeId,
       activation: active ? {
@@ -821,41 +849,51 @@ export async function getRuntimePackageStatus(runtimeId: RuntimeId): Promise<Run
       source: 'local',
     }
   }
+  const bundled = runtime.installation.source === 'bundled' && runtime.installation.status === 'ready'
+    ? packageFor(runtime)
+    : null
   const managedPackages = localRuntimePackages(getRuntimeConfig(), runtimeId)
-  if (managedPackages.length > 0) {
-    const active = newestReadyPackage(managedPackages)
+  if (bundled) {
+    const packages = [
+      bundled,
+      ...managedPackages.filter((item) => item.runtimeBuildId !== bundled.runtimeBuildId),
+    ]
     return {
       runtimeId,
-      activation: active ? {
+      activation: {
         runtimeId,
-        activeBuildId: active.runtimeBuildId,
-        previousBuildId: managedPackages
-          .filter((item) => item.runtimeBuildId !== active.runtimeBuildId)
-          .at(-1)?.runtimeBuildId || null,
-        activationRevision: `local-${active.runtimeBuildId}`,
-      } : null,
-      activeBinding: active,
-      packages: managedPackages,
+        activeBuildId: bundled.runtimeBuildId,
+        previousBuildId: packages.filter((item) => item.runtimeBuildId !== bundled.runtimeBuildId).at(-1)?.runtimeBuildId || null,
+        activationRevision: `local-${bundled.runtimeBuildId}`,
+      },
+      activeBinding: bundled,
+      packages,
       upstreamLatest: null,
       checkedAt: new Date().toISOString(),
       source: 'local',
     }
   }
-  const active = runtime.installation.status === 'ready' ? packageFor(runtime) : null
+  if (runtimeServiceBaseUrl()) {
+    const response = await runtimeServiceRequest<RuntimePackageServiceResponse>(`/api/runtime-packages/${runtimeId}`)
+    return mapRuntimePackageStatus(runtimeId, response)
+  }
+  const active = newestReadyPackage(managedPackages)
+    || (runtime.installation.status === 'ready' ? packageFor(runtime) : null)
+  const packages = managedPackages
   const activation: RuntimeActivation | null = active ? {
     runtimeId,
     activeBuildId: active.runtimeBuildId,
-    previousBuildId: null,
+    previousBuildId: packages.filter((item) => item.runtimeBuildId !== active.runtimeBuildId).at(-1)?.runtimeBuildId || null,
     activationRevision: `local-${active.runtimeBuildId}`,
   } : null
   return {
     runtimeId,
     activation,
     activeBinding: active,
-    packages: active ? [active] : [],
+    packages,
     upstreamLatest: null,
     checkedAt: new Date().toISOString(),
-    source: getRuntimeConfig().runtimeApiBaseUrl ? 'remote' : 'local',
+    source: 'local',
   }
 }
 

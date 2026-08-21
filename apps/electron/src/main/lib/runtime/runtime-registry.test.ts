@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { RuntimeId } from '@proma/shared'
-import { scanManagedRuntimePackages } from './runtime-registry'
+import { listRuntimes, scanManagedRuntimePackages } from './runtime-registry'
 
 const runtimeIds: RuntimeId[] = ['pi', 'hermes', 'codex', 'claude']
 
@@ -42,5 +42,20 @@ describe('Proma Runtime Registry 契约', () => {
     } finally {
       rmSync(root, { recursive: true, force: true })
     }
+  })
+})
+
+describe('内置 Runtime 安装包绑定', () => {
+  test('Given 仓库内置 Pi/Codex/Claude When 枚举 Runtime Then source 为 bundled 且不使用系统 PATH', () => {
+    const runtimes = listRuntimes()
+    for (const runtimeId of ['pi', 'codex', 'claude'] as const) {
+      const runtime = runtimes.find((item) => item.id === runtimeId)
+      expect(runtime?.installation.source).toBe('bundled')
+      expect(runtime?.installation.status).toBe('ready')
+      expect(runtime?.installation.executablePath).toBeTruthy()
+      expect(runtime?.installation.source).not.toBe('system')
+    }
+    const hermes = runtimes.find((item) => item.id === 'hermes')
+    expect(hermes?.installation.source).not.toBe('system')
   })
 })

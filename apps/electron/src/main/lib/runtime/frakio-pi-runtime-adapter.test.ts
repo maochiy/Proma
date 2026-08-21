@@ -1,5 +1,8 @@
 import { describe, expect, test } from 'bun:test'
-import { compactionSystemMessage, contextCompactionConfigMessage, usageSystemMessage } from './frakio-pi-runtime-adapter'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { compactionSystemMessage, contextCompactionConfigMessage, piWorkerSessionIdentity, resolvePiWorkerRuntimeBinding, usageSystemMessage } from './frakio-pi-runtime-adapter'
 
 describe('Proma Pi 压缩事件转换', () => {
   test('Given Pi 开始压缩 When 收到 compaction.started Then 转换为 compacting system 消息', () => {
@@ -153,5 +156,67 @@ describe('Proma Pi context_compaction_config 消息', () => {
   test('Given 缺少阈值或窗口 When 转换 Then 返回 undefined', () => {
     expect(contextCompactionConfigMessage({ enabled: true, threshold: 160_000 }, 'session-1')).toBeUndefined()
     expect(contextCompactionConfigMessage({ enabled: true, contextWindow: 200_000 }, 'session-1')).toBeUndefined()
+  })
+})
+
+describe('Proma Pi Worker 身份', () => {
+  test('Given Context Packet 带有用户名 When 构建 Worker 身份 Then 模型可见名称固定为 Proma', () => {
+    const identity = piWorkerSessionIdentity({
+      contextPacket: { packetId: 'context-1' },
+      systemPrompt: {
+        type: 'preset',
+        preset: 'claude_code',
+        append: '你运行在 Proma 桌面应用中。',
+      },
+    })
+    expect(identity.profileSnapshot).toMatchObject({
+      name: 'Proma',
+      role: 'Proma Pi 基础内核',
+      revision: 'context-1',
+    })
+    expect(identity.profileSnapshot.name).not.toBe('wanglang')
+    expect(identity.hostSystemPrompt).toContain('你运行在 Proma 桌面应用中。')
+  })
+
+  test('Given 没有 Context Packet When 构建 Worker 身份 Then 仍使用 Proma 作为默认身份', () => {
+    const identity = piWorkerSessionIdentity({
+      systemPrompt: 'Proma host prompt',
+    })
+    expect(identity.profileSnapshot.name).toBe('Proma')
+    expect(identity.profileSnapshot.revision).toBe('proma')
+    expect(identity.hostSystemPrompt).toBe('Proma host prompt')
+  })
+})
+
+
+describe('Proma Pi Worker Runtime Binding', () => {
+  test('Given PATH/active 声称 0.82.0 When 解析 Worker Binding Then expected 仍来自即将加载的内置 package.json', () => {
+    const root = mkdtempSync(join(tmpdir(), 'proma-pi-binding-'))
+    const packageDir = join(root, 'node_modules', '@earendil-works', 'pi-coding-agent')
+    mkdirSync(packageDir, { recursive: true })
+    writeFileSync(join(packageDir, 'package.json'), JSON.stringify({
+      name: '@earendil-works/pi-coding-agent',
+      version: '0.80.9',
+    }))
+    const previousRoot = process.env.PROMA_PI_DEPENDENCY_ROOT
+    const previousFrakio = process.env.FRAKIO_PI_RUNTIME_VERSION
+    const previousProma = process.env.PROMA_PI_RUNTIME_VERSION
+    process.env.PROMA_PI_DEPENDENCY_ROOT = root
+    process.env.FRAKIO_PI_RUNTIME_VERSION = '0.82.0'
+    process.env.PROMA_PI_RUNTIME_VERSION = '0.82.0'
+    try {
+      const binding = resolvePiWorkerRuntimeBinding()
+      expect(binding.runtimeDir).toBe(root)
+      expect(binding.runtimeVersion).toBe('0.80.9')
+      expect(binding.runtimeBuildId).toBe('pi-bundled-0.80.9')
+    } finally {
+      if (previousRoot === undefined) delete process.env.PROMA_PI_DEPENDENCY_ROOT
+      else process.env.PROMA_PI_DEPENDENCY_ROOT = previousRoot
+      if (previousFrakio === undefined) delete process.env.FRAKIO_PI_RUNTIME_VERSION
+      else process.env.FRAKIO_PI_RUNTIME_VERSION = previousFrakio
+      if (previousProma === undefined) delete process.env.PROMA_PI_RUNTIME_VERSION
+      else process.env.PROMA_PI_RUNTIME_VERSION = previousProma
+      rmSync(root, { recursive: true, force: true })
+    }
   })
 })

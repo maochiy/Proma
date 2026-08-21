@@ -23,7 +23,7 @@ import type {
 } from '@proma/shared'
 import { getRuntimeSessionsDir } from '../config-paths'
 import type { RuntimeModelRoute } from '@proma/shared'
-import { getActiveRuntimePackage, getRuntimeConfig } from './runtime-registry'
+import { getRuntimeConfig, isPackagedElectronApp } from './runtime-registry'
 import { PiMcpBridge } from './pi-mcp-bridge'
 
 interface MessageQueue {
@@ -270,9 +270,32 @@ function systemPromptText(value: PiRuntimeQueryOptions['systemPrompt']): string 
   return typeof value === 'string' ? value : value?.append || ''
 }
 
-function knownRuntimeVersion(value: string | null | undefined): string {
-  const version = String(value || '').trim()
-  return version && version.toLowerCase() !== 'unknown' ? version : ''
+export interface PiWorkerSessionIdentity {
+  profileSnapshot: {
+    name: 'Proma'
+    role: string
+    soul: string
+    scope: string
+    revision: string
+  }
+  hostSystemPrompt: string
+}
+
+/** Pi Worker 的模型可见身份固定为 Proma，用户名只出现在 Context Packet 的 profile 里。 */
+export function piWorkerSessionIdentity(input: {
+  contextPacket?: { packetId?: string } | null
+  systemPrompt?: PiRuntimeQueryOptions['systemPrompt']
+}): PiWorkerSessionIdentity {
+  return {
+    profileSnapshot: {
+      name: 'Proma',
+      role: 'Proma Pi 基础内核',
+      soul: '遵循 Proma System Prompt 和 Hermes 策略路由。',
+      scope: '普通对话、需求澄清和最终结果汇总。',
+      revision: input.contextPacket?.packetId || 'proma',
+    },
+    hostSystemPrompt: systemPromptText(input.systemPrompt),
+  }
 }
 
 function findPiWorkerCompatShim(): string | null {
@@ -294,17 +317,6 @@ function findPiWorkerCompatShim(): string | null {
  * - 开发：`apps/electron/resources/pi-runtime`（build:resources 复制到 dist/resources/）
  */
 function resolvePiRuntimeDir(config: { runtimeSourceHome?: string | null; frakioSourceHome?: string | null }): string {
-  const override = process.env.PROMA_PI_RUNTIME_PATH?.trim()
-  if (override) {
-    const dir = isAbsolute(override) ? override : resolve(override)
-    if (existsSync(join(dir, 'pi-bridge.mjs'))) return dir
-  }
-  // 兼容旧的 Frakio 源码目录配置（外部 runtime），仅在显式配置时启用。
-  const sourceHome = config.runtimeSourceHome || config.frakioSourceHome || ''
-  if (sourceHome) {
-    const externalDir = join(sourceHome, 'apps', 'api', 'runtime')
-    if (existsSync(join(externalDir, 'pi-bridge.mjs'))) return externalDir
-  }
   const bundledCandidates = [
     process.resourcesPath ? join(process.resourcesPath, 'pi-runtime') : '',
     join(__dirname, 'resources', 'pi-runtime'),
@@ -312,6 +324,23 @@ function resolvePiRuntimeDir(config: { runtimeSourceHome?: string | null; frakio
     join(process.cwd(), 'apps', 'electron', 'resources', 'pi-runtime'),
   ].filter(Boolean)
   const bundled = bundledCandidates.find((candidate) => existsSync(join(candidate, 'pi-bridge.mjs')))
+  if (isPackagedElectronApp()) {
+    if (!bundled) {
+      throw new Error('未找到 Proma 内置 Pi Worker。请重新安装应用，不要依赖本机 PATH 或旧 Frakio 源码目录。')
+    }
+    return bundled
+  }
+  const override = process.env.PROMA_PI_RUNTIME_PATH?.trim()
+  if (override) {
+    const dir = isAbsolute(override) ? override : resolve(override)
+    if (existsSync(join(dir, 'pi-bridge.mjs'))) return dir
+  }
+  // 开发环境才允许指向外部 Runtime 源码；安装包必须使用 extraResources 内的 Worker。
+  const sourceHome = config.runtimeSourceHome || config.frakioSourceHome || ''
+  if (sourceHome) {
+    const externalDir = join(sourceHome, 'apps', 'api', 'runtime')
+    if (existsSync(join(externalDir, 'pi-bridge.mjs'))) return externalDir
+  }
   return bundled || bundledCandidates[0] || ''
 }
 
@@ -320,26 +349,75 @@ function resolvePiRuntimeDir(config: { runtimeSourceHome?: string | null; frakio
  * Worker 内部用 `<runtimeRoot>/node_modules/<pkg>` 解析依赖，因此这里返回
  * 应用 node_modules 的上级目录。内置模式下这些依赖随应用 node_modules 分发。
  */
+function hasBundledPi(root: string): boolean {
+  return existsSync(join(root, 'node_modules', '@earendil-works', 'pi-coding-agent', 'package.json'))
+}
+
 function resolvePiDependencyRoot(configuredHome: string): string {
   const override = process.env.PROMA_PI_DEPENDENCY_ROOT?.trim()
-  if (override) return isAbsolute(override) ? override : resolve(override)
-  const candidates = [
+  if (override && !isPackagedElectronApp()) {
+    return isAbsolute(override) ? override : resolve(override)
+  }
+  const packagedCandidates = [
     // 生产：fork 的 Worker 无法读取 ASAR 内文件，必须使用 ASAR 外的
     // app.asar.unpacked/node_modules（@earendil-works/* 已在 asarUnpack 列出）。
     process.resourcesPath ? join(process.resourcesPath, 'app.asar.unpacked') : '',
     // 生产回退：非 ASAR 分发时的 app/node_modules
     process.resourcesPath ? join(process.resourcesPath, 'app') : '',
-    // 开发：apps/electron/（其 node_modules 由 workspace 链接）
+  ].filter(Boolean)
+  const packaged = packagedCandidates.find((candidate) => hasBundledPi(candidate))
+  if (packaged) return packaged
+  if (isPackagedElectronApp()) {
+    throw new Error('未找到 Proma 内置 Pi Runtime。请重新安装应用，不要依赖本机 PATH 中的 pi。')
+  }
+  const devCandidates = [
     join(process.cwd(), 'apps', 'electron'),
-    // 开发（electron 以 apps/electron 为 cwd）：workspace 根 node_modules
     join(process.cwd(), '..', '..'),
-    // __dirname = apps/electron/dist，向上两级到 workspace 根
     join(__dirname, '..', '..', '..'),
     process.cwd(),
+    configuredHome,
   ].filter(Boolean)
-  const found = candidates.find((candidate) =>
-    existsSync(join(candidate, 'node_modules', '@earendil-works', 'pi-coding-agent')))
-  return found || configuredHome || candidates[candidates.length - 1] || process.cwd()
+  const found = devCandidates.find((candidate) => hasBundledPi(candidate))
+  if (!found) {
+    throw new Error('未找到 Proma 内置 Pi Runtime。开发环境请安装 @earendil-works/pi-coding-agent。')
+  }
+  return found
+}
+
+function readPiCodingAgentVersion(runtimeDir: string): string {
+  const packageJsonPath = join(runtimeDir, 'node_modules', '@earendil-works', 'pi-coding-agent', 'package.json')
+  if (!existsSync(packageJsonPath)) {
+    throw new Error(`未找到内置 Pi Runtime：${packageJsonPath}。请重新安装 Proma，不要依赖本机 PATH 中的 pi。`)
+  }
+  const manifest = JSON.parse(readFileSync(packageJsonPath, 'utf8')) as { version?: string }
+  const version = String(manifest.version || '').trim()
+  if (!version) {
+    throw new Error(`内置 Pi Runtime 缺少 version 字段：${packageJsonPath}`)
+  }
+  return version
+}
+
+export interface PiWorkerRuntimeBinding {
+  runtimeDir: string
+  runtimeVersion: string
+  runtimeBuildId: string
+  adapterProtocolVersion: 1
+}
+
+/**
+ * Worker 的 expected 版本只能来自即将加载的目录里的 package.json。
+ * 不能用 PATH、Runtime Center 激活包或 FRAKIO_PI_RUNTIME_VERSION：
+ * 用户本机可能没装 pi，也可能是另一个版本。
+ */
+export function resolvePiWorkerRuntimeBinding(runtimeHome = ''): PiWorkerRuntimeBinding {
+  const runtimeDir = resolvePiDependencyRoot(runtimeHome)
+  const runtimeVersion = readPiCodingAgentVersion(runtimeDir)
+  return {
+    runtimeDir,
+    runtimeVersion,
+    runtimeBuildId: `pi-bundled-${runtimeVersion}`,
+    adapterProtocolVersion: 1,
+  }
 }
 
 function withPiWorkerCompatShim(env: Record<string, string | undefined>): Record<string, string | undefined> {
@@ -437,22 +515,17 @@ export class FrakioPiRuntimeAdapter implements AgentProviderAdapter {
 
   private async run(input: PiRuntimeQueryOptions, queue: MessageQueue): Promise<void> {
     this.loadSessionFiles()
-    const config = getRuntimeConfig()
-    const runtimeDir = resolvePiRuntimeDir(config)
-    const bridgeModulePath = join(runtimeDir, 'pi-bridge.mjs')
-    if (!existsSync(bridgeModulePath)) {
-      queue.fail(new Error(`未找到 Proma Pi Bridge：${bridgeModulePath}`))
-      return
-    }
     try {
+      const config = getRuntimeConfig()
+      const runtimeDir = resolvePiRuntimeDir(config)
+      const bridgeModulePath = join(runtimeDir, 'pi-bridge.mjs')
+      if (!existsSync(bridgeModulePath)) {
+        queue.fail(new Error(`未找到 Proma Pi Bridge：${bridgeModulePath}`))
+        return
+      }
       const module = await import(pathToFileURL(bridgeModulePath).href) as unknown as FrakioPiBridgeModule
       const env = input.env || {}
-      const activePackage = await getActiveRuntimePackage('pi').catch(() => null)
-      const runtimeRoot = activePackage?.runtimeDir
-        || env.FRAKIO_PI_RUNTIME_ROOT
-        || resolvePiDependencyRoot(config.runtimeHome || '')
-      const runtimeVersion = knownRuntimeVersion(activePackage?.runtimeVersion)
-        || knownRuntimeVersion(env.FRAKIO_PI_RUNTIME_VERSION)
+      const binding = resolvePiWorkerRuntimeBinding(config.runtimeHome || '')
       const bridgeEnv = withPiWorkerCompatShim({
         PROMA_RUNTIME_HOME: config.runtimeHome || '',
         ...(env.PROMA_RUNTIME_API_KEY ? { PROMA_RUNTIME_API_KEY: env.PROMA_RUNTIME_API_KEY } : {}),
@@ -469,14 +542,10 @@ export class FrakioPiRuntimeAdapter implements AgentProviderAdapter {
         toolHandler: (name: string, params: Record<string, unknown>) => mcpBridge.handleToolCall(name, params),
         runtimeBinding: {
           runtimeId: 'pi',
-          // unknown 只是 Runtime Center 的展示占位值，不能作为 Worker
-          // 的严格版本断言，否则会把已加载的 Pi 版本误判为不兼容。
-          runtimeVersion,
-          runtimeBuildId: activePackage?.runtimeBuildId
-            || env.FRAKIO_PI_RUNTIME_BUILD_ID
-            || 'proma-source',
-          runtimeDir: runtimeRoot,
-          adapterProtocolVersion: 1,
+          runtimeVersion: binding.runtimeVersion,
+          runtimeBuildId: binding.runtimeBuildId,
+          runtimeDir: binding.runtimeDir,
+          adapterProtocolVersion: binding.adapterProtocolVersion,
         },
         env: bridgeEnv,
       })
@@ -578,7 +647,7 @@ export class FrakioPiRuntimeAdapter implements AgentProviderAdapter {
         sessionId: input.sessionId,
         threadId: input.sessionId,
         cwd: input.cwd || process.cwd(),
-        // Frakio Pi Worker 会在启动时用这两个目录创建 auth.json 和原生
+        // Proma Pi Worker 会在启动时用这两个目录创建 auth.json 和原生
         // Session 文件；缺失时 path.resolve(undefined) 会直接让 Worker 失败。
         agentDir: piAgentDir,
         sessionRoot: piSessionRoot,
@@ -592,6 +661,7 @@ export class FrakioPiRuntimeAdapter implements AgentProviderAdapter {
         thinkingLevel: input.effortLevel || 'medium',
         // Proma MCP 工具（collaboration 子 Agent delegate_* 等）暴露给 Pi Worker。
         externalTools,
+        ...piWorkerSessionIdentity(input),
         model: {
           providerId: input.modelRoute?.provider || providerFor(env),
           modelId: input.modelRoute?.modelId || input.model || 'default',
@@ -621,13 +691,6 @@ export class FrakioPiRuntimeAdapter implements AgentProviderAdapter {
           // 模型上下文窗口：优先取压缩策略里的 contextWindow（来自渠道模型配置），
           // 让 Pi 内核按真实窗口计算压缩触发点，而不是用 worker 兜底的 128K。
           contextWindow: input.modelRoute?.compaction?.contextWindow,
-        },
-        profileSnapshot: {
-          name: input.contextPacket?.profile.userName || 'Proma',
-          role: 'Proma Pi 基础内核',
-          soul: '遵循 Proma System Prompt 和 Hermes 策略路由。',
-          scope: '普通对话、需求澄清和最终结果汇总。',
-          revision: input.contextPacket?.packetId || 'proma',
         },
         contextPacket: input.contextPacket || {
           dispatchPolicy: { instruction: systemPromptText(input.systemPrompt) },

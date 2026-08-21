@@ -315,7 +315,7 @@ export function compileThreadContextV2({ store, thread, agent, runtimeId, query 
     { kind: 'knowledge', count: packet.knowledge.length },
     { kind: 'artifacts', count: packet.artifactReferences.length },
   ];
-  const receipt = writeReceipt ? store.putContextReceipt({ packetId: packet.packetId, packetHash: packet.packetHash, threadId: thread.id, runId, runtimeId, agentId: agent.id, stateRevision: snapshot.revision, cursor: packet.cursor, deliveryMode: 'frakio_full', budget: packet.budget, included, excluded: [], conflicts: packet.conflicts, warnings, sourceReceiptIds: packet.sourceReceiptIds }) : null;
+  const receipt = writeReceipt ? store.putContextReceipt({ packetId: packet.packetId, packetHash: packet.packetHash, threadId: thread.id, runId, runtimeId, agentId: agent.id, stateRevision: snapshot.revision, cursor: packet.cursor, deliveryMode: 'proma_full', budget: packet.budget, included, excluded: [], conflicts: packet.conflicts, warnings, sourceReceiptIds: packet.sourceReceiptIds }) : null;
   if (receipt) packet.contextReceiptId = receipt.id;
   return { packet, receipt, snapshot };
 }

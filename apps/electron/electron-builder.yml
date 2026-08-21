@@ -103,6 +103,7 @@ extraResources:
     to: pi-runtime
     filter:
       - "**/*"
+      - "!**/*.test.ts"
   # proma CLI 自包含二进制（build:cli 用 bun build --compile 产出到 resources/bin/）。
   # 运行时由主进程注入 PROMA_CLI 环境变量，暴露给 skill / Agent 调用。
   - from: resources/bin

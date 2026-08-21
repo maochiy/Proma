@@ -5,6 +5,25 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
+function runtimeBindingEnv(runtimeBinding) {
+  if (!runtimeBinding) return {};
+  const root = runtimeBinding.runtimeDir || '';
+  const version = runtimeBinding.runtimeVersion || '';
+  const buildId = runtimeBinding.runtimeBuildId || '';
+  const protocol = String(runtimeBinding.adapterProtocolVersion || 1);
+  return {
+    PROMA_PI_RUNTIME_ROOT: root,
+    PROMA_PI_RUNTIME_VERSION: version,
+    PROMA_PI_RUNTIME_BUILD_ID: buildId,
+    PROMA_PI_HOST_PROTOCOL_VERSION: protocol,
+    // 兼容旧 Worker：同时写入 FRAKIO_PI_*。
+    FRAKIO_PI_RUNTIME_ROOT: root,
+    FRAKIO_PI_RUNTIME_VERSION: version,
+    FRAKIO_PI_RUNTIME_BUILD_ID: buildId,
+    FRAKIO_PI_HOST_PROTOCOL_VERSION: protocol,
+  };
+}
+
 function piWorkerStartupError(message, code = 'PI_WORKER_STARTUP_FAILED') {
   return Object.assign(new Error(message), { code });
 }
@@ -63,12 +82,7 @@ export function createPiBridge({ workerPath = path.join(__dirname, 'workers', 'p
         env: {
           ...process.env,
           ...env,
-          ...(runtimeBinding ? {
-            FRAKIO_PI_RUNTIME_ROOT: runtimeBinding.runtimeDir || '',
-            FRAKIO_PI_RUNTIME_VERSION: runtimeBinding.runtimeVersion || '',
-            FRAKIO_PI_RUNTIME_BUILD_ID: runtimeBinding.runtimeBuildId || '',
-            FRAKIO_PI_HOST_PROTOCOL_VERSION: String(runtimeBinding.adapterProtocolVersion || 1),
-          } : {}),
+          ...runtimeBindingEnv(runtimeBinding),
         },
         stdio: ['ignore', 'pipe', 'pipe', 'ipc'],
         serialization: 'advanced',

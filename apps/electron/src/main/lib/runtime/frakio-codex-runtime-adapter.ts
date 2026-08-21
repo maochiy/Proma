@@ -18,7 +18,7 @@ import type {
   SDKUserMessageInput,
   SendQueuedMessageOptions,
 } from '@proma/shared'
-import { detectRuntime, getActiveRuntimePackage, getRuntimeConfig } from './runtime-registry'
+import { detectRuntime, getRuntimeConfig } from './runtime-registry'
 import { getRuntimeSessionsDir } from '../config-paths'
 
 interface MessageQueue {
@@ -525,9 +525,11 @@ export class FrakioCodexRuntimeAdapter implements AgentProviderAdapter {
   }
 
   private async startSession(input: CodexRuntimeQueryOptions, queue: MessageQueue): Promise<CodexSession> {
-    const activePackage = await getActiveRuntimePackage('codex').catch(() => null)
     const runtime = detectRuntime('codex')
-    const command = activePackage?.executablePath || runtime?.installation.executablePath || 'codex'
+    const command = runtime?.installation.executablePath
+    if (!command) {
+      throw new Error('未发现内置 Codex Runtime。请重新安装 Proma，不要依赖本机 PATH 中的 codex。')
+    }
     const runtimeHome = join(getRuntimeSessionsDir(), 'codex', input.sessionId)
     const child = spawn(command, codexArguments(input), {
       cwd: input.cwd || process.cwd(),

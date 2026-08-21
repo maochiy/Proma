@@ -18,7 +18,7 @@ import type {
   SendQueuedMessageOptions,
 } from '@proma/shared'
 import { query, type Options as ClaudeQueryOptions, type PermissionMode } from '@anthropic-ai/claude-agent-sdk'
-import { detectRuntime, getActiveRuntimePackage, getRuntimeConfig } from './runtime-registry'
+import { detectRuntime, getRuntimeConfig } from './runtime-registry'
 import { getRuntimeSessionsDir } from '../config-paths'
 
 interface MessageQueue {
@@ -93,7 +93,6 @@ function permissionMode(value: string | undefined): PermissionMode {
 
 async function buildOptions(input: ClaudeRuntimeQueryOptions, abortController: AbortController): Promise<ClaudeQueryOptions> {
   const runtime = detectRuntime('claude')
-  const activePackage = await getActiveRuntimePackage('claude').catch(() => null)
   const runtimeConfig = getRuntimeConfig()
   const routeBaseUrl = input.modelRoute?.baseUrl
     || input.env?.ANTHROPIC_BASE_URL
@@ -110,8 +109,8 @@ async function buildOptions(input: ClaudeRuntimeQueryOptions, abortController: A
   return {
     abortController,
     cwd: input.cwd || process.cwd(),
-    ...((activePackage?.executablePath || runtime?.installation.executablePath)
-      ? { pathToClaudeCodeExecutable: activePackage?.executablePath || runtime?.installation.executablePath || undefined }
+    ...(runtime?.installation.executablePath
+      ? { pathToClaudeCodeExecutable: runtime.installation.executablePath }
       : {}),
     ...((input.modelRoute?.modelId || input.model) ? { model: input.modelRoute?.modelId || input.model } : {}),
     ...(input.resumeSessionId ? { resume: input.resumeSessionId } : {}),

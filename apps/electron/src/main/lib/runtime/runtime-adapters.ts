@@ -28,10 +28,9 @@ import type {
 } from '@proma/shared'
 import {
   detectRuntime,
-  getActiveRuntimePackage,
   getRuntimeConfig,
+  isPackagedElectronApp,
   scanLocalHermesRuntimePackages,
-  scanManagedRuntimePackages,
 } from './runtime-registry'
 import { getRuntimeSessionsDir } from '../config-paths'
 import { CcbDesktopRuntimeAdapter } from '../ccb-runtime/ccb-agent-adapter'
@@ -158,13 +157,6 @@ function systemPromptText(value: RuntimeQueryOptions['systemPrompt']): string {
   return value?.append ?? ''
 }
 
-function providerForPi(env: Record<string, string | undefined>): string | undefined {
-  if (env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN) return 'anthropic'
-  if (env.OPENAI_API_KEY) return 'openai'
-  if (env.GEMINI_API_KEY || env.GOOGLE_API_KEY) return 'google'
-  return undefined
-}
-
 function textBlock(text: string): SDKContentBlock {
   return { type: 'text', text }
 }
@@ -271,50 +263,8 @@ class PiRpcAdapter implements AgentProviderAdapter {
     for (const sessionId of this.sessions.keys()) void this.closeSession(sessionId)
   }
 
-  private async run(options: RuntimeQueryOptions, queue: MessageQueue): Promise<void> {
-    const sessionId = options.sessionId
-    let session = this.sessions.get(sessionId)
-    if (!session) {
-      const runtime = detectRuntime('pi')
-      const command = runtime?.installation.executablePath || 'pi'
-      const sessionDir = join(getRuntimeSessionsDir(), 'pi')
-      const env = {
-        ...options.env,
-        PI_CODING_AGENT_DIR: join(getRuntimeSessionsDir(), 'pi-config'),
-      }
-      const args = [
-        '--mode', 'rpc',
-        '--session-id', sessionId,
-        '--session-dir', sessionDir,
-        '--no-extensions',
-        '--no-skills',
-        '--no-prompt-templates',
-        '--no-themes',
-        '--no-context-files',
-        ...(options.model ? ['--model', options.model] : []),
-        ...(providerForPi(env) ? ['--provider', providerForPi(env)!] : []),
-        ...(options.effortLevel ? ['--thinking', options.effortLevel] : []),
-        ...(systemPromptText(options.systemPrompt) ? ['--append-system-prompt', systemPromptText(options.systemPrompt)] : []),
-      ]
-      const processHandle = spawnJsonLine(command, args, options.cwd || process.cwd(), env)
-      session = { process: processHandle, queue: null, eventCounter: 0, assistantMessageId: null }
-      this.sessions.set(sessionId, session)
-      processHandle.child.stderr.on('data', (chunk: Buffer) => {
-        console.warn(`[Pi Runtime] ${String(chunk).trim()}`)
-      })
-      processHandle.child.once('error', (error) => {
-        session?.queue?.fail(error)
-        this.sessions.delete(sessionId)
-      })
-      processHandle.child.once('exit', (code) => {
-        if (code && session?.queue) session.queue.fail(new Error(`Pi Runtime 已退出，code=${code}`))
-        this.sessions.delete(sessionId)
-      })
-      processHandle.lines.on('line', (line) => this.handleLine(sessionId, line))
-    }
-    session.queue = queue
-    sendJsonLine(session.process, { type: 'prompt', message: options.prompt })
-    options.onSessionId?.(sessionId)
+  private async run(_options: RuntimeQueryOptions, queue: MessageQueue): Promise<void> {
+    queue.fail(new Error('Pi 只通过 Proma 内置 Worker 运行，不再调用本机 PATH 中的 pi。'))
   }
 
   private handleLine(sessionId: string, line: string): void {
@@ -448,22 +398,32 @@ class HermesBridgeAdapter implements AgentProviderAdapter {
 
   private async startBridge(options: RuntimeQueryOptions): Promise<HermesProcess> {
     const config = getRuntimeConfig()
-    const sourceHome = process.env.PROMA_RUNTIME_SOURCE_HOME
-      || process.env.FRAKIO_WORK_SOURCE_HOME
-      || config.runtimeSourceHome
-      || config.frakioSourceHome
-      || ''
-    const bridge = join(sourceHome, 'runtime', 'agent-bridge', 'python', 'hermes_bridge.py')
-    if (!existsSync(bridge)) throw new Error(`未找到 Proma Hermes Bridge：${bridge}`)
-    const activeRuntime = await getActiveRuntimePackage('hermes').catch(() => null)
-    const runtimeHome = activeRuntime?.runtimeDir
-      || process.env.HERMES_HOME
-      || process.env.HERMES_AGENT_HOME
-      || config.runtimeHome
-      || ''
+    const packaged = isPackagedElectronApp()
+    const sourceHome = packaged
+      ? ''
+      : (
+        process.env.PROMA_RUNTIME_SOURCE_HOME
+        || process.env.FRAKIO_WORK_SOURCE_HOME
+        || config.runtimeSourceHome
+        || config.frakioSourceHome
+        || ''
+      )
+    const bridge = [
+      process.resourcesPath ? join(process.resourcesPath, 'hermes', 'runtime', 'agent-bridge', 'python', 'hermes_bridge.py') : '',
+      process.resourcesPath ? join(process.resourcesPath, 'runtime', 'agent-bridge', 'python', 'hermes_bridge.py') : '',
+      sourceHome ? join(sourceHome, 'runtime', 'agent-bridge', 'python', 'hermes_bridge.py') : '',
+    ].filter(Boolean).find((candidate) => existsSync(candidate))
+    if (!bridge) {
+      throw new Error('未找到 Proma 内置 Hermes Bridge。请重新安装 Proma，不要依赖本机 PATH 中的 python3。')
+    }
+    const scanned = scanLocalHermesRuntimePackages(config.runtimeHome || '', sourceHome)
+    const activeRuntime = scanned.find((item) => item.source === 'bundled')
+      || (packaged ? undefined : scanned[0])
+    const runtimeHome = activeRuntime?.runtimeDir || ''
     const python = activeRuntime?.executablePath
-      || scanLocalHermesRuntimePackages(config.runtimeHome || '', sourceHome)[0]?.executablePath
-      || 'python3'
+    if (!python) {
+      throw new Error('未发现内置 Hermes Runtime。请重新安装 Proma，不要依赖本机 PATH 中的 python3。')
+    }
     const endpoint = `ipc://${join(getRuntimeSessionsDir(), `hermes-${options.sessionId}.sock`)}`
     const processHandle = spawnJsonLine(
       python,
@@ -612,7 +572,11 @@ class CodexCliAdapter implements AgentProviderAdapter {
 
   private async run(options: RuntimeQueryOptions, queue: MessageQueue): Promise<void> {
     const runtime = detectRuntime('codex')
-    const command = runtime?.installation.executablePath || 'codex'
+    const command = runtime?.installation.executablePath
+    if (!command) {
+      queue.fail(new Error('未发现内置 Codex Runtime。请重新安装 Proma，不要依赖本机 PATH 中的 codex。'))
+      return
+    }
     const child = spawn(command, [
       'exec', '--json', '--ephemeral', '--skip-git-repo-check', '-s', 'read-only',
       '-C', options.cwd || process.cwd(), options.prompt,
@@ -784,16 +748,8 @@ export class RuntimeAdapterRouter implements AgentProviderAdapter {
     return this.adapterForSession(sessionId)
   }
 
-  private shouldUsePiBridge(input?: AgentQueryInput): boolean {
-    const env = input?.env || {}
-    const config = getRuntimeConfig()
-    const sourceHome = config.runtimeSourceHome || config.frakioSourceHome || ''
-    const bridgeExists = Boolean(sourceHome && existsSync(join(sourceHome, 'apps/api/runtime/pi-bridge.mjs')))
-    const runtimeRoot = config.runtimeHome || ''
-    const hasLocalPiPackages = Boolean(
-      runtimeRoot && scanManagedRuntimePackages(runtimeRoot, 'pi').length > 0,
-    )
-    // 仅有源码时还不能启动 Pi Worker；Worker 需要已激活的 Pi Runtime 包。
-    return Boolean(input?.modelRoute || (bridgeExists && hasLocalPiPackages))
+  private shouldUsePiBridge(_input?: AgentQueryInput): boolean {
+    // Pi 只走安装包内置 Worker，不再 spawn 用户 PATH 里的 pi。
+    return true
   }
 }
